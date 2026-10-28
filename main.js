@@ -9,8 +9,24 @@ module.exports.loop = function () {
 
   const workerBody = [WORK, CARRY, MOVE];
   const workerCost = workerBody.reduce((total, part) => total + BODYPART_COST[part], 0);
+  // Abbreviate body parts in spawn and creep status logs (for example, WWCM).
+  const bodyPartCodes = {
+    [WORK]: 'W',
+    [CARRY]: 'C',
+    [MOVE]: 'M',
+    [ATTACK]: 'A',
+    [RANGED_ATTACK]: 'R',
+    [HEAL]: 'H',
+    [CLAIM]: 'CL',
+    [TOUGH]: 'T'
+  };
+  const getBodyCode = parts => parts.map(part => {
+    const type = typeof part === 'string' ? part : part.type;
+    return bodyPartCodes[type] || type;
+  }).join('');
   const buildBody = (role, energy) => {
     if (role === 'miner') {
+      // Stationary miners need one MOVE to reach their tile, up to five WORK, and a small carry buffer.
       const workParts = Math.min(5,
         Math.floor((energy - BODYPART_COST[CARRY] - BODYPART_COST[MOVE]) /
           BODYPART_COST[WORK]));
@@ -28,6 +44,9 @@ module.exports.loop = function () {
       return body;
     }
 
+    // Mobile roles grow in balanced WORK/CARRY/MOVE modules and always need at least one of each.
+    if (energy < workerCost) return null;
+
     const body = [];
     let cost = 0;
     while (body.length + workerBody.length <= 50 && cost + workerCost <= energy) {
@@ -41,9 +60,12 @@ module.exports.loop = function () {
     if (body.length < 50 && cost + BODYPART_COST[CARRY] <= energy) {
       body.push(CARRY);
     }
+    if (body.indexOf(WORK) === -1 || body.indexOf(CARRY) === -1 ||
+        body.indexOf(MOVE) === -1) return null;
     return body.length ? body : null;
   };
   const findMinerStation = (room, source, container, reserved, ignoreCreep, preferred) => {
+    // Use a single walkable tile within range one of both the source and container.
     const terrain = room.getTerrain();
     const isAvailable = (x, y) => {
       if (x < 0 || x > 49 || y < 0 || y > 49 ||
@@ -71,16 +93,31 @@ module.exports.loop = function () {
     }
     return null;
   };
-  // The workforce cap assumes five workers per source and does not count walkable tiles.
-  // Each spawn still waits only for enough room energy to build one worker.
   const getWorkerLimits = room => {
-    const sourceLimit = room.find(FIND_SOURCES).length * 5;
+    // Count unique walkable spawn-adjacent tiles; overlapping spawn areas count once.
+    const spawnSpots = new Set();
+    const terrain = room.getTerrain();
+    for (const spawn of room.find(FIND_MY_SPAWNS)) {
+      for (let x = spawn.pos.x - 1; x <= spawn.pos.x + 1; x++) {
+        for (let y = spawn.pos.y - 1; y <= spawn.pos.y + 1; y++) {
+          if (x === spawn.pos.x && y === spawn.pos.y || x < 0 || x > 49 ||
+              y < 0 || y > 49 || terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
+          const blocked = room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
+            OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
+            !(structure.structureType === STRUCTURE_RAMPART &&
+              (structure.my || structure.isPublic)));
+          if (!blocked) spawnSpots.add(`${x}:${y}`);
+        }
+      }
+    }
+    const spawnLimit = spawnSpots.size;
     return {
-      sourceLimit,
-      workerLimit: Math.min(20, sourceLimit)
+      spawnLimit,
+      workerLimit: Math.min(20, spawnLimit)
     };
   };
   const getSpawnAssignment = (room, workers) => {
+    // Fill required room roles before creating additional general workers.
     if (!workers.some(creep => creep.memory.role === 'upgrader')) {
       const availableUpgrader = workers.find(creep => !creep.spawning &&
         creep.memory.role !== 'miner');
@@ -134,7 +171,7 @@ module.exports.loop = function () {
       });
       if (result === OK) {
         const cost = body.reduce((total, part) => total + BODYPART_COST[part], 0);
-        console.log(`[${Game.time}] Spawning ${name} (${assignment.role}, ${cost} energy): ${body.join(', ')}`);
+        console.log(`[${Game.time}] Spawning ${name} (${assignment.role}, ${cost} energy): ${getBodyCode(body)}`);
       }
     }
   }
@@ -241,7 +278,17 @@ module.exports.loop = function () {
       delete creep.memory.harvestY;
       continue;
     }
-    if (creep.store[RESOURCE_ENERGY] === 0) creep.memory.working = false;
+    // Keep every container used for this load excluded until the creep spends all its energy.
+    if (creep.store[RESOURCE_ENERGY] === 0) {
+      creep.memory.working = false;
+      delete creep.memory.energySources;
+      delete creep.memory.energySource;
+    } else if (!Array.isArray(creep.memory.energySources)) {
+      creep.memory.energySources = creep.memory.energySource
+        ? [creep.memory.energySource]
+        : [];
+      delete creep.memory.energySource;
+    }
     if (creep.store.getFreeCapacity() === 0) creep.memory.working = true;
     if (creep.memory.working) {
       delete creep.memory.harvestSource;
@@ -339,6 +386,16 @@ module.exports.loop = function () {
       creep.memory.taskTarget = target.id || target.name || target.structureType;
       return true;
     };
+    const scavenge = () => {
+      if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) return false;
+      const drop = creep.pos.findClosestByPath(FIND_DROPPED_RESOURCES, {
+        filter: resource => resource.resourceType === RESOURCE_ENERGY &&
+          resource.amount > 0 && !reservedDrops[resource.id]
+      });
+      if (!drop) return false;
+      reservedDrops[drop.id] = creep.name;
+      return perform(drop, resource => creep.pickup(resource));
+    };
     let tasks;
     if (creep.memory.role === 'miner') {
       // Move once to the shared station, then harvest and transfer without moving; wait if full.
@@ -397,6 +454,10 @@ module.exports.loop = function () {
           }
         },
         {
+          name: 'scavenge',
+          run: scavenge
+        },
+        {
           name: 'upgrade',
           run: () => controller && controller.my
             ? perform(controller, target => creep.upgradeController(target))
@@ -404,8 +465,22 @@ module.exports.loop = function () {
         }
       ];
     } else if (creep.memory.working) {
-      // Refill and downgrade protection come first; scavenge before sites and container storage.
+      // Critical downgrade protection comes first; scavenge before routine work and storage.
       tasks = [
+      {
+        name: 'urgent-upgrade',
+        run: () => {
+          const roomName = creep.room.name;
+          if (urgentUpgradeAssigned[roomName] || !controller || !controller.my ||
+              controller.ticksToDowngrade >= 3000) return false;
+          urgentUpgradeAssigned[roomName] = true;
+          return perform(controller, target => creep.upgradeController(target));
+        }
+      },
+      {
+        name: 'scavenge',
+        run: scavenge
+      },
       {
         name: 'refill',
         run: () => {
@@ -424,28 +499,6 @@ module.exports.loop = function () {
         }
       },
       {
-        name: 'urgent-upgrade',
-        run: () => {
-          const roomName = creep.room.name;
-          if (urgentUpgradeAssigned[roomName] || !controller || !controller.my ||
-              controller.ticksToDowngrade >= 3000) return false;
-          urgentUpgradeAssigned[roomName] = true;
-          return perform(controller, target => creep.upgradeController(target));
-        }
-      },
-      {
-        name: 'scavenge',
-        run: () => {
-          const drop = creep.pos.findClosestByPath(FIND_DROPPED_RESOURCES, {
-            filter: resource => resource.resourceType === RESOURCE_ENERGY &&
-              resource.amount > 0 && !reservedDrops[resource.id]
-          });
-          if (!drop) return false;
-          reservedDrops[drop.id] = creep.name;
-          return perform(drop, resource => creep.pickup(resource));
-        }
-      },
-      {
         name: 'build',
         run: () => {
           const site = creep.pos.findClosestByPath(FIND_MY_CONSTRUCTION_SITES);
@@ -455,8 +508,13 @@ module.exports.loop = function () {
       {
         name: 'store',
         run: () => {
+          // Don't return withdrawn energy to the same container it came from.
+          const energySources = Array.isArray(creep.memory.energySources)
+            ? creep.memory.energySources
+            : [];
           const container = creep.pos.findClosestByPath(FIND_STRUCTURES, {
             filter: s => s.structureType === STRUCTURE_CONTAINER &&
+              energySources.indexOf(s.id) === -1 &&
               s.store.getFreeCapacity(RESOURCE_ENERGY) -
                 (reservedCapacity[s.id] || 0) > 0
           });
@@ -475,15 +533,7 @@ module.exports.loop = function () {
       tasks = [
       {
         name: 'scavenge',
-        run: () => {
-          const drop = creep.pos.findClosestByPath(FIND_DROPPED_RESOURCES, {
-            filter: resource => resource.resourceType === RESOURCE_ENERGY &&
-              resource.amount > 0 && !reservedDrops[resource.id]
-          });
-          if (!drop) return false;
-          reservedDrops[drop.id] = creep.name;
-          return perform(drop, resource => creep.pickup(resource));
-        }
+        run: scavenge
       },
       {
         name: 'withdraw',
@@ -495,8 +545,23 @@ module.exports.loop = function () {
           if (!container) return false;
           const amount = Math.min(creep.store.getFreeCapacity(RESOURCE_ENERGY),
             container.store[RESOURCE_ENERGY] - (reservedEnergy[container.id] || 0));
+          const result = creep.withdraw(container, RESOURCE_ENERGY);
+          if (result === ERR_NOT_IN_RANGE) {
+            reservedEnergy[container.id] = (reservedEnergy[container.id] || 0) + amount;
+            creep.moveTo(container);
+            creep.memory.taskTarget = container.id;
+            return true;
+          }
+          if (result !== OK) return false;
           reservedEnergy[container.id] = (reservedEnergy[container.id] || 0) + amount;
-          return perform(container, target => creep.withdraw(target, RESOURCE_ENERGY));
+          if (!Array.isArray(creep.memory.energySources)) {
+            creep.memory.energySources = [];
+          }
+          if (creep.memory.energySources.indexOf(container.id) === -1) {
+            creep.memory.energySources.push(container.id);
+          }
+          creep.memory.taskTarget = container.id;
+          return true;
         }
       },
       {
@@ -529,7 +594,7 @@ module.exports.loop = function () {
   if (Game.time % 25 === 0) {
     const assignments = creeps.map(creep => {
       const timeToLive = creep.ticksToLive === undefined ? 'unknown' : creep.ticksToLive;
-      return `  ${creep.name} (${creep.memory.role || 'worker'}, TTL ${timeToLive}): ${creep.memory.task || 'idle'} -> ${creep.memory.taskTarget || '-'}`;
+      return `  ${creep.name} (${creep.memory.role || 'worker'}, TTL ${timeToLive}, ${getBodyCode(creep.body)}): ${creep.memory.task || 'idle'} -> ${creep.memory.taskTarget || '-'}`;
     });
     console.log(`[${Game.time}] Creep tasks:\n${assignments.join('\n') || '  none'}`);
   }
@@ -537,12 +602,12 @@ module.exports.loop = function () {
   // Explain worker-cap and temporary spawn blockers every 100 ticks.
   if (Game.time % 100 === 0) {
     for (const spawn of Object.values(Game.spawns)) {
-      const { sourceLimit, workerLimit } = getWorkerLimits(spawn.room);
+      const { spawnLimit, workerLimit } = getWorkerLimits(spawn.room);
       const workerCount = Object.values(Game.creeps)
         .filter(creep => creep.memory.home === spawn.room.name).length;
       const blockers = [];
       const bindingLimits = [];
-      if (sourceLimit === workerLimit) bindingLimits.push('source cap');
+      if (spawnLimit === workerLimit) bindingLimits.push('spawn tile cap');
       if (20 === workerLimit) bindingLimits.push('hard cap');
       if (workerCount >= workerLimit) {
         blockers.push(`worker limit reached (${bindingLimits.join(' and ')})`);
@@ -552,7 +617,7 @@ module.exports.loop = function () {
         blockers.push(`energy below worker cost (${workerCost})`);
       }
       const status = blockers.length ? blockers.join(', ') : 'eligible to spawn';
-      console.log(`[${Game.time}] ${spawn.room.name} (${spawn.name}) workers ${workerCount}/${workerLimit}; limits: sources ${sourceLimit}, hard cap 20; energy ${spawn.room.energyAvailable}/${spawn.room.energyCapacityAvailable} (worker cost ${workerCost}); ${status}`);
+      console.log(`[${Game.time}] ${spawn.room.name} (${spawn.name}) workers ${workerCount}/${workerLimit}; limits: spawn tiles ${spawnLimit}, hard cap 20; energy ${spawn.room.energyAvailable}/${spawn.room.energyCapacityAvailable} (worker cost ${workerCost}); ${status}`);
     }
   }
 };
