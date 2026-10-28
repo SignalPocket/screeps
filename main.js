@@ -9,6 +9,68 @@ module.exports.loop = function () {
 
   const workerBody = [WORK, CARRY, MOVE];
   const workerCost = workerBody.reduce((total, part) => total + BODYPART_COST[part], 0);
+  const buildBody = (role, energy) => {
+    if (role === 'miner') {
+      const workParts = Math.min(5,
+        Math.floor((energy - BODYPART_COST[CARRY] - BODYPART_COST[MOVE]) /
+          BODYPART_COST[WORK]));
+      if (workParts < 1) return null;
+      const body = Array(workParts).fill(WORK);
+      body.push(CARRY, MOVE);
+      let carryParts = 1;
+      let cost = body.reduce((total, part) => total + BODYPART_COST[part], 0);
+      while (body.length < 50 && carryParts < 3 &&
+          cost + BODYPART_COST[CARRY] <= energy) {
+        body.splice(body.length - 1, 0, CARRY);
+        carryParts++;
+        cost += BODYPART_COST[CARRY];
+      }
+      return body;
+    }
+
+    const body = [];
+    let cost = 0;
+    while (body.length + workerBody.length <= 50 && cost + workerCost <= energy) {
+      body.push(...workerBody);
+      cost += workerCost;
+    }
+    if (body.length < 50 && cost + BODYPART_COST[WORK] <= energy) {
+      body.push(WORK);
+      cost += BODYPART_COST[WORK];
+    }
+    if (body.length < 50 && cost + BODYPART_COST[CARRY] <= energy) {
+      body.push(CARRY);
+    }
+    return body.length ? body : null;
+  };
+  const findMinerStation = (room, source, container, reserved, ignoreCreep, preferred) => {
+    const terrain = room.getTerrain();
+    const isAvailable = (x, y) => {
+      if (x < 0 || x > 49 || y < 0 || y > 49 ||
+          terrain.get(x, y) === TERRAIN_MASK_WALL ||
+          source.pos.getRangeTo(x, y) > 1 || container.pos.getRangeTo(x, y) > 1 ||
+          (x === source.pos.x && y === source.pos.y) ||
+          (x === container.pos.x && y === container.pos.y)) return false;
+      const key = `${x}:${y}`;
+      if (reserved[key]) return false;
+      const blocked = room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
+        OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
+        !(structure.structureType === STRUCTURE_RAMPART &&
+          (structure.my || structure.isPublic)));
+      if (blocked) return false;
+      return !room.lookForAt(LOOK_CREEPS, x, y)
+        .some(creep => creep.name !== ignoreCreep);
+    };
+
+    if (preferred && isAvailable(preferred.x, preferred.y)) return preferred;
+    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
+      for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
+        if (x === source.pos.x && y === source.pos.y) continue;
+        if (isAvailable(x, y)) return { x, y };
+      }
+    }
+    return null;
+  };
   // The workforce cap assumes five workers per source and does not count walkable tiles.
   // Each spawn still waits only for enough room energy to build one worker.
   const getWorkerLimits = room => {
@@ -18,19 +80,62 @@ module.exports.loop = function () {
       workerLimit: Math.min(20, sourceLimit)
     };
   };
+  const getSpawnAssignment = (room, workers) => {
+    if (!workers.some(creep => creep.memory.role === 'upgrader')) {
+      const availableUpgrader = workers.find(creep => !creep.spawning &&
+        creep.memory.role !== 'miner');
+      return availableUpgrader ? null : { role: 'upgrader' };
+    }
+
+    const sourceContainers = room.find(FIND_SOURCES).map(source => ({
+      source,
+      container: source.pos.findInRange(FIND_STRUCTURES, 1, {
+        filter: structure => structure.structureType === STRUCTURE_CONTAINER
+      })[0]
+    })).filter(entry => entry.container).map(entry => ({
+      ...entry,
+      station: findMinerStation(room, entry.source, entry.container, {})
+    }));
+    const missingSource = sourceContainers.find(entry =>
+      entry.station &&
+      !workers.some(creep => creep.memory.minerSource === entry.source.id));
+    if (missingSource) {
+      const availableMiner = workers.find(creep => !creep.spawning &&
+        creep.memory.role !== 'upgrader' && creep.memory.role !== 'miner');
+      if (availableMiner) return null;
+      return {
+        role: 'miner',
+        source: missingSource.source,
+        container: missingSource.container,
+        station: missingSource.station
+      };
+    }
+    return { role: 'worker' };
+  };
 
   for (const spawn of Object.values(Game.spawns)) {
     const workers = Object.values(Game.creeps).filter(c =>
       c.memory.home === spawn.room.name);
     const { workerLimit } = getWorkerLimits(spawn.room);
-    if (!spawn.spawning && spawn.room.energyAvailable >= workerCost &&
-        workers.length < workerLimit) {
-      spawn.spawnCreep(workerBody, `worker-${spawn.name}-${Game.time}`, {
+    const assignment = getSpawnAssignment(spawn.room, workers);
+    const body = assignment && buildBody(assignment.role, spawn.room.energyAvailable);
+    if (!spawn.spawning && body && workers.length < workerLimit) {
+      const name = `worker-${spawn.name}-${Game.time}`;
+      const result = spawn.spawnCreep(body, name, {
         memory: {
           home: spawn.room.name,
-          working: false
+          working: false,
+          role: assignment.role,
+          minerSource: assignment.source && assignment.source.id,
+          minerContainer: assignment.container && assignment.container.id,
+          minerX: assignment.station && assignment.station.x,
+          minerY: assignment.station && assignment.station.y
         }
       });
+      if (result === OK) {
+        const cost = body.reduce((total, part) => total + BODYPART_COST[part], 0);
+        console.log(`[${Game.time}] Spawning ${name} (${assignment.role}, ${cost} energy): ${body.join(', ')}`);
+      }
     }
   }
 
@@ -41,24 +146,101 @@ module.exports.loop = function () {
   const reservedHarvestSpots = {};
   const creeps = Object.values(Game.creeps).filter(creep => !creep.spawning);
   const roomUpgraders = {};
+  const assignedCreeps = {};
+  const dedicatedMinerSources = {};
 
-  // Keep one upgrader per owned room; preserve the assignment across ticks when possible.
   for (const creep of creeps) {
     if (creep.room.controller && creep.room.controller.my &&
         creep.memory.role === 'upgrader' && !roomUpgraders[creep.room.name]) {
       roomUpgraders[creep.room.name] = creep;
+      assignedCreeps[creep.name] = true;
+    }
+  }
+
+  // Keep one upgrader, then assign one miner to each source with an adjacent container.
+  for (const room of Object.values(Game.rooms)) {
+    if (!room.controller || !room.controller.my) continue;
+    const roomCreeps = creeps.filter(creep => creep.room.name === room.name);
+    if (!roomUpgraders[room.name]) {
+      const upgrader = roomCreeps.find(creep => creep.memory.role !== 'miner') || roomCreeps[0];
+      if (upgrader) {
+        roomUpgraders[room.name] = upgrader;
+        assignedCreeps[upgrader.name] = true;
+      }
+    }
+
+    const sourceContainers = room.find(FIND_SOURCES).map(source => ({
+      source,
+      container: source.pos.findInRange(FIND_STRUCTURES, 1, {
+        filter: structure => structure.structureType === STRUCTURE_CONTAINER
+      })[0]
+    })).filter(entry => entry.container);
+    const miners = {};
+    const minerStations = {};
+    const reservedMinerSpots = {};
+
+    for (const entry of sourceContainers) {
+      const miner = roomCreeps.find(creep => !assignedCreeps[creep.name] &&
+        creep.memory.role === 'miner' && creep.memory.minerSource === entry.source.id);
+      if (!miner) continue;
+      const station = findMinerStation(room, entry.source, entry.container,
+        reservedMinerSpots, miner.name, { x: miner.memory.minerX, y: miner.memory.minerY });
+      if (!station) continue;
+      miners[entry.source.id] = miner;
+      minerStations[entry.source.id] = station;
+      reservedMinerSpots[`${station.x}:${station.y}`] = miner.name;
+      assignedCreeps[miner.name] = true;
+    }
+    for (const entry of sourceContainers) {
+      let miner = miners[entry.source.id];
+      if (!miner) {
+        miner = roomCreeps.find(creep => !assignedCreeps[creep.name]);
+        if (!miner) continue;
+        const station = findMinerStation(room, entry.source, entry.container,
+          reservedMinerSpots, miner.name);
+        if (!station) continue;
+        miners[entry.source.id] = miner;
+        minerStations[entry.source.id] = station;
+        reservedMinerSpots[`${station.x}:${station.y}`] = miner.name;
+        assignedCreeps[miner.name] = true;
+      }
+      miner.memory.role = 'miner';
+      miner.memory.minerSource = entry.source.id;
+      miner.memory.minerContainer = entry.container.id;
+      miner.memory.minerX = minerStations[entry.source.id].x;
+      miner.memory.minerY = minerStations[entry.source.id].y;
+      dedicatedMinerSources[entry.source.id] = true;
+    }
+
+    for (const creep of roomCreeps) {
+      if (creep === roomUpgraders[room.name]) {
+        creep.memory.role = 'upgrader';
+      } else if (!assignedCreeps[creep.name]) {
+        creep.memory.role = 'worker';
+        delete creep.memory.minerSource;
+        delete creep.memory.minerContainer;
+        delete creep.memory.minerX;
+        delete creep.memory.minerY;
+      }
     }
   }
   for (const creep of creeps) {
     if (!creep.room.controller || !creep.room.controller.my) {
       creep.memory.role = 'worker';
-      continue;
+      delete creep.memory.minerSource;
+      delete creep.memory.minerContainer;
+      delete creep.memory.minerX;
+      delete creep.memory.minerY;
     }
-    if (!roomUpgraders[creep.room.name]) roomUpgraders[creep.room.name] = creep;
-    creep.memory.role = roomUpgraders[creep.room.name] === creep ? 'upgrader' : 'worker';
   }
 
   for (const creep of creeps) {
+    if (creep.memory.role === 'miner') {
+      delete creep.memory.harvestSource;
+      delete creep.memory.harvestX;
+      delete creep.memory.harvestY;
+      continue;
+    }
     if (creep.store[RESOURCE_ENERGY] === 0) creep.memory.working = false;
     if (creep.store.getFreeCapacity() === 0) creep.memory.working = true;
     if (creep.memory.working) {
@@ -124,6 +306,7 @@ module.exports.loop = function () {
     let best;
     let bestRange = Infinity;
     for (const candidate of creep.room.find(FIND_SOURCES_ACTIVE)) {
+      if (dedicatedMinerSources[candidate.id]) continue;
       for (let spotX = candidate.pos.x - 1; spotX <= candidate.pos.x + 1; spotX++) {
         for (let spotY = candidate.pos.y - 1; spotY <= candidate.pos.y + 1; spotY++) {
           if ((spotX === candidate.pos.x && spotY === candidate.pos.y) ||
@@ -157,7 +340,42 @@ module.exports.loop = function () {
       return true;
     };
     let tasks;
-    if (creep.memory.working && creep.memory.role === 'upgrader') {
+    if (creep.memory.role === 'miner') {
+      // Move once to the shared station, then harvest and transfer without moving; wait if full.
+      tasks = [
+        {
+          name: 'mine-to-container',
+          run: () => {
+            const source = Game.getObjectById(creep.memory.minerSource);
+            const container = Game.getObjectById(creep.memory.minerContainer);
+            if (!source || !container) return false;
+            const station = new RoomPosition(creep.memory.minerX,
+              creep.memory.minerY, creep.room.name);
+            if (creep.pos.x !== station.x || creep.pos.y !== station.y) {
+              creep.moveTo(station);
+              creep.memory.taskTarget = `${source.id}@${station.x},${station.y}`;
+              return true;
+            }
+            if (container.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
+              creep.memory.taskTarget = container.id;
+              return true;
+            }
+            if (creep.store[RESOURCE_ENERGY] > 0 &&
+                (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 || source.energy === 0)) {
+              return perform(container, target => creep.transfer(target, RESOURCE_ENERGY));
+            }
+            if (source.energy > 0 && creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+              return perform(source, target => creep.harvest(target));
+            }
+            if (creep.store[RESOURCE_ENERGY] > 0) {
+              return perform(container, target => creep.transfer(target, RESOURCE_ENERGY));
+            }
+            creep.memory.taskTarget = source.id;
+            return true;
+          }
+        }
+      ];
+    } else if (creep.memory.working && creep.memory.role === 'upgrader') {
       // The room's upgrader stays on the controller unless spawn energy is below one worker's cost.
       tasks = [
         {
@@ -309,8 +527,10 @@ module.exports.loop = function () {
 
   // Log live task/target assignments every 25 ticks without filling the console each tick.
   if (Game.time % 25 === 0) {
-    const assignments = creeps.map(creep =>
-      `  ${creep.name}: ${creep.memory.task || 'idle'} -> ${creep.memory.taskTarget || '-'}`);
+    const assignments = creeps.map(creep => {
+      const timeToLive = creep.ticksToLive === undefined ? 'unknown' : creep.ticksToLive;
+      return `  ${creep.name} (${creep.memory.role || 'worker'}, TTL ${timeToLive}): ${creep.memory.task || 'idle'} -> ${creep.memory.taskTarget || '-'}`;
+    });
     console.log(`[${Game.time}] Creep tasks:\n${assignments.join('\n') || '  none'}`);
   }
 
