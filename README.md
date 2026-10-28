@@ -1,35 +1,29 @@
 # Screeps
 
-A fresh personal Screeps World project. Plain JavaScript, with no dependencies.
+Personal Screeps colony, edited directly in Steam's local script folder.
 
-## Starter colony
+## One-folder workflow
 
-`src/main.js` exports the game loop. It maintains up to six small workers per
-owned spawn room. Workers harvest energy, refill spawns and extensions, protect
-the controller against downgrading, build placed construction sites, and upgrade
-the controller. Dead creep memory is cleaned each tick.
+Open this folder in VS Code. Edit main.js and save; Steam synchronizes the
+script to the local server's default branch. Saves can affect the running colony.
+Commit and push separately to save version history in the private GitHub repository.
+There is no second deployment folder or copy step.
 
-This is a learning bootstrap, with no automated defense, expansion, road planning,
-or advanced logistics. It has not yet been tested inside the game.
+Local server: 127.0.0.1:21025. Game account: ginaria. Branch: default.
 
-## Local check
+## Starter
 
-Run `npm run check` to check JavaScript syntax. This does not simulate the game.
+Worker counts are capped at five per source and twenty per room. Creeps harvest,
+withdraw from containers, scavenge dropped energy, refill spawns and extensions,
+build construction sites, and upgrade the controller. No automated defense or
+expansion yet.
 
-## First game session
+## Check
 
-1. Open Screeps World and start in the simulation or tutorial.
-2. Place your first spawn.
-3. After reviewing the starter, copy `src/main.js` into the game's `main` module.
-4. Commit in the game editor and watch the first workers.
-5. Place extension construction sites as controller levels allow.
-
-There is no automatic upload or deployment. Keep account tokens out of Git.
-External synchronization can be configured later after choosing the game account,
-server, and branch.
+Run npm run check for JavaScript syntax validation. This does not simulate the game.
+Keep credentials out of Git.
 
 ## References
 
-- [Official documentation](https://docs.screeps.com/)
-- [Game API](https://docs.screeps.com/api/)
-- [External synchronization](https://docs.screeps.com/commit.html)
+- https://docs.screeps.com/
+- https://docs.screeps.com/api/
