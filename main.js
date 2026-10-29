@@ -5,6 +5,21 @@ const { createBodyFactory } = require('body.factory');
 const { createResourceReservations } = require('resource.reservations');
 const { createRoomIndex } = require('room.index');
 const { createMovementService } = require('movement.service');
+const { createCreepLifecycle } = require('creep.lifecycle');
+const { createCreepReporting, shortCreepName, shortRoles, shortTasks } =
+  require('creep.reporting');
+const { createSourceStaffing } = require('source.staffing');
+const { createRoomStrategy } = require('room.strategy');
+const { createSourcePositions } = require('source.positions');
+const { deriveRoomStatus } = require('room.status');
+const { createOutpostStatus } = require('outpost.status');
+const { createRoomSituation } = require('room.situation');
+const { createWorkerLimits } = require('worker.limits');
+const { getRoomStagePlan } = require('room.stages');
+const { createRemoteHauling } = require('remote.hauling');
+const { createEnergyPhase } = require('energy.phase');
+const { createRoadPlanner } = require('road.planner');
+const { createInfrastructurePlanner } = require('infrastructure.planner');
 
 const { workerCost, buildBody, getBodyCode } = createBodyFactory({
   WORK, CARRY, MOVE, ATTACK, RANGED_ATTACK, HEAL, CLAIM, TOUGH,
@@ -27,1485 +42,81 @@ module.exports.loop = function () {
   const { getRoomSources, getRoomStructures, getRoomSites, getRoomCreeps,
     getSlowWorkInventory } = createRoomIndex({ Game, FIND_SOURCES,
     FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS });
-  const getObjectLabel = target => {
-    if (!target) return null;
-    if (target.name) return target.name;
-    const room = target.room;
-    if (room && target === room.controller) return 'Room Controller';
-    if (room && target.energyCapacity !== undefined &&
-        target.ticksToRegeneration !== undefined) {
-      const sourceIndex = getRoomSources(room)
-        .findIndex(source => source.id === target.id);
-      return sourceIndex >= 0 ? `Source ${sourceIndex + 1}` : 'Source';
-    }
-    if (target.resourceType && target.amount !== undefined) {
-      return `dropped ${target.resourceType} (${target.pos.x},${target.pos.y})`;
-    }
-    if (target.structureType) {
-      if (target.structureType === STRUCTURE_CONTAINER && room) {
-        if (room.controller && target.pos.getRangeTo(room.controller) <= 3) {
-          return 'Controller container';
-        }
-        const sourceIndex = getRoomSources(room)
-          .findIndex(source => source.pos.getRangeTo(target) <= 5);
-        if (sourceIndex >= 0) return `Source ${sourceIndex + 1} container`;
-      }
-      const siteSuffix = target.progressTotal !== undefined ? ' site' : '';
-      return `${target.structureType}${siteSuffix} (${target.pos.x},${target.pos.y})`;
-    }
-    return target.id || null;
-  };
-  const formatTaskTarget = targetReference => {
-    if (!targetReference || typeof targetReference !== 'string') {
-      return targetReference || '-';
-    }
-    const id = targetReference.split(/[\s@()]/)[0];
-    const target = Game.getObjectById(id);
-    const label = getObjectLabel(target);
-    return label ? targetReference.replace(id, label) : targetReference;
-  };
-  const shortCreepName = name => name
-    .replace(/^worker-/, '')
-    .replace(/^Spawn/, 'S');
-  const shortRoles = {
-    miner: 'M',
-    harvester: 'Hv',
-    hauler: 'Ha',
-    refiller: 'Rf',
-    rebalancer: 'Bal',
-    builder: 'B',
-    digger: 'D',
-    fixer: 'F',
-    upgrader: 'U',
-    'remote-scout': 'Sc',
-    'remote-hauler': 'RH',
-    'remote-builder': 'RB',
-    claimer: 'Cl',
-    'expansion-builder': 'EB',
-    worker: 'W'
-  };
-  const shortTasks = {
-    'mine-to-container': 'Mine',
-    'source-work': 'Src',
-    harvest: 'Mine',
-    'emergency-refill': 'Fill!',
-    'urgent-upgrade': 'RC!',
-    upgrade: 'RC',
-    scavenge: 'Pick',
-    refill: 'Fill',
-    'refill-load': 'Load',
-    rebalance: 'Bal',
-    build: 'Build',
-    'dig-road': 'Dig',
-    repair: 'Fix',
-    'supply-worker': 'Give',
-    'await-supply': 'WaitE',
-    'remote-scout': 'Scout',
-    'remote-harvest': 'Src',
-    'remote-container': 'Cont',
-    'remote-haul': 'RHaul',
-    'remote-road': 'RBuild',
-    claim: 'Claim',
-    'expansion-build': 'Expand',
-    'stage-supply': 'Stage',
-    'stock-refill': 'StockSp',
-    'stage-refill': 'StageSp',
-    standby: 'Wait',
-    withdraw: 'Get',
-    store: 'Store'
-  };
+  const { getSourceSpotCount, getSourceBodyWorkCapacity,
+    reviewSourceStaffing, getSourceWorkerTargets } = createSourceStaffing({
+    Game, getRoomSources, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+    LOOK_CONSTRUCTION_SITES, OBSTACLE_OBJECT_TYPES, BODYPART_COST, CARRY,
+    MOVE, WORK, ENERGY_REGEN_TIME, HARVEST_POWER
+  });
+  const { getRoomStrategy } = createRoomStrategy({
+    Game, getRoomSources, getRoomStagePlan, FIND_STRUCTURES, FIND_MY_SPAWNS,
+    FIND_MY_STRUCTURES, STRUCTURE_ROAD, STRUCTURE_TOWER
+  });
+  const { findMinerStation, getSource2TunnelSite } = createSourcePositions({
+    getRoomSources, getRoomSites, LOOK_STRUCTURES, LOOK_CREEPS,
+    OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD, STRUCTURE_RAMPART,
+    TERRAIN_MASK_WALL
+  });
+  const { updateOutpostStatus } = createOutpostStatus({
+    Game, deriveRoomStatus, getRoomSources, getRoomStructures,
+    STRUCTURE_CONTAINER, RESOURCE_ENERGY, FIND_DROPPED_RESOURCES,
+    FIND_MY_CONSTRUCTION_SITES
+  });
   const { moveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
     FIND_MY_CREEPS, STRUCTURE_ROAD, OK, ERR_INVALID_TARGET });
-  for (const name in Memory.creeps) {
-    if (Game.creeps[name]) continue;
-    const memory = Memory.creeps[name] || {};
-    const role = shortRoles[memory.role] || memory.role || 'W';
-    const task = shortTasks[memory.lastTask || memory.task] ||
-      memory.lastTask || memory.task || 'Idle';
-    const roomName = memory.lastRoom || memory.home || '?';
-    const reason = memory.retired
-      ? 'RETIRED'
-      : memory.lastTtl <= 1 ? 'EXPIRED' : 'DIED';
-    console.log(`[${Game.time}] ${reason} ${shortCreepName(name)} ` +
-      `${role}/${task} in ${roomName}`);
-    delete Memory.creeps[name];
-  }
-  const hasWorkParts = creep => creep && creep.getActiveBodyparts(WORK) > 0;
-  const getRemoteReplacementLead = creep => {
-    if (!creep) return Infinity;
-    const homeRoomName = creep.memory.remoteHome || creep.memory.home ||
-      creep.room.name;
-    const targetRoomName = creep.memory.remoteRoom || creep.room.name;
-    const route = Game.map.findRoute(homeRoomName, targetRoomName);
-    const roomTransitions = Array.isArray(route) ? route.length : 1;
-    // Include spawning, the cross-room trip, traffic, and time waiting for the
-    // spawn behind another already-requested specialist.
-    return creep.body.length * CREEP_SPAWN_TIME + 150 +
-      roomTransitions * 75;
-  };
-  const hasRemoteReplacementLife = creep => creep &&
-    (creep.spawning || creep.ticksToLive > getRemoteReplacementLead(creep));
-  const hasLocalReplacementLife = creep => creep &&
-    (creep.spawning || creep.ticksToLive >
-      creep.body.length * CREEP_SPAWN_TIME + 50);
-  const findMinerStation = (room, source, container, reserved, ignoreCreep, preferred) => {
-    // Use a single walkable tile within range one of both the source and container.
-    const terrain = room.getTerrain();
-    const isAvailable = (x, y) => {
-      if (x < 0 || x > 49 || y < 0 || y > 49 ||
-          source.pos.getRangeTo(x, y) > 1 || container.pos.getRangeTo(x, y) > 1 ||
-          (x === source.pos.x && y === source.pos.y)) return false;
-      const key = `${x}:${y}`;
-      if (reserved[key]) return false;
-      const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
-      const completedRoad = tileStructures.some(structure =>
-        structure.structureType === STRUCTURE_ROAD);
-      if (terrain.get(x, y) === TERRAIN_MASK_WALL && !completedRoad) {
-        return false;
-      }
-      const blocked = tileStructures.some(structure =>
-        OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
-        !(structure.structureType === STRUCTURE_RAMPART &&
-          (structure.my || structure.isPublic)));
-      if (blocked) return false;
-      return !room.lookForAt(LOOK_CREEPS, x, y)
-        .some(creep => creep.name !== ignoreCreep);
-    };
-
-    if (preferred && Number.isInteger(preferred.x) &&
-        Number.isInteger(preferred.y) &&
-        isAvailable(preferred.x, preferred.y)) return preferred;
-    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-        if (x === source.pos.x && y === source.pos.y) continue;
-        if (isAvailable(x, y)) return { x, y };
-      }
-    }
-    return null;
-  };
-  const getSource2TunnelSite = room => {
-    const source = getRoomSources(room)[1];
-    if (!source) return null;
-    return getRoomSites(room).filter(site =>
-      site.structureType === STRUCTURE_ROAD &&
-        site.progressTotal > 300 && source.pos.getRangeTo(site) <= 2
-    ).sort((a, b) => source.pos.getRangeTo(a) -
-      source.pos.getRangeTo(b))[0] || null;
-  };
-  const roomSituationCache = {};
-  const getRoomSituation = room => {
-    const cached = roomSituationCache[room.name];
-    if (cached) return cached;
-    const sources = getRoomSources(room);
-    const slowInventory = getSlowWorkInventory(room);
-    const containers = getRoomStructures(room).filter(structure =>
-      structure.structureType === STRUCTURE_CONTAINER &&
-        sources.some(source => source.pos.getRangeTo(structure) <= 2)
-    );
-    const bufferRatios = containers.map(container => {
-      const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
-      return container.store[RESOURCE_ENERGY] / capacity;
-    });
-    const bufferRatio = bufferRatios.length
-      ? Math.max(...bufferRatios)
-      : 0;
-    const storedSourceEnergy = containers.reduce((total, container) =>
-      total + container.store[RESOURCE_ENERGY], 0);
-    const controllerContainers = getRoomStructures(room).filter(structure =>
-      structure.structureType === STRUCTURE_CONTAINER && room.controller &&
-      structure.pos.getRangeTo(room.controller) <= 3);
-    const controllerBufferStored = controllerContainers.reduce(
-      (total, container) => total + container.store[RESOURCE_ENERGY], 0);
-    const controllerBufferCapacity = controllerContainers.reduce(
-      (total, container) => total +
-        container.store.getCapacity(RESOURCE_ENERGY), 0);
-    const controllerBufferRatio = controllerBufferCapacity > 0
-      ? controllerBufferStored / controllerBufferCapacity : 0;
-    const controllerWorkSpots = controllerContainers.reduce(
-      (total, container) => {
-        const terrain = room.getTerrain();
-        let spots = 0;
-        for (let x = container.pos.x - 1; x <= container.pos.x + 1; x++) {
-          for (let y = container.pos.y - 1; y <= container.pos.y + 1; y++) {
-            if (x < 1 || x > 48 || y < 1 || y > 48 ||
-                x === container.pos.x && y === container.pos.y ||
-                terrain.get(x, y) === TERRAIN_MASK_WALL ||
-                room.controller.pos.getRangeTo(x, y) > 3) continue;
-            const blocked = room.lookForAt(LOOK_STRUCTURES, x, y)
-              .some(structure => OBSTACLE_OBJECT_TYPES.includes(
-                structure.structureType) &&
-                !(structure.structureType === STRUCTURE_RAMPART &&
-                  (structure.my || structure.isPublic)));
-            if (!blocked) spots++;
-          }
-        }
-        return total + spots;
-      }, 0);
-    const currentUpgraders = Object.values(Game.creeps).filter(creep =>
-      creep.memory.home === room.name && creep.memory.role === 'upgrader' &&
-      (creep.spawning || hasLocalReplacementLife(creep))).length;
-    // Long source routes need more than the static carrier floor. Add up to
-    // three local haulers while source buffers are materially backed up.
-    const haulingSurge = bufferRatio >= 0.75
-      ? Math.min(3, Math.ceil(storedSourceEnergy / 1000))
-      : bufferRatio >= 0.5 ? 1 : 0;
-    const droppedEnergy = room.find(FIND_DROPPED_RESOURCES, {
-      filter: resource => resource.resourceType === RESOURCE_ENERGY
-    }).reduce((total, resource) => total + resource.amount, 0);
-    const energyRatio = room.energyCapacityAvailable > 0
-      ? room.energyAvailable / room.energyCapacityAvailable
-      : 0;
-    const sites = slowInventory.sites.filter(site =>
-      !roadsPaused(room) ||
-        site.structureType !== STRUCTURE_ROAD
-    );
-    const buildRemaining = sites.reduce((total, site) =>
-      total + site.progressTotal - site.progress, 0);
-    const repairStructures = slowInventory.structures.filter(structure =>
-      structure.hitsMax > 0 &&
-        (structure.my || structure.structureType === STRUCTURE_CONTAINER) &&
-        (!roadsPaused(room) || structure.structureType !== STRUCTURE_ROAD) &&
-        structure.structureType !== STRUCTURE_WALL &&
-        structure.structureType !== STRUCTURE_RAMPART
-    );
-    const repairCrisis = repairStructures.some(structure =>
-      structure.hits < structure.hitsMax * 0.35);
-    const activeRemotePlans = [room.memory.leftSurvey,
-      room.memory.southSurvey, room.memory.southwestSurvey]
-      .filter(plan => plan && plan.active && plan.targetRoom);
-    const remoteRoomsWithConstruction = activeRemotePlans.filter(plan => {
-      const remoteRoom = Game.rooms[plan.targetRoom];
-      return remoteRoom && remoteRoom.find(FIND_MY_CONSTRUCTION_SITES).length;
-    }).length;
-    const activeRemoteSources = activeRemotePlans.reduce((total, plan) => {
-      if (Array.isArray(plan.remoteWorkNeeds) && plan.remoteWorkNeeds.length) {
-        return total + plan.remoteWorkNeeds.length;
-      }
-      const remoteRoom = Game.rooms[plan.targetRoom];
-      return total + (remoteRoom ? remoteRoom.find(FIND_SOURCES).length :
-        Math.max(1, plan.remoteMinerTarget || 1));
-    }, 0);
-    const sourceDistances = sources.map(source => {
-      const spawn = room.find(FIND_MY_SPAWNS)[0];
-      return spawn ? spawn.pos.getRangeTo(source) : 15;
-    });
-    const maxWorkPerBody = getSourceBodyWorkCapacity(room);
-    const efficientSourceWorkers = sources.reduce((total, source) => {
-      const requiredWork = Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER);
-      return total + Math.max(1, Math.ceil(requiredWork / maxWorkPerBody));
-    }, 0);
-    const sourceWorkSpots = sources.reduce((total, source) =>
-      total + getSourceSpotCount(room, source), 0);
-    const learnedSourceWorkers = sources.reduce((total, source) => {
-      const stats = room.memory.sourceMiningStats &&
-        room.memory.sourceMiningStats[source.id];
-      return total + Math.max(1, stats && stats.targetMiners || 1);
-    }, 0);
-    const construction = sites.reduce((summary, site) => {
-      summary[site.structureType] = (summary[site.structureType] || 0) + 1;
-      return summary;
-    }, { remaining: buildRemaining });
-    const policy = derivePopulationPolicy({
-      rcl: room.controller && room.controller.level,
-      controllerOwned: Boolean(room.controller && room.controller.my),
-      controllerTicks: room.controller && room.controller.ticksToDowngrade,
-      spawnCount: room.find(FIND_MY_SPAWNS).length,
-      sourceCount: sources.length,
-      efficientSourceWorkers,
-      learnedSourceWorkers,
-      sourceWorkSpots,
-      sourceContainerCount: containers.length,
-      averageSourceDistance: sourceDistances.length
-        ? sourceDistances.reduce((sum, value) => sum + value, 0) /
-          sourceDistances.length
-        : 15,
-      energyRatio,
-      bufferRatio,
-      storedEnergy: getRoomStructures(room).reduce((total, structure) =>
-        total + (structure.store && structure.store[RESOURCE_ENERGY] || 0), 0),
-      storedSourceEnergy,
-      controllerBufferRatio,
-      controllerBufferStored,
-      controllerWorkSpots,
-      currentUpgraders,
-      droppedEnergy,
-      extensionCount: getRoomStructures(room).filter(structure =>
-        structure.structureType === STRUCTURE_EXTENSION && structure.my).length,
-      energyConsumerCount: getRoomStructures(room).filter(structure =>
-        structure.my && (structure.structureType === STRUCTURE_SPAWN ||
-          structure.structureType === STRUCTURE_EXTENSION)).length,
-      construction,
-      repair: {
-        critical: repairCrisis,
-        remaining: repairStructures.reduce((total, structure) =>
-          total + Math.max(0, structure.hitsMax - structure.hits), 0)
-      },
-      blockedSourceSite: Boolean(getSource2TunnelSite(room)),
-      containerImbalance: bufferRatios.length >= 2
-        ? Math.max(...bufferRatios) - Math.min(...bufferRatios)
-        : 0,
-      activeRemoteRooms: activeRemotePlans.length,
-      activeRemoteSources,
-      averageRemoteDistance: activeRemotePlans.length > 1 ? 40 : 25,
-      remoteRoomsWithConstruction
-    });
-    const targets = Object.fromEntries(Object.entries(policy.roles)
-      .map(([name, staffing]) => [name, staffing.desired]));
-    // Preserve the surge signal while the policy migration is live. It can
-    // raise desired hauling, but never replaces the policy's route floor.
-    targets.hauler = Math.max(targets.hauler,
-      policy.roles.hauler.min + haulingSurge);
-    const situation = {
-      mode: policy.mode,
-      targets,
-      policy,
-      signals: {
-        energyRatio,
-        bufferRatio,
-        controllerBufferRatio,
-        droppedEnergy,
-        buildRemaining,
-        controllerTicks: room.controller && room.controller.ticksToDowngrade
-      }
-    };
-    room.memory.populationPolicy = {
-      updated: Game.time,
-      mode: policy.mode,
-      roles: policy.roles,
-      remote: policy.remote,
-      totals: policy.totals
-    };
-    roomSituationCache[room.name] = situation;
-    return situation;
-  };
+  const { hasWorkParts, getRemoteReplacementLead,
+    hasRemoteReplacementLife, hasLocalReplacementLife } =
+    createCreepLifecycle({ Game, WORK, CREEP_SPAWN_TIME });
+  const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
+    createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
+  logDeadCreeps(Memory.creeps);
+  const { getRoomSituation } = createRoomSituation({
+    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources,
+    getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
+    getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
+    roadsPaused, STRUCTURE_CONTAINER, STRUCTURE_ROAD, STRUCTURE_WALL,
+    STRUCTURE_RAMPART, STRUCTURE_EXTENSION, STRUCTURE_SPAWN,
+    RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+    OBSTACLE_OBJECT_TYPES, FIND_DROPPED_RESOURCES,
+    FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, FIND_MY_SPAWNS,
+    ENERGY_REGEN_TIME, HARVEST_POWER
+  });
   const getBuilderTarget = room => getRoomSituation(room).targets.builder;
-  const getSourceSpotCount = (room, source) => {
-    const terrain = room.getTerrain();
-    let spots = 0;
-    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-        if (x < 0 || x > 49 || y < 0 || y > 49 ||
-            (x === source.pos.x && y === source.pos.y) ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
-        const blocked = room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
-          OBSTACLE_OBJECT_TYPES.includes(structure.structureType));
-        const blockedSite = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
-          .some(site => OBSTACLE_OBJECT_TYPES.includes(site.structureType));
-        if (!blocked && !blockedSite) spots++;
-      }
-    }
-    return spots;
-  };
-  const getSourceBodyWorkCapacity = room => {
-    const moveParts = room.energyCapacityAvailable >= 350 ? 2 : 1;
-    return Math.max(1, Math.floor(
-      (room.energyCapacityAvailable - BODYPART_COST[CARRY] -
-        moveParts * BODYPART_COST[MOVE]) / BODYPART_COST[WORK]));
-  };
-  const reviewSourceStaffing = (stats, source, options) => {
-    const minimum = Math.max(1, options.minimum || 1);
-    const maximum = Math.max(minimum, options.maximum || minimum);
-    if (!Number.isInteger(stats.targetMiners)) {
-      stats.targetMiners = Math.max(minimum,
-        Math.min(maximum, options.initialTarget || minimum));
-    }
-    if (!Number.isInteger(stats.windowStarted)) {
-      stats.windowStarted = Game.time;
-    }
-    if (stats.lastSampleTick !== Game.time) {
-      const elapsed = Number.isInteger(stats.lastSampleTick)
-        ? Math.max(1, Math.min(10, Game.time - stats.lastSampleTick))
-        : 1;
-      stats.lastSampleTick = Game.time;
-      stats.sampleTicks = (stats.sampleTicks || 0) + elapsed;
-      if (source.energy === 0 && source.ticksToRegeneration > 60) {
-        stats.earlyEmptyTicks = (stats.earlyEmptyTicks || 0) + elapsed;
-      }
-      if (source.energy >= source.energyCapacity * 0.9) {
-        stats.highEnergyTicks = (stats.highEnergyTicks || 0) + elapsed;
-      }
-      if (Number.isFinite(stats.lastEnergy) && stats.lastEnergy > 0 &&
-          source.energy > stats.lastEnergy + source.energyCapacity * 0.5) {
-        stats.regeneratedWithEnergy =
-          (stats.regeneratedWithEnergy || 0) + 1;
-      }
-      stats.lastEnergy = source.energy;
-    }
-    if (Game.time - stats.windowStarted >= 1000) {
-      const previous = stats.targetMiners;
-      const tooMany = (stats.earlyEmptyTicks || 0) >= 60;
-      const tooFew = (stats.regeneratedWithEnergy || 0) > 0 ||
-        (stats.highEnergyTicks || 0) >= 150;
-      if (tooMany && stats.targetMiners > minimum) stats.targetMiners--;
-      else if (tooFew && stats.targetMiners < maximum) stats.targetMiners++;
-      const result = stats.targetMiners < previous ? 'fewer' :
-        stats.targetMiners > previous ? 'more' : 'stable';
-      console.log(`[${Game.time}] ${options.label} 1000-tick mining review: ` +
-        `${result}, harvesters ${stats.targetMiners}/${maximum}, ` +
-        `early-empty ${stats.earlyEmptyTicks || 0}, ` +
-        `high-energy ${stats.highEnergyTicks || 0}, ` +
-        `partial-regens ${stats.regeneratedWithEnergy || 0}`);
-      stats.lastReviewTick = Game.time;
-      stats.windowStarted = Game.time;
-      stats.sampleTicks = 0;
-      stats.earlyEmptyTicks = 0;
-      stats.highEnergyTicks = 0;
-      stats.regeneratedWithEnergy = 0;
-    }
-    return Math.max(minimum, Math.min(maximum, stats.targetMiners));
-  };
-  const getSourceWorkerTargets = (room, sourceSpotCounts) => {
-    if (!room.memory.sourceMiningStats) room.memory.sourceMiningStats = {};
-    const maxWorkPerBody = getSourceBodyWorkCapacity(room);
-    const targets = {};
-    const sources = getRoomSources(room);
-    for (const source of sources) {
-      const stats = room.memory.sourceMiningStats[source.id] ||
-        { earlyExhaustions: 0 };
-      if (source.energy === 0 && source.ticksToRegeneration > 50) {
-        const cycle = Game.time + source.ticksToRegeneration;
-        if (stats.lastEarlyCycle !== cycle) {
-          stats.lastEarlyCycle = cycle;
-          stats.earlyExhaustions = (stats.earlyExhaustions || 0) + 1;
-        }
-      }
-      room.memory.sourceMiningStats[source.id] = stats;
-      const spots = sourceSpotCounts[source.id] || 0;
-      const sourceIndex = sources.indexOf(source);
-      const maximum = spots;
-      const requiredWork = Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER);
-      const efficientBodies = Math.max(1,
-        Math.ceil(requiredWork / maxWorkPerBody));
-      const initialTarget = Math.min(maximum, efficientBodies);
-      targets[source.id] = reviewSourceStaffing(stats, source, {
-        initialTarget,
-        minimum: Math.min(maximum, efficientBodies),
-        maximum,
-        label: `${room.name} S${sourceIndex + 1}`
-      });
-    }
-    return targets;
-  };
-  const workerLimitsCache = {};
-  const getWorkerLimits = room => {
-    if (workerLimitsCache[room.name]) return workerLimitsCache[room.name];
-    const savedPlan = room.memory.workerLimitsPlan;
-    if (savedPlan && savedPlan.result &&
-        Game.time - (savedPlan.updated || 0) < 10) {
-      workerLimitsCache[room.name] = savedPlan.result;
-      return savedPlan.result;
-    }
-    // Count each usable source-adjacent tile once, assigning shared tiles to their nearest source.
-    const sources = getRoomSources(room);
-    const spotOwners = {};
-    const spotDistances = {};
-    const terrain = room.getTerrain();
-    for (const source of sources) {
-      for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-        for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-          if (x === source.pos.x && y === source.pos.y || x < 0 || x > 49 ||
-              y < 0 || y > 49) continue;
-          const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
-          const completedTunnelRoad = tileStructures.some(structure =>
-            structure.structureType === STRUCTURE_ROAD);
-          if (terrain.get(x, y) === TERRAIN_MASK_WALL &&
-              !completedTunnelRoad) continue;
-          const blocked = tileStructures.some(structure =>
-            OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
-            !(structure.structureType === STRUCTURE_RAMPART &&
-              (structure.my || structure.isPublic)));
-          const blockedSite = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).some(site =>
-            OBSTACLE_OBJECT_TYPES.includes(site.structureType));
-          const key = `${x}:${y}`;
-          if (blocked || blockedSite) continue;
-          const distance = source.pos.getRangeTo(x, y);
-          if (spotDistances[key] === undefined || distance < spotDistances[key]) {
-            spotOwners[key] = source.id;
-            spotDistances[key] = distance;
-          }
-        }
-      }
-    }
-    const sourceSpotCounts = Object.fromEntries(sources.map(source => [source.id, 0]));
-    for (const sourceId of Object.values(spotOwners)) sourceSpotCounts[sourceId]++;
-    const sourceSpotTotal = Object.values(sourceSpotCounts)
-      .reduce((total, count) => total + count, 0);
-    const minerLimit = Math.min(20, sourceSpotTotal);
-    const sourceWorkerTargets = getSourceWorkerTargets(room, sourceSpotCounts);
-    const sourceWorkerTargetTotal = Object.values(sourceWorkerTargets)
-      .reduce((total, count) => total + count, 0);
-    const situation = getRoomSituation(room);
-    const targets = situation.targets;
-    const roles = situation.policy.roles;
-    const localWorkerMinimum = roles.source.min + roles.builder.min +
-      roles.fixer.min + roles.upgrader.min + roles.hauler.min +
-      roles.refiller.min + roles.rebalancer.min + roles.digger.min;
-    const localWorkerDesired = sourceWorkerTargetTotal + targets.builder +
-      targets.fixer + targets.upgrader + targets.hauler + targets.refiller +
-      targets.rebalancer + targets.digger;
-    // Every actively worked remote room adds its own permanent workforce to
-    // the home room's floor. Remote miners/builders/haulers must not displace
-    // the local roster just because they share the same spawn.
-    const countedRemoteRooms = new Set();
-    let remoteWorkerMinimum = 0;
-    let remoteWorkerDesired = 0;
-    for (const plan of Object.values(room.memory)) {
-      if (!plan || typeof plan !== 'object' || !plan.active ||
-          !plan.targetRoom || countedRemoteRooms.has(plan.targetRoom)) continue;
-      countedRemoteRooms.add(plan.targetRoom);
-      const needs = Array.isArray(plan.remoteWorkNeeds)
-        ? plan.remoteWorkNeeds : [];
-      const remoteMiners = needs.length > 0
-        ? needs.reduce((total, need) => total +
-          Math.max(1, need.minMiners || 0), 0)
-        : (plan.remoteMinerTarget || 1);
-      const remoteHaulerMinimum = Math.max(1, needs.length || 1);
-      const remoteBuilders = plan.remoteBuilderTarget || 0;
-      remoteWorkerMinimum += remoteMiners + remoteHaulerMinimum +
-        Math.min(1, remoteBuilders);
-      remoteWorkerDesired += remoteMiners +
-        Math.max(remoteHaulerMinimum, plan.remoteHaulerTarget || 0) +
-        remoteBuilders;
-    }
-    const minimumWorkerLimit = localWorkerMinimum + remoteWorkerMinimum;
-    const desiredWorkerLimit = Math.max(minimumWorkerLimit,
-      localWorkerDesired + remoteWorkerDesired);
-    room.memory.workerTarget = desiredWorkerLimit;
-    room.memory.populationRoutingVersion = 'state-policy-v4';
-    const congestionCount = getRoomCreeps(room).filter(creep =>
-      (creep.memory.navStuck || 0) >= 2 &&
-      creep.memory.navLastTick >= Game.time - 1).length;
-    room.memory.congestionCount = congestionCount;
-    const result = {
-      sourceSpotCounts,
-      sourceWorkerTargets,
-      sourceWorkerTargetTotal,
-      sourceSpotTotal,
-      minerLimit,
-      localWorkerMinimum,
-      remoteWorkerMinimum,
-      minimumWorkerLimit,
-      workerLimit: desiredWorkerLimit
-    };
-    workerLimitsCache[room.name] = result;
-    room.memory.workerLimitsPlan = { updated: Game.time, result };
-    return result;
-  };
-  // Re-evaluate the earliest unmet gate so rooms advance or regress as conditions change.
-  const getRoomStrategy = room => {
-    const level = room.controller ? room.controller.level : 0;
-    const sources = getRoomSources(room);
-    const roads = room.find(FIND_STRUCTURES)
-      .filter(structure => structure.structureType === STRUCTURE_ROAD);
-    const roadTargets = [
-      ...room.find(FIND_MY_SPAWNS),
-      ...(room.controller ? [room.controller] : []),
-      ...sources
-    ];
-    const roadAccess = roadTargets.filter(target =>
-      roads.some(road => target.pos.getRangeTo(road) <= 1)).length;
-    const towerCount = room.find(FIND_MY_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_TOWER
-    }).length;
-    const hasStorage = Boolean(room.storage && room.storage.my);
-    const ownedSpawnRooms = new Set(Object.values(Game.spawns)
-      .map(spawn => spawn.room.name)).size;
-    const hasGclSlot = Boolean(Game.gcl && Game.gcl.level > ownedSpawnRooms);
-    let mode;
-    let gate;
-    let objectives;
-    let progress;
-
-    if (level < 3) {
-      mode = 'setup';
-      gate = 'reach controller level 3';
-      objectives = 'establish energy buffers, build extensions, and raise RCL';
-      progress = `RCL ${level}/3`;
-    } else if (level < 5) {
-      mode = 'development';
-      gate = 'reach controller level 5';
-      objectives = 'build extensions, raise RCL, fill containers, and repair';
-      progress = `RCL ${level}/5`;
-    } else if (roadAccess < roadTargets.length) {
-      mode = 'roads';
-      gate = 'build road access beside every spawn, controller, and source';
-      objectives = 'complete core road access while maintaining energy and RCL';
-      progress = `road access ${roadAccess}/${roadTargets.length}`;
-    } else if (level < 6 || towerCount < 1 || !hasStorage) {
-      mode = 'infrastructure';
-      gate = 'reach RCL 6 and build a tower and storage';
-      objectives = 'build core infrastructure and repair damaged structures';
-      progress = `RCL ${level}/6, tower ${towerCount ? 'ready' : 'needed'}, storage ${hasStorage ? 'ready' : 'needed'}`;
-    } else if (level < 7 || !hasGclSlot) {
-      mode = 'remote-sources';
-      gate = 'reach RCL 7 and have an available GCL room slot';
-      objectives = 'prepare additional energy sources and maintain the core room';
-      progress = `RCL ${level}/7, GCL slot ${hasGclSlot ? 'ready' : 'needed'}`;
-    } else {
-      mode = 'expansion-ready';
-      gate = 'claim and establish another room';
-      objectives = 'expand, then run setup gates in the new room';
-      progress = 'RCL and GCL gates met';
-    }
-
-    const strategy = { mode, gate, objectives, progress, updated: Game.time };
-    room.memory.strategy = strategy;
-    return strategy;
-  };
-  // Pack extensions in adjacent two-wide columns. Every pair borders a
-  // reserved access aisle, so haulers can still reach every structure.
-  const isExtensionClusterTile = (cluster, x, y) => {
-    const dx = x - cluster.x;
-    const dy = y - cluster.y;
-    return Math.max(Math.abs(dx), Math.abs(dy)) <= 3 &&
-      (dx + 3) % 3 !== 2;
-  };
-  // Keep up to three extension sites active whenever the RCL unlocks more.
-  // Roads and remote construction must not block core room capacity upgrades.
-  const placeExtensionSite = room => {
-    if (!room.controller || !room.controller.my) return false;
-    const extensionLimit = CONTROLLER_STRUCTURES[STRUCTURE_EXTENSION][room.controller.level] || 0;
-    const builtExtensions = room.find(FIND_MY_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_EXTENSION
-    }).length;
-    const extensionSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_EXTENSION
+  const { getWorkerLimits } = createWorkerLimits({
+    Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
+    getRoomSituation, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
+    OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD, STRUCTURE_RAMPART,
+    TERRAIN_MASK_WALL
+  });
+  const { getRemoteHaulReadiness, getRemoteHaulerTarget } =
+    createRemoteHauling({
+      Game, PathFinder, buildBody, FIND_SOURCES, FIND_STRUCTURES,
+      FIND_MY_SPAWNS, STRUCTURE_CONTAINER, RESOURCE_ENERGY, CARRY,
+      CARRY_CAPACITY, ENERGY_REGEN_TIME
     });
-    const extensionCount = builtExtensions + extensionSites.length;
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    if (!spawn) return false;
-    const terrain = room.getTerrain();
-    const sources = getRoomSources(room);
-    const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-    const usableExtensionTile = (x, y) => x > 1 && x < 48 && y > 1 && y < 48 &&
-      terrain.get(x, y) !== TERRAIN_MASK_WALL &&
-      room.controller.pos.getRangeTo(x, y) >= 2 &&
-      !sources.some(source => source.pos.getRangeTo(x, y) < 2) &&
-      !isSingleLaneRoadPosition(room, { pos: { x, y } }) &&
-      room.lookForAt(LOOK_STRUCTURES, x, y).length === 0 &&
-      room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length === 0;
-    let cluster = room.memory.extensionCluster;
-    if (!cluster || cluster.version !== 'low-traffic-v1') {
-      const anchors = [];
-      for (let x = spawn.pos.x - 9; x <= spawn.pos.x + 9; x++) {
-        for (let y = spawn.pos.y - 9; y <= spawn.pos.y + 9; y++) {
-          const range = spawn.pos.getRangeTo(x, y);
-          if (range < 6 || range > 9 || x < 4 || x > 45 || y < 4 || y > 45) {
-            continue;
-          }
-          let usable = 0;
-          let traffic = 0;
-          let corridor = 0;
-          for (let dx = -2; dx <= 2; dx++) {
-            for (let dy = -2; dy <= 2; dy++) {
-              const tileX = x + dx;
-              const tileY = y + dy;
-              if (!isExtensionClusterTile({ x, y }, tileX, tileY)) continue;
-              if (usableExtensionTile(tileX, tileY)) usable++;
-              traffic += trafficTiles[`${tileX}:${tileY}`] || 0;
-              if (isSingleLaneRoadPosition(room,
-                { pos: { x: tileX, y: tileY } })) corridor++;
-            }
-          }
-          if (usable < 10) continue;
-          const routeLength = room.findPath(spawn.pos,
-            new RoomPosition(x, y, room.name), {
-              ignoreCreeps: true,
-              maxOps: 2000
-            }).length || 100;
-          anchors.push({
-            x,
-            y,
-            score: traffic * 20 + corridor * 200 +
-              Math.abs(routeLength - 7) * 5 - usable
-          });
-        }
-      }
-      anchors.sort((a, b) => a.score - b.score ||
-        a.x - b.x || a.y - b.y);
-      if (anchors.length) {
-        cluster = {
-          x: anchors[0].x,
-          y: anchors[0].y,
-          version: 'low-traffic-v1',
-          selected: Game.time
-        };
-        room.memory.extensionCluster = cluster;
-        console.log(`[${Game.time}] ${room.name} extension cluster -> ` +
-          `${cluster.x},${cluster.y}`);
-      }
-    }
-    if (extensionCount >= extensionLimit || !cluster) return false;
-    if (extensionSites.length >= Math.min(3,
-      extensionLimit - builtExtensions)) return false;
-
-    const candidates = [];
-    for (let radius = 0; radius <= 3; radius++) {
-      for (let x = cluster.x - radius; x <= cluster.x + radius; x++) {
-        for (let y = cluster.y - radius; y <= cluster.y + radius; y++) {
-          if (Math.max(Math.abs(x - cluster.x), Math.abs(y - cluster.y)) !==
-              radius || !isExtensionClusterTile(cluster, x, y) ||
-              !usableExtensionTile(x, y) ||
-              room.lookForAt(LOOK_CREEPS, x, y).length > 0) continue;
-          candidates.push({
-            x,
-            y,
-            score: (trafficTiles[`${x}:${y}`] || 0) * 20 +
-              radius * 2 + x / 100 + y / 10000
-          });
-        }
-      }
-    }
-
-    candidates.sort((a, b) => a.score - b.score);
-    for (const candidate of candidates) {
-      const result = room.createConstructionSite(
-        candidate.x, candidate.y, STRUCTURE_EXTENSION);
-      if (result === OK) {
-        console.log(`[${Game.time}] Placed extension site in ${room.name} at ${candidate.x},${candidate.y}`);
-        return true;
-      }
-    }
-    return false;
-  };
-  const getContainerPurpose = (room, position) => {
-    const source = getRoomSources(room).find(candidate =>
-      // Range-two overflow buffers can still be reached from a harvesting
-      // tile adjacent to the source and are part of the same logistics lane.
-      candidate.pos.getRangeTo(position) <= 2);
-    if (source) return `source:${source.id}`;
-    if (room.controller && room.controller.pos.getRangeTo(position) <= 3) {
-      return 'controller';
-    }
-    return null;
-  };
-  const isExtensionRefillBuffer = (room, structure) => {
-    if (!structure || structure.structureType !== STRUCTURE_CONTAINER) {
-      return false;
-    }
-    const plan = room.memory.extensionContainerPlan;
-    if (plan && structure.pos.x === plan.x &&
-        structure.pos.y === plan.y) return true;
-    const cluster = room.memory.extensionCluster;
-    if (!cluster || structure.pos.getRangeTo(cluster.x, cluster.y) > 3) {
-      return false;
-    }
-    return !getRoomSources(room).some(source =>
-      source.pos.getRangeTo(structure) <= 2) &&
-      (!room.controller || structure.pos.getRangeTo(room.controller) > 3);
-  };
-  const placeSourceContainerSite = room => {
-    if (!room.controller || !room.controller.my || room.controller.level < 2) {
-      return false;
-    }
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    const terrain = room.getTerrain();
-    for (const source of getRoomSources(room)) {
-      const hasContainer = source.pos.findInRange(FIND_STRUCTURES, 2, {
-        filter: structure => structure.structureType === STRUCTURE_CONTAINER
-      }).length > 0;
-      const hasContainerSite = source.pos.findInRange(FIND_MY_CONSTRUCTION_SITES, 2, {
-        filter: site => site.structureType === STRUCTURE_CONTAINER
-      }).length > 0;
-      if (hasContainer || hasContainerSite) continue;
-
-      const candidates = [];
-      for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-        for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-          if ((x === source.pos.x && y === source.pos.y) || x < 0 || x > 49 ||
-              y < 0 || y > 49 || terrain.get(x, y) === TERRAIN_MASK_WALL ||
-              room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-              room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
-          let coverage = 0;
-          for (let spotX = source.pos.x - 1; spotX <= source.pos.x + 1; spotX++) {
-            for (let spotY = source.pos.y - 1; spotY <= source.pos.y + 1; spotY++) {
-              if (spotX >= 0 && spotX <= 49 && spotY >= 0 && spotY <= 49 &&
-                  (spotX !== source.pos.x || spotY !== source.pos.y) &&
-                  terrain.get(spotX, spotY) !== TERRAIN_MASK_WALL &&
-                  Math.max(Math.abs(x - spotX), Math.abs(y - spotY)) <= 1) {
-                coverage++;
-              }
-            }
-          }
-          candidates.push({
-            x,
-            y,
-            coverage,
-            route: spawn ? room.findPath(spawn.pos,
-              new RoomPosition(x, y, room.name), {
-                ignoreCreeps: true,
-                maxOps: 2000
-              }).length || spawn.pos.getRangeTo(x, y) * 3 : 0,
-            swamp: terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 1 : 0
-          });
-        }
-      }
-      candidates.sort((a, b) => b.coverage - a.coverage ||
-        a.swamp - b.swamp || a.route - b.route);
-      for (const candidate of candidates) {
-        const result = room.createConstructionSite(
-          candidate.x, candidate.y, STRUCTURE_CONTAINER);
-        if (result === OK) {
-          console.log(`[${Game.time}] Placed source container site in ${room.name} at ${candidate.x},${candidate.y}`);
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-  const manageExtensionContainer = room => {
-    if (!room.controller || !room.controller.my ||
-        room.controller.level < 2 || !room.memory.extensionCluster) {
-      return false;
-    }
-    const cluster = room.memory.extensionCluster;
-    const structures = room.find(FIND_STRUCTURES);
-    const sites = room.find(FIND_MY_CONSTRUCTION_SITES);
-    const containers = structures.filter(structure =>
-      structure.structureType === STRUCTURE_CONTAINER);
-    const containerSites = sites.filter(site =>
-      site.structureType === STRUCTURE_CONTAINER);
-    const sources = getRoomSources(room);
-    const source2 = sources[1];
-
-    // S2 owns one source buffer only. Pending duplicates can be cancelled
-    // safely before construction; never destroy its completed primary buffer.
-    if (source2) {
-      const source2Containers = containers.filter(container =>
-        source2.pos.getRangeTo(container) <= 2)
-        .sort((a, b) => source2.pos.getRangeTo(a) -
-          source2.pos.getRangeTo(b));
-      const source2Sites = containerSites.filter(site =>
-        source2.pos.getRangeTo(site) <= 2);
-      if (source2Containers.length >= 1 && source2Sites.length > 0) {
-        const removed = source2Sites[0].remove();
-        if (removed === OK) {
-          console.log(`[${Game.time}] ${room.name} removed duplicate S2 ` +
-            `container site at ${source2Sites[0].pos.x},` +
-            `${source2Sites[0].pos.y}`);
-          return true;
-        }
-      }
-    }
-
-    const byExtensions = target =>
-      target.pos.getRangeTo(cluster.x, cluster.y) <= 3 &&
-      !sources.some(source => source.pos.getRangeTo(target) <= 2) &&
-      (!room.controller || target.pos.getRangeTo(room.controller) > 3);
-    if (containers.some(byExtensions) || containerSites.some(byExtensions)) {
-      return false;
-    }
-
-    const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
-      [room.controller.level] || 0;
-    if (containers.length + containerSites.length >= containerLimit) {
-      // Reclaim only an unfinished duplicate where that source already has a
-      // completed adjacent container. This preserves every completed buffer.
-      const redundantSite = containerSites.find(site => sources.some(source =>
-        source.pos.getRangeTo(site) <= 2 &&
-        containers.some(container =>
-          source.pos.getRangeTo(container) <= 1)));
-      if (!redundantSite || redundantSite.remove() !== OK) return false;
-      console.log(`[${Game.time}] ${room.name} reallocated unfinished ` +
-        `source container site at ${redundantSite.pos.x},` +
-        `${redundantSite.pos.y} to the extension cluster`);
-    }
-
-    const terrain = room.getTerrain();
-    const extensions = structures.filter(structure =>
-      structure.structureType === STRUCTURE_EXTENSION && structure.my);
-    const candidates = [];
-    for (let x = cluster.x - 3; x <= cluster.x + 3; x++) {
-      for (let y = cluster.y - 3; y <= cluster.y + 3; y++) {
-        if (x < 1 || x > 48 || y < 1 || y > 48 ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            sources.some(source => source.pos.getRangeTo(x, y) <= 2) ||
-            room.controller.pos.getRangeTo(x, y) <= 3 ||
-            room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
-              structure.structureType !== STRUCTURE_ROAD &&
-              structure.structureType !== STRUCTURE_RAMPART) ||
-            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
-        const coverage = extensions.filter(extension =>
-          extension.pos.getRangeTo(x, y) <= 1).length;
-        if (coverage < 2) continue;
-        candidates.push({
-          x,
-          y,
-          coverage,
-          clusterTile: isExtensionClusterTile(cluster, x, y),
-          centerRange: Math.max(Math.abs(x - cluster.x),
-            Math.abs(y - cluster.y))
-        });
-      }
-    }
-    candidates.sort((a, b) =>
-      Number(a.clusterTile) - Number(b.clusterTile) ||
-      b.coverage - a.coverage ||
-      a.centerRange - b.centerRange || a.x - b.x || a.y - b.y);
-    for (const candidate of candidates) {
-      const result = room.createConstructionSite(candidate.x, candidate.y,
-        STRUCTURE_CONTAINER);
-      if (result === OK) {
-        room.memory.extensionContainerPlan = {
-          x: candidate.x,
-          y: candidate.y,
-          placed: Game.time
-        };
-        console.log(`[${Game.time}] ${room.name} extension container site ` +
-          `placed at ${candidate.x},${candidate.y}`);
-        return true;
-      }
-    }
-    return false;
-  };
-  const manageControllerContainer = room => {
-    if (!room.controller || !room.controller.my || room.controller.level < 2) {
-      return false;
-    }
-    const controllerContainer = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3
-    })[0];
-    const controllerSite = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_CONTAINER &&
-        site.pos.getRangeTo(room.controller) <= 3
-    })[0];
-    if (controllerContainer || controllerSite) {
-      room.memory.controllerContainerPlan = {
-        ready: Boolean(controllerContainer),
-        siteId: controllerSite && controllerSite.id,
-        containerId: controllerContainer && controllerContainer.id
-      };
-      return true;
-    }
-
-    const containers = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER
-    });
-    const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
-      [room.controller.level] || 0;
-    let plan = room.memory.controllerContainerPlan;
-    if (!plan || (!plan.retireContainerId && !plan.retired)) {
-      if (containers.length < containerLimit) {
-        plan = { retired: true, ready: false };
-      } else {
-        const essential = new Set(containers
-          .filter(container => getContainerPurpose(room, container.pos))
-          .map(container => container.id));
-        const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-        const excess = containers
-          .filter(container => !essential.has(container.id))
-          .sort((a, b) =>
-            (trafficTiles[`${a.pos.x}:${a.pos.y}`] || 0) -
-              (trafficTiles[`${b.pos.x}:${b.pos.y}`] || 0) ||
-            a.id.localeCompare(b.id));
-        if (!excess.length) return false;
-        plan = {
-          ready: false,
-          retired: false,
-          retireContainerId: excess[0].id,
-          retireX: excess[0].pos.x,
-          retireY: excess[0].pos.y
-        };
-        console.log(`[${Game.time}] ${room.name} draining excess container ` +
-          `${excess[0].id} at ${excess[0].pos.x},${excess[0].pos.y} ` +
-          `for controller container replacement`);
-      }
-      room.memory.controllerContainerPlan = plan;
-    }
-
-    const retiring = Game.getObjectById(plan.retireContainerId);
-    if (retiring) {
-      if (getContainerPurpose(room, retiring.pos)) {
-        delete plan.retireContainerId;
-        delete plan.drainCreep;
-        plan.retired = false;
-        console.log(`[${Game.time}] ${room.name} kept important container at ` +
-          `${retiring.pos.x},${retiring.pos.y}`);
-        return false;
-      }
-      if (retiring.store[RESOURCE_ENERGY] > 0) {
-        const currentDrainer = Game.creeps[plan.drainCreep];
-        const drainers = Object.values(Game.creeps)
-          .filter(creep => creep.memory.home === room.name &&
-            creep.memory.role === 'hauler' && !creep.spawning)
-          .sort((a, b) =>
-            b.store.getCapacity(RESOURCE_ENERGY) -
-              a.store.getCapacity(RESOURCE_ENERGY) ||
-            a.pos.getRangeTo(retiring) - b.pos.getRangeTo(retiring));
-        const emptyDrainer = drainers.find(creep =>
-          creep.store[RESOURCE_ENERGY] === 0);
-        if (emptyDrainer && currentDrainer !== emptyDrainer) {
-          plan.drainCreep = emptyDrainer.name;
-        } else if (!currentDrainer ||
-            currentDrainer.memory.role !== 'hauler') {
-          plan.drainCreep = drainers[0] && drainers[0].name;
-        }
-        return false;
-      }
-      const result = retiring.destroy();
-      if (result !== OK) return false;
-      plan.retired = true;
-      delete plan.retireContainerId;
-      delete plan.drainCreep;
-      console.log(`[${Game.time}] ${room.name} removed drained excess container ` +
-        `at ${plan.retireX},${plan.retireY}`);
-      return true;
-    }
-    if (!plan.retired) return false;
-
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    const terrain = room.getTerrain();
-    const candidates = [];
-    for (let x = room.controller.pos.x - 3;
-      x <= room.controller.pos.x + 3; x++) {
-      for (let y = room.controller.pos.y - 3;
-        y <= room.controller.pos.y + 3; y++) {
-        const range = room.controller.pos.getRangeTo(x, y);
-        if (x < 0 || x > 49 || y < 0 || y > 49 || range < 1 || range > 3 ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0 ||
-            room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
-              structure.structureType !== STRUCTURE_ROAD &&
-              structure.structureType !== STRUCTURE_RAMPART)) continue;
-        candidates.push({
-          x,
-          y,
-          score: (spawn ? room.findPath(spawn.pos,
-            new RoomPosition(x, y, room.name), {
-              ignoreCreeps: true,
-              maxOps: 2000
-            }).length || spawn.pos.getRangeTo(x, y) * 3 : 0) +
-            (terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 10 : 0)
-        });
-      }
-    }
-    candidates.sort((a, b) => a.score - b.score);
-    for (const candidate of candidates) {
-      const result = room.createConstructionSite(
-        candidate.x, candidate.y, STRUCTURE_CONTAINER);
-      if (result === OK) {
-        plan.siteX = candidate.x;
-        plan.siteY = candidate.y;
-        console.log(`[${Game.time}] ${room.name} controller container site ` +
-          `placed at ${candidate.x},${candidate.y}`);
-        return true;
-      }
-    }
-    return false;
-  };
-  const isRetiringContainer = (room, structure) =>
-    Boolean(room.memory.controllerContainerPlan &&
-      room.memory.controllerContainerPlan.retireContainerId === structure.id);
-  const getImportantRoadPaths = room => {
-    const spawn = room.find(FIND_MY_SPAWNS)
-      .slice()
-      .sort((a, b) => a.id.localeCompare(b.id))[0];
-    if (!spawn) return [];
-    const sources = getRoomSources(room);
-    const targets = [
-      ...sources.map(source => ({ label: 'source', object: source })),
-      ...(room.controller ? [{ label: 'controller', object: room.controller }] : []),
-      ...(room.storage ? [{ label: 'storage', object: room.storage }] : [])
-    ];
-    const signature = ['v2', spawn.id,
-      ...targets.map(target => target.object.id)].join(':');
-    const cached = room.memory.roadPlan;
-    if (cached && cached.signature === signature &&
-        Game.time - cached.updated < 1000 && Array.isArray(cached.paths)) {
-      return cached.paths;
-    }
-
-    const findPath = (origin, destination) => room.findPath(origin, destination, {
-      ignoreCreeps: true,
-      range: 1,
-      plainCost: 2,
-      swampCost: 10,
-      maxOps: 4000,
-      maxRooms: 1
-    }).map(step => ({ x: step.x, y: step.y }));
-    const paths = targets.map(target => ({
-      label: target.label,
-      targetId: target.object.id,
-      points: findPath(spawn.pos, target.object.pos)
-    }));
-    if (room.controller) {
-      for (const source of sources) {
-        paths.push({
-          label: 'source-controller',
-          targetId: room.controller.id,
-          sourceId: source.id,
-          points: findPath(source.pos, room.controller.pos)
-        });
-      }
-    }
-    const usablePaths = paths.filter(path => path.points.length > 0);
-    room.memory.roadPlan = { signature, updated: Game.time, paths: usablePaths };
-    return usablePaths;
-  };
-  const isSingleLaneRoadPosition = (room, target) => {
-    if (!target || !target.pos) return false;
-    return getImportantRoadPaths(room).some(path => path.points.some(point =>
-      point.x === target.pos.x && point.y === target.pos.y));
-  };
-  const heatmapRoadTileCache = {};
-  const getHeatmapRoadTiles = room => {
-    if (heatmapRoadTileCache[room.name]) {
-      return heatmapRoadTileCache[room.name];
-    }
-    const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-    const savedHotTiles = room.memory.traffic &&
-      room.memory.traffic.hotTiles;
-    const rankedTiles = Array.isArray(savedHotTiles)
-      ? savedHotTiles
-      : Object.entries(trafficTiles)
-        .filter(([, visits]) => visits >= 2)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 80);
-    const tiles = new Set(rankedTiles.map(([key]) => key));
-    heatmapRoadTileCache[room.name] = tiles;
-    return tiles;
-  };
-  const isHeatmapRoadPosition = (room, target) => target && target.pos &&
-    getHeatmapRoadTiles(room).has(`${target.pos.x}:${target.pos.y}`);
-  const updateTrafficHeatmap = room => {
-    if (!room.memory.traffic || !room.memory.traffic.tiles) {
-      room.memory.traffic = {
-        started: Game.time,
-        lastDecay: Game.time,
-        tiles: {}
-      };
-    }
-    const traffic = room.memory.traffic;
-    if (!Number.isInteger(traffic.started)) traffic.started = Game.time;
-    if (!Number.isInteger(traffic.lastDecay)) traffic.lastDecay = Game.time;
-    // Sample every other tick and weight the observation by two. This retains
-    // the same approximate heat while halving position-memory writes.
-    if (scheduledRoomTick(room, 2)) {
-      for (const creep of getRoomCreeps(room)) {
-        const previous = creep.memory.trafficPosition;
-        if (previous && previous.roomName === room.name &&
-            (previous.x !== creep.pos.x || previous.y !== creep.pos.y)) {
-          const key = `${creep.pos.x}:${creep.pos.y}`;
-          traffic.tiles[key] = (traffic.tiles[key] || 0) + 2;
-        }
-        creep.memory.trafficPosition = {
-          x: creep.pos.x,
-          y: creep.pos.y,
-          roomName: room.name
-        };
-      }
-    }
-
-    if (Game.time - traffic.lastDecay >= 1000) {
-      for (const key of Object.keys(traffic.tiles)) {
-        const decayed = Math.floor(traffic.tiles[key] / 2);
-        if (decayed > 0) traffic.tiles[key] = decayed;
-        else delete traffic.tiles[key];
-      }
-      traffic.lastDecay = Game.time;
-    }
-
-    // Only re-sort the full history every 25 ticks. A short period of visual
-    // staleness does not affect movement or jobs.
-    if (!Array.isArray(traffic.hotTiles) ||
-        Game.time - (traffic.hotTilesUpdated || 0) >= 25) {
-      traffic.hotTiles = Object.entries(traffic.tiles)
-        .filter(([, visits]) => visits >= 2)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 80);
-      traffic.hotTilesUpdated = Game.time;
-    }
-    const hotTiles = traffic.hotTiles;
-    const maximum = hotTiles.length ? hotTiles[0][1] : 1;
-    // Forty visible cells preserve the useful traffic picture with half the
-    // visual calls. The full top-80 set remains available for road planning.
-    if (showTrafficHeatmap) {
-      for (const [key, visits] of hotTiles.slice(0, 40)) {
-        const [x, y] = key.split(':').map(Number);
-        const intensity = visits / maximum;
-        const fill = intensity >= 0.67 ? '#ff453a' :
-          intensity >= 0.34 ? '#ff9f0a' : '#ffd60a';
-        room.visual.circle(x, y, {
-          fill,
-          radius: 0.18 + intensity * 0.27,
-          opacity: 0.18 + intensity * 0.42,
-          stroke: 'transparent'
-        });
-      }
-    }
-    return traffic;
-  };
-  const drawRoadPlan = (room, paths, traffic, roadBudget) => {
-    for (const path of paths) {
-      const stroke = path.label === 'controller' ? '#64d2ff' :
-        path.label === 'source-controller' ? '#bf5af2' : '#30d158';
-      room.visual.poly(path.points.map(point => [point.x, point.y]), {
-        fill: 'transparent',
-        stroke,
-        strokeWidth: 0.08,
-        opacity: 0.28,
-        lineStyle: 'dashed'
-      });
-    }
-    const samples = Object.values(traffic.tiles)
-      .reduce((total, visits) => total + visits, 0);
-    let roadStatus = room.memory.roadVisualStatus;
-    if (!roadStatus || Game.time - (roadStatus.updated || 0) >= 25) {
-      roadStatus = {
-        updated: Game.time,
-        roadCount: room.find(FIND_STRUCTURES, {
-          filter: structure => structure.structureType === STRUCTURE_ROAD
-        }).length,
-        roadSiteCount: room.find(FIND_MY_CONSTRUCTION_SITES, {
-          filter: site => site.structureType === STRUCTURE_ROAD
-        }).length
-      };
-      room.memory.roadVisualStatus = roadStatus;
-    }
-    room.visual.text(
-      `traffic ${samples} | roads ${roadStatus.roadCount}+` +
-        `${roadStatus.roadSiteCount}/${roadBudget}`,
-      1, 1,
-      { align: 'left', color: '#ffffff', font: 0.55, opacity: 0.75 }
-    );
-  };
-  const getRoadBudget = (room, paths, controllerLevel) => {
-    const cached = room.memory.roadBudgetCache;
-    const planUpdated = room.memory.roadPlan && room.memory.roadPlan.updated;
-    if (cached && cached.controllerLevel === controllerLevel &&
-        cached.planUpdated === planUpdated &&
-        Game.time - cached.updated < 100) return cached.value;
-    const strategicTiles = new Set();
-    for (const path of paths) {
-      for (const point of path.points) {
-        strategicTiles.add(`${point.x}:${point.y}`);
-      }
-    }
-    const offNetworkRoads = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_ROAD &&
-        !strategicTiles.has(`${structure.pos.x}:${structure.pos.y}`)
-    }).length;
-    const dottedNetworkMinimum = strategicTiles.size + offNetworkRoads;
-    const value = Math.max(50, controllerLevel * 10,
-      dottedNetworkMinimum + 25);
-    room.memory.roadBudgetCache = {
-      value,
-      updated: Game.time,
-      controllerLevel,
-      planUpdated
-    };
-    return value;
-  };
-  const placeRoadSite = (room, paths, traffic, roadBudget) => {
-    if (!room.controller || !room.controller.my || room.controller.level < 2) {
-      return false;
-    }
-    const roads = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_ROAD
-    });
-    const roadSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_ROAD
-    });
-    const builtRoadTiles = new Set(roads.map(road =>
-      `${road.pos.x}:${road.pos.y}`));
-    const queuedRoadTiles = new Set(roadSites.map(site =>
-      `${site.pos.x}:${site.pos.y}`));
-    const budgetRemaining = roadBudget - roads.length - roadSites.length;
-    const batchLimit = Math.min(2 - roadSites.length, budgetRemaining);
-    if (batchLimit <= 0) return false;
-
-    const corridorUses = {};
-    for (const path of paths) {
-      for (const point of path.points) {
-        const key = `${point.x}:${point.y}`;
-        corridorUses[key] = (corridorUses[key] || 0) + 1;
-      }
-    }
-    const terrain = room.getTerrain();
-    const candidates = [];
-    const candidateKeys = new Set(Object.keys(corridorUses));
-    // The heatmap is now an input to construction, not just a visual. Limit
-    // it to the hottest established traffic so occasional detours do not
-    // become permanent roads.
-    Object.entries(traffic.tiles)
-      .filter(([, visits]) => visits >= 10)
-      .filter(([key]) => {
-        const [x, y] = key.split(':').map(Number);
-        return x > 0 && x < 49 && y > 0 && y < 49 &&
-          !builtRoadTiles.has(key) && !queuedRoadTiles.has(key) &&
-          terrain.get(x, y) !== TERRAIN_MASK_WALL &&
-          room.lookForAt(LOOK_STRUCTURES, x, y).length === 0 &&
-          room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length === 0;
-      })
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 60)
-      .forEach(([key]) => candidateKeys.add(key));
-    for (const key of candidateKeys) {
-      const visits = traffic.tiles[key] || 0;
-      const corridorCount = corridorUses[key] || 0;
-      const [x, y] = key.split(':').map(Number);
-      if (x <= 0 || x >= 49 || y <= 0 || y >= 49 ||
-          builtRoadTiles.has(key) || queuedRoadTiles.has(key) ||
-          terrain.get(x, y) === TERRAIN_MASK_WALL ||
-          room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-          room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
-      const swampBonus = terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 50 : 0;
-      const score = visits * 20 + corridorCount * 40 + swampBonus;
-      candidates.push({ x, y, visits, corridorCount, score });
-    }
-    candidates.sort((a, b) => b.score - a.score);
-    let placed = 0;
-    for (const candidate of candidates) {
-      const key = `${candidate.x}:${candidate.y}`;
-      const roadExists = room.lookForAt(LOOK_STRUCTURES,
-        candidate.x, candidate.y).some(structure =>
-        structure.structureType === STRUCTURE_ROAD);
-      const roadQueued = room.lookForAt(LOOK_CONSTRUCTION_SITES,
-        candidate.x, candidate.y).some(site =>
-        site.structureType === STRUCTURE_ROAD);
-      if (builtRoadTiles.has(key) || queuedRoadTiles.has(key) ||
-          roadExists || roadQueued) continue;
-      const result = room.createConstructionSite(
-        candidate.x, candidate.y, STRUCTURE_ROAD);
-      if (result === OK) {
-        queuedRoadTiles.add(key);
-        console.log(`[${Game.time}] Placed road site in ${room.name} at ` +
-          `${candidate.x},${candidate.y} (heat ${candidate.visits}, ` +
-          `corridor ${candidate.corridorCount})`);
-        placed++;
-        if (placed >= batchLimit) break;
-      }
-    }
-    return placed > 0;
-  };
+  const { updateEnergyWorkPhase } = createEnergyPhase({ Game, workerCost });
+  const { getImportantRoadPaths, isSingleLaneRoadPosition,
+    getHeatmapRoadTiles, isHeatmapRoadPosition, updateTrafficHeatmap,
+    drawRoadPlan, getRoadBudget, placeRoadSite } = createRoadPlanner({
+    Game, scheduledRoomTick, getRoomSources, getRoomCreeps,
+    showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
+    FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, LOOK_STRUCTURES,
+    LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
+  });
+  const { placeExtensionSite, getContainerPurpose,
+    isExtensionRefillBuffer, placeSourceContainerSite,
+    manageExtensionContainer, manageControllerContainer,
+    isRetiringContainer } = createInfrastructurePlanner({
+    Game, RoomPosition, getRoomSources, isSingleLaneRoadPosition,
+    CONTROLLER_STRUCTURES, STRUCTURE_EXTENSION, STRUCTURE_CONTAINER,
+    STRUCTURE_ROAD, STRUCTURE_RAMPART, FIND_MY_STRUCTURES,
+    FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS, FIND_STRUCTURES,
+    TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
+    LOOK_CONSTRUCTION_SITES, LOOK_CREEPS, RESOURCE_ENERGY, OK
+  });
   const getDesiredSourceWorkerLimit = (room, population) => {
     const { sourceWorkerTargetTotal } = getWorkerLimits(room);
     return sourceWorkerTargetTotal;
-  };
-  const getRemoteHaulReadiness = (targetRoomName, slot) => {
-    const remoteRoom = Game.rooms[targetRoomName];
-    if (!remoteRoom) return { ready: false, reason: 'room not visible' };
-    const sources = remoteRoom.find(FIND_SOURCES)
-      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-    const source = sources[slot % Math.max(1, sources.length)];
-    if (!source) return { ready: false, reason: 'source not visible' };
-    const container = source.pos.findInRange(FIND_STRUCTURES, 1, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER
-    })[0];
-    if (!container) return { ready: false, reason: 'container unfinished' };
-    // A completed source buffer opens the lane. Requiring both a road and a
-    // quarter-full container deadlocked outposts while their carriers waited
-    // at home. Carriers may now stage at an empty buffer and roads simply
-    // improve throughput later.
-    return {
-      ready: true,
-      source,
-      container,
-      reason: container.store[RESOURCE_ENERGY] > 0
-        ? `container ${container.store[RESOURCE_ENERGY]}`
-        : 'container ready; waiting for energy'
-    };
-  };
-  const getRemoteHaulerTarget = (homeRoomName, targetRoomName) => {
-    const homeRoom = Game.rooms[homeRoomName];
-    const remoteRoom = Game.rooms[targetRoomName];
-    if (!homeRoom || !remoteRoom) return 1;
-    const sources = remoteRoom.find(FIND_SOURCES);
-    const containers = remoteRoom.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-        sources.some(source => source.pos.getRangeTo(structure) <= 2)
-    });
-    if (!containers.length) return Math.max(1, sources.length);
-    const spawn = homeRoom.find(FIND_MY_SPAWNS)[0];
-    const haulSources = sources.filter(source => containers.some(container =>
-      source.pos.getRangeTo(container) <= 2));
-    const body = buildBody('remote-hauler', homeRoom.energyCapacityAvailable) ||
-      buildBody('remote-hauler', homeRoom.energyAvailable);
-    const carryCapacity = Math.max(CARRY_CAPACITY,
-      (body || []).filter(part => part === CARRY).length * CARRY_CAPACITY);
-    if (!homeRoom.memory.remoteHaulRoutes) {
-      homeRoom.memory.remoteHaulRoutes = {};
-    }
-    let routePlan = homeRoom.memory.remoteHaulRoutes[targetRoomName];
-    const signature = haulSources.map(source => source.id).sort().join(':');
-    if (!routePlan || routePlan.signature !== signature ||
-        routePlan.carryCapacity !== carryCapacity ||
-        Game.time - (routePlan.updated || 0) >= 1000) {
-      const linearDistance = Math.max(1,
-        Game.map.getRoomLinearDistance(homeRoomName, targetRoomName));
-      const routeLengths = haulSources.map(source => {
-        if (!spawn) return linearDistance * 50;
-        const search = PathFinder.search(source.pos, {
-          pos: spawn.pos,
-          range: 1
-        }, {
-          maxRooms: linearDistance + 2,
-          maxOps: 12000,
-          plainCost: 2,
-          swampCost: 10
-        });
-        return search.path.length || linearDistance * 50;
-      });
-      routePlan = {
-        updated: Game.time,
-        signature,
-        carryCapacity,
-        routeLengths
-      };
-      homeRoom.memory.remoteHaulRoutes[targetRoomName] = routePlan;
-    }
-    // Sources regenerate 10 energy per tick. Size the fleet so its combined
-    // cargo can carry one round trip of production without filling the remote
-    // buffers while the first carrier is away.
-    const throughputEnergy = haulSources.reduce((total, source, index) => {
-      const production = source.energyCapacity / ENERGY_REGEN_TIME;
-      const roundTripTicks = Math.max(20,
-        (routePlan.routeLengths[index] || 25) * 2 + 10);
-      return total + production * roundTripTicks;
-    }, 0);
-    const routeTarget = Math.max(haulSources.length,
-      Math.ceil(throughputEnergy / carryCapacity));
-    const highestPressure = Math.max(...containers.map(container => {
-      const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
-      return container.store[RESOURCE_ENERGY] / capacity;
-    }));
-    const pressureSurge = highestPressure >= 0.75 ? 2 :
-      highestPressure >= 0.5 ? 1 : 0;
-    const target = Math.min(haulSources.length * 6,
-      routeTarget + pressureSurge);
-    if (routePlan.target !== target) {
-      console.log(`[${Game.time}] ${targetRoomName} remote hauling -> ` +
-        `${target} carriers; routes ${routePlan.routeLengths.join('/')} ` +
-        `tiles, cargo ${carryCapacity}, pressure ` +
-        `${Math.round(highestPressure * 100)}%`);
-      routePlan.target = target;
-    }
-    return target;
-  };
-  const updateEnergyWorkPhase = room => {
-    const capacity = room.energyCapacityAvailable || 0;
-    const ratio = capacity > 0 ? room.energyAvailable / capacity : 1;
-    let phase = room.memory.energyWorkPhase;
-    if (phase !== 'refill' && phase !== 'work') {
-      phase = ratio >= 1 ? 'work' : 'refill';
-      room.memory.energyWorkPhaseSince = Game.time;
-    } else if (phase === 'refill' && ratio >= 1) {
-      phase = 'work';
-      room.memory.energyWorkPhaseSince = Game.time;
-      console.log(`[${Game.time}] ${room.name} energy phase refill -> work`);
-    } else if (phase === 'work' && ratio <= 0.5 &&
-        (room.energyAvailable < workerCost ||
-          Game.time - (room.memory.energyWorkPhaseSince || 0) >= 25)) {
-      phase = 'refill';
-      room.memory.energyWorkPhaseSince = Game.time;
-      console.log(`[${Game.time}] ${room.name} energy phase work -> refill` +
-        `${room.energyAvailable < workerCost ? ' (spawn reserve)' : ''}`);
-    }
-    room.memory.energyWorkPhase = phase;
-    return phase;
   };
   const getSpawnAssignment = (room, workers) => {
     // Keep the core room productive before assigning optional remote labor.
@@ -3196,6 +1807,7 @@ module.exports.loop = function () {
   for (const room of Object.values(Game.rooms)) {
     if (room.find(FIND_MY_CREEPS).length === 0) continue;
     trafficByRoom[room.name] = updateTrafficHeatmap(room);
+    if (!ownedRooms.has(room.name)) updateOutpostStatus(room);
   }
   for (const roomName of ownedRooms) {
     const room = Game.rooms[roomName];
@@ -3941,6 +2553,9 @@ module.exports.loop = function () {
           (buffer.store.getCapacity(RESOURCE_ENERGY) || 0), 0)
       };
     }).filter(group => group.capacity > 0 && group.stored > 0);
+    const stageSources = sources.filter(source => sourceBuffers.some(buffer =>
+      source.pos.getRangeTo(buffer) <= 2));
+    let stageSourceIndex = 0;
     for (const creep of emptyHaulers) {
       if (collectionDemand > 0 && sourceStored > 0) {
         assignments[creep.name] = 'collect';
@@ -3963,6 +2578,12 @@ module.exports.loop = function () {
       } else {
         assignments[creep.name] = sourceBuffers.length > 0
           ? 'collect-stage' : 'standby';
+        if (stageSources.length > 0) {
+          const stageSource = stageSources[stageSourceIndex %
+            stageSources.length];
+          collectionSources[creep.name] = stageSource.id;
+          stageSourceIndex++;
+        }
       }
     }
     // Do not re-route a carrier while its reserved job remains useful. A lane
@@ -4790,9 +3411,12 @@ module.exports.loop = function () {
       if (creep.memory.role !== 'hauler' ||
           demandLane !== 'collect-stage') return false;
       const sources = getRoomSources(creep.room);
+      const assignedSource = Game.getObjectById(demandPlan &&
+        demandPlan.collectionSources[creep.name]);
       const valid = structure => structure &&
         structure.structureType === STRUCTURE_CONTAINER &&
-          sources.some(source => source.pos.getRangeTo(structure) <= 2)
+          sources.some(source => source.pos.getRangeTo(structure) <= 2) &&
+          (!assignedSource || assignedSource.pos.getRangeTo(structure) <= 2)
       ;
       const buffer = selectPersistentTarget('stageSourceBufferTarget', valid,
         () => getRoomStructures(creep.room).filter(valid)
@@ -6865,6 +5489,17 @@ module.exports.loop = function () {
   if (Game.time % 100 === 0) {
     const ownedRooms = new Set(Object.values(Game.spawns)
       .map(spawn => spawn.room.name));
+    const outpostStatuses = Object.values(Game.rooms).filter(room =>
+      !ownedRooms.has(room.name) && room.memory.roomStatus &&
+      room.memory.roomStatus.kind === 'outpost').map(room => {
+      const status = room.memory.roomStatus;
+      return `  ${room.name} ${status.label} ${status.score}/100 | ` +
+        `Reserve ${status.reserve} Harvest ${status.harvest} ` +
+        `Flow ${status.logistics} | ${status.reasons.join(', ')}`;
+    });
+    if (outpostStatuses.length) {
+      console.log(`[${Game.time}] Outpost health:\n${outpostStatuses.join('\n')}`);
+    }
     for (const roomName of ownedRooms) {
       const room = Game.rooms[roomName];
       if (!room) continue;
@@ -7016,8 +5651,14 @@ module.exports.loop = function () {
           `D${situation.targets.digger} | ` +
           `Buf${Math.round(situation.signals.bufferRatio * 100)}% ` +
           `Drop${situation.signals.droppedEnergy} | stable-v1`,
+        `  Health ${situation.status.label} ${situation.status.score}/100 | ` +
+          `Reserve ${situation.status.reserve} ` +
+          `Harvest ${situation.status.harvest} ` +
+          `Flow ${situation.status.logistics} | ` +
+          situation.status.reasons.join(', '),
         `  Busy ${room.memory.busySummaryStreak}/4${targetIncrease ? ` ${targetIncrease}` : ''} | ` +
           `Sp ${spawns.join(',') || 'none'} | ${status}`,
+        `  Stage ${strategy.stageName}: ${strategy.stageGoal}`,
         `  Next: ${strategy.gate}`
       ].filter(Boolean).join('\n'));
     }

@@ -26,6 +26,32 @@ in small modules: `colony.policy.js` derives staffing, `body.factory.js` builds
 role bodies and log labels, and `resource.reservations.js` provides the shared
 per-tick energy/capacity ledger. `room.index.js` owns cached room lookups and
 `movement.service.js` owns navigation, traffic costs, and route reservations.
+`creep.lifecycle.js` owns body-capability checks and local/remote replacement
+lead-time rules, while `creep.reporting.js` owns compact role/task labels,
+target descriptions, and death cleanup logs. `source.staffing.js` owns mining
+capacity, walkable source slots, and adaptive staffing reviews;
+`source.positions.js` owns miner-station and tunnel-site geometry;
+`room.strategy.js` owns RCL/infrastructure/expansion progression gates, and
+`room.status.js` derives an explainable health score from reserves, source
+utilization, spawn fill, logistics pressure, controller safety, and work queues.
+`outpost.status.js` applies the same model to visible remote rooms using remote
+production and haul-backlog semantics rather than spawn-fill penalties.
+`room.situation.js` is the live-room adapter that gathers structures, sources,
+work queues, remote plans, and learned mining history before calling the pure
+population-policy and room-health modules.
+`worker.limits.js` converts local source tiles, desired roles, remote plans, and
+congestion into the room's minimum and desired total population caps.
+`room.stages.js` is the canonical RCL 0-8 planning record. Each stage declares
+its goal, operating logic, construction order, and advancement gates. The
+active entry is copied to `room.memory.stagePlan` for live inspection.
+`remote.hauling.js` owns outpost readiness, measured route throughput, carrier
+capacity, and buffer-pressure scaling. `energy.phase.js` owns the hysteresis
+between filling spawn capacity and releasing workers to normal work.
+`road.planner.js` owns strategic room routes, traffic history, hot-tile
+selection, road visualization, road budgets, and ranked site placement.
+`infrastructure.planner.js` owns extension clusters, source and extension
+buffers, controller containers, container retirement, and the safeguards that
+keep essential containers ahead of road construction.
 Pure scenarios in `policy.test.js` and `common.test.js` protect those boundaries
 while role executors are migrated out of `main.js` incrementally.
 
