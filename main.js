@@ -2409,13 +2409,41 @@ module.exports.loop = function () {
       ? Math.min(...refillStructures.map(structure =>
         creep.pos.getRangeTo(structure)))
       : Infinity;
+    const hasLiveDispatchCommitment = creep => {
+      const commitment = creep.memory.dispatchCommitment;
+      if (!commitment || commitment.roomName !== room.name ||
+          !commitment.targetId || commitment.lane !== creep.memory.demandLane) {
+        return false;
+      }
+      const target = Game.getObjectById(commitment.targetId);
+      if (!target) return false;
+      if (commitment.lane === 'collect') {
+        return creep.store[RESOURCE_ENERGY] === 0 && target.store &&
+          target.store[RESOURCE_ENERGY] > 0;
+      }
+      if (commitment.lane === 'supply') {
+        return creep.store[RESOURCE_ENERGY] > 0 && target.my && target.store &&
+          target.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+      }
+      if (commitment.lane === 'refill' ||
+          commitment.lane === 'refill-buffer' ||
+          commitment.lane === 'buffer') {
+        return creep.store[RESOURCE_ENERGY] > 0 && target.store &&
+          target.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
+      }
+      return false;
+    };
     const loadedHaulers = roomCreeps.filter(creep =>
       servesAsLocalHauler(creep) && creep.store[RESOURCE_ENERGY] > 0)
-      .sort((a, b) => refillDistance(a) - refillDistance(b) ||
+      .sort((a, b) => Number(hasLiveDispatchCommitment(b)) -
+        Number(hasLiveDispatchCommitment(a)) ||
+        refillDistance(a) - refillDistance(b) ||
         a.name.localeCompare(b.name));
     const emptyHaulers = roomCreeps.filter(creep =>
       servesAsLocalHauler(creep) && creep.store[RESOURCE_ENERGY] === 0)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .sort((a, b) => Number(hasLiveDispatchCommitment(b)) -
+        Number(hasLiveDispatchCommitment(a)) ||
+        a.name.localeCompare(b.name));
     const localCarriers = [...loadedHaulers, ...emptyHaulers]
       .sort((a, b) =>
         b.store.getCapacity(RESOURCE_ENERGY) -
@@ -2459,7 +2487,32 @@ module.exports.loop = function () {
       delete creep.memory.collectionSourceTarget;
       const carried = creep.store[RESOURCE_ENERGY];
       const fillsSpawn = dedicatedRefillerNames.has(creep.name);
-      if (fillsSpawn && refillDemand > 0) {
+      const commitment = hasLiveDispatchCommitment(creep)
+        ? creep.memory.dispatchCommitment : null;
+      const committedTarget = commitment &&
+        Game.getObjectById(commitment.targetId);
+      if (!fillsSpawn && commitment &&
+          commitment.lane === 'refill-buffer' && extensionBufferDemand > 0) {
+        assignments[creep.name] = 'refill-buffer';
+        extensionBufferDemand = Math.max(0,
+          extensionBufferDemand - carried);
+      } else if (!fillsSpawn && commitment &&
+          commitment.lane === 'buffer' && bufferDemand > 0) {
+        assignments[creep.name] = 'buffer';
+        urgentBufferDemand = Math.max(0, urgentBufferDemand - carried);
+        bufferDemand = Math.max(0, bufferDemand - carried);
+      } else if (!fillsSpawn && commitment &&
+          commitment.lane === 'supply' && committedTarget &&
+          recipientRemaining[committedTarget.name] > 0) {
+        const committed = Math.min(carried,
+          recipientRemaining[committedTarget.name]);
+        assignments[creep.name] = 'supply';
+        supplyTargets[creep.name] = committedTarget.name;
+        incomingSupply[committedTarget.name] =
+          (incomingSupply[committedTarget.name] || 0) + committed;
+        recipientRemaining[committedTarget.name] -= committed;
+        supplyDemand = Math.max(0, supplyDemand - committed);
+      } else if (fillsSpawn && refillDemand > 0) {
         // Preserve enough spawn energy to replace a basic worker. Once that
         // emergency floor is covered, the same dedicated carrier continues
         // filling extensions. Other carriers remain in the hauling chain.
@@ -2555,8 +2608,13 @@ module.exports.loop = function () {
     const stageSources = sources.filter(source => sourceBuffers.some(buffer =>
       source.pos.getRangeTo(buffer) <= 2));
     let stageSourceIndex = 0;
+    // Delivery demand can exceed the energy that is currently available at
+    // the source buffers. Dispatch only enough empty cargo space to collect
+    // that energy; otherwise every idle carrier converges on the same source
+    // area and competes for a load that does not exist yet.
+    let collectibleEnergy = sourceStored;
     for (const creep of emptyHaulers) {
-      if (collectionDemand > 0 && sourceStored > 0) {
+      if (collectionDemand > 0 && collectibleEnergy > 0) {
         assignments[creep.name] = 'collect';
         let group = projectedSourceGroups.find(candidate =>
           candidate.source.id === creep.memory.collectionSourceTarget &&
@@ -2572,8 +2630,9 @@ module.exports.loop = function () {
           group.stored = Math.max(0, group.stored -
             creep.store.getCapacity(RESOURCE_ENERGY));
         }
-        collectionDemand = Math.max(0, collectionDemand -
-          creep.store.getCapacity(RESOURCE_ENERGY));
+        const cargoCapacity = creep.store.getCapacity(RESOURCE_ENERGY);
+        collectionDemand = Math.max(0, collectionDemand - cargoCapacity);
+        collectibleEnergy = Math.max(0, collectibleEnergy - cargoCapacity);
       } else {
         assignments[creep.name] = sourceBuffers.length > 0
           ? 'collect-stage' : 'standby';
@@ -2604,10 +2663,7 @@ module.exports.loop = function () {
         loaded && (previousLane === 'buffer' ||
           previousLane === 'buffer-stage') && bufferFree > 0 ||
         loaded && previousLane === 'supply' && supplyTarget &&
-          supplyTarget.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ||
-        !loaded && previousLane === 'collect' && sourceStored > 0 ||
-        !loaded && previousLane === 'collect-stage' &&
-          sourceBuffers.length > 0;
+          supplyTarget.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
       if (previousLane && previousLane !== proposedLane &&
           (fillsSpawn ? previousWasRefill : !previousWasRefill) &&
           previousStillUseful) {
@@ -2619,6 +2675,10 @@ module.exports.loop = function () {
         creep.memory.demandLaneSince = Game.time;
       } else if (!Number.isInteger(creep.memory.demandLaneSince)) {
         creep.memory.demandLaneSince = Game.time;
+      }
+      const commitment = creep.memory.dispatchCommitment;
+      if (commitment && commitment.lane !== assignments[creep.name]) {
+        delete creep.memory.dispatchCommitment;
       }
     }
     const laneCounts = {};
@@ -2648,6 +2708,9 @@ module.exports.loop = function () {
       refillCarrier: dedicatedRefillers[0] && dedicatedRefillers[0].name,
       refillCarriers: dedicatedRefillers.map(creep => creep.name),
       collectionSources,
+      commitments: Object.fromEntries(localCarriers
+        .filter(creep => creep.memory.dispatchCommitment)
+        .map(creep => [creep.name, creep.memory.dispatchCommitment])),
       lanes: laneCounts
     };
   }
@@ -3057,6 +3120,12 @@ module.exports.loop = function () {
       target.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
   }
   const executionCreeps = taskCreeps.slice().sort((a, b) =>
+    Number(!!b.memory.dispatchCommitment) -
+      Number(!!a.memory.dispatchCommitment) ||
+    (a.memory.dispatchCommitment && a.memory.dispatchCommitment.since ||
+      Game.time) -
+      (b.memory.dispatchCommitment && b.memory.dispatchCommitment.since ||
+        Game.time) ||
     Number(b.store.getUsedCapacity() > 0) -
       Number(a.store.getUsedCapacity() > 0) ||
     taskPriority(a) - taskPriority(b) || a.name.localeCompare(b.name));
@@ -3132,17 +3201,97 @@ module.exports.loop = function () {
       creep.memory.taskTarget = target.id || target.name || target.structureType;
       return true;
     };
+    const rememberDispatchCommitment = (target, amount) => {
+      const committedLanes = ['collect', 'refill', 'refill-buffer', 'buffer',
+        'supply'];
+      if (!target || !target.id || !demandLane || demandLane === 'none' ||
+          committedLanes.indexOf(demandLane) === -1 || amount <= 0) return;
+      const previous = creep.memory.dispatchCommitment;
+      const sameJob = previous && previous.lane === demandLane &&
+        previous.targetId === target.id;
+      creep.memory.dispatchCommitment = {
+        lane: demandLane,
+        targetId: target.id,
+        roomName: creep.room.name,
+        amount,
+        since: sameJob && Number.isInteger(previous.since)
+          ? previous.since : Game.time,
+        updated: Game.time
+      };
+    };
+    const forgetDispatchCommitment = target => {
+      const commitment = creep.memory.dispatchCommitment;
+      if (commitment && (!target || commitment.targetId === target.id)) {
+        delete creep.memory.dispatchCommitment;
+      }
+    };
     const transferEnergy = (target, range = 1) => {
       const amount = reserveCapacityIn(target, creep.store[RESOURCE_ENERGY]);
       if (amount <= 0) return false;
+      rememberDispatchCommitment(target, amount);
       const result = creep.transfer(target, RESOURCE_ENERGY);
       if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, range);
       if (result !== OK && result !== ERR_NOT_IN_RANGE) {
         releaseAmount(reservedCapacity, target, amount);
+        forgetDispatchCommitment(target);
         return false;
       }
       creep.memory.taskTarget = target.id || target.name || target.structureType;
       return true;
+    };
+    const continueDispatchCommitment = () => {
+      const commitment = creep.memory.dispatchCommitment;
+      if (!commitment || commitment.lane !== demandLane ||
+          commitment.roomName !== creep.room.name) return false;
+      const target = Game.getObjectById(commitment.targetId);
+      if (!target) {
+        forgetDispatchCommitment();
+        return false;
+      }
+      if (commitment.lane === 'collect') {
+        const sources = getRoomSources(creep.room);
+        const validPickup = creep.store[RESOURCE_ENERGY] === 0 &&
+          target.structureType === STRUCTURE_CONTAINER &&
+          canWithdrawFrom(creep, target) &&
+          target.store[RESOURCE_ENERGY] > 0 && sources.some(source =>
+            source.pos.getRangeTo(target) <= 2);
+        if (!validPickup) {
+          forgetDispatchCommitment(target);
+          return false;
+        }
+        const amount = reserveEnergyFrom(target,
+          creep.store.getFreeCapacity(RESOURCE_ENERGY));
+        if (amount <= 0) return false;
+        rememberDispatchCommitment(target, amount);
+        const result = creep.withdraw(target, RESOURCE_ENERGY);
+        if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
+        if (result !== OK && result !== ERR_NOT_IN_RANGE) {
+          releaseAmount(reservedEnergy, target, amount);
+          forgetDispatchCommitment(target);
+          return false;
+        }
+        creep.memory.taskTarget = target.id;
+        return true;
+      }
+      const sourceBuffer = target.structureType === STRUCTURE_CONTAINER &&
+        getRoomSources(creep.room).some(source =>
+          source.pos.getRangeTo(target) <= 2);
+      const laneTargetValid = commitment.lane === 'refill'
+        ? target.my && (target.structureType === STRUCTURE_SPAWN ||
+          target.structureType === STRUCTURE_EXTENSION)
+        : commitment.lane === 'refill-buffer'
+          ? isExtensionRefillBuffer(creep.room, target)
+          : commitment.lane === 'buffer'
+            ? !sourceBuffer && (target.structureType === STRUCTURE_CONTAINER ||
+              target.structureType === STRUCTURE_STORAGE)
+            : commitment.lane === 'supply' && target.my;
+      const validDelivery = creep.store[RESOURCE_ENERGY] > 0 && target.store &&
+        target.store.getFreeCapacity(RESOURCE_ENERGY) > 0 && laneTargetValid;
+      if (!validDelivery) {
+        forgetDispatchCommitment(target);
+        return false;
+      }
+      return transferEnergy(target);
     };
     const scavenge = () => {
       if (creep.memory.role !== 'hauler' ||
@@ -3443,11 +3592,15 @@ module.exports.loop = function () {
       // When a remote carrier temporarily drains a home source buffer, that
       // pickup buffer cannot also be its delivery target. Otherwise it can
       // withdraw from S1/S2 and transfer the same load straight back forever.
+      const localSources = getRoomSources(creep.room);
+      const isSourceBuffer = structure => localSources.some(source =>
+        source.pos.getRangeTo(structure) <= 2);
       const validBuffer = structure => structure &&
         structure.room.name === creep.room.name &&
         structure.id !== creep.memory.remotePickupSource &&
         (structure.structureType === STRUCTURE_CONTAINER ||
           structure.structureType === STRUCTURE_STORAGE) &&
+        !isSourceBuffer(structure) &&
         getUnreservedCapacity(structure) > 0;
       let target = Game.getObjectById(creep.memory.remoteDeliveryTarget);
       if (!validBuffer(target)) {
@@ -4134,11 +4287,13 @@ module.exports.loop = function () {
                 const amount = reserveEnergyFrom(localContainer,
                   creep.store.getFreeCapacity(RESOURCE_ENERGY));
                 if (amount > 0) {
+                  rememberDispatchCommitment(localContainer, amount);
                   const result = creep.withdraw(localContainer, RESOURCE_ENERGY);
                   if (result === ERR_NOT_IN_RANGE) {
                     moveCreep(creep, localContainer);
                   } else if (result !== OK) {
                     releaseAmount(reservedEnergy, localContainer, amount);
+                    forgetDispatchCommitment(localContainer);
                     delete creep.memory.remotePickupTarget;
                   } else {
                     creep.memory.remotePickupSource = localContainer.id;
@@ -5231,6 +5386,7 @@ module.exports.loop = function () {
           const amount = reserveEnergyFrom(container,
             creep.store.getFreeCapacity(RESOURCE_ENERGY));
           if (amount <= 0) return false;
+          rememberDispatchCommitment(container, amount);
           const result = creep.withdraw(container, RESOURCE_ENERGY);
           if (result === ERR_NOT_IN_RANGE) {
             const approach = getWithdrawalApproachTarget(creep, container,
@@ -5243,6 +5399,7 @@ module.exports.loop = function () {
           }
           if (result !== OK) {
             releaseAmount(reservedEnergy, container, amount);
+            forgetDispatchCommitment(container);
             return false;
           }
           delete creep.memory.collectionSourceTarget;
@@ -5261,7 +5418,9 @@ module.exports.loop = function () {
 
     delete creep.memory.task;
     delete creep.memory.taskTarget;
-    if (creep.memory.role !== 'refiller' &&
+    if (continueDispatchCommitment()) {
+      creep.memory.task = `committed-${demandLane}`;
+    } else if (creep.memory.role !== 'refiller' &&
         creep.memory.role !== 'rebalancer' &&
         (pickupNearbyDrop() || withdrawNearbyRuin() ||
           withdrawNearbyTombstone())) {
@@ -5457,6 +5616,11 @@ module.exports.loop = function () {
         'stock-refill': 'StockSp',
         'stage-refill': 'StageSp',
         'stage-collect': 'StageS',
+        'committed-collect': 'Get',
+        'committed-refill': 'Fill',
+        'committed-refill-buffer': 'StockSp',
+        'committed-buffer': 'StockRC',
+        'committed-supply': 'Give',
         standby: 'Wait',
         withdraw: 'Get',
         store: 'Store',

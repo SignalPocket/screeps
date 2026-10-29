@@ -44,6 +44,11 @@ const shortTasks = {
   'stage-supply': 'Stage',
   'stock-refill': 'StockSp',
   'stage-refill': 'StageSp',
+  'committed-collect': 'Get',
+  'committed-refill': 'Fill',
+  'committed-refill-buffer': 'StockSp',
+  'committed-buffer': 'StockRC',
+  'committed-supply': 'Give',
   standby: 'Wait',
   withdraw: 'Get',
   store: 'Store'
