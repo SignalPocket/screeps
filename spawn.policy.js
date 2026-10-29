@@ -6,18 +6,15 @@ const createSpawnPolicy = ({
   maxSpawnChargeWait = 60
 }) => {
   const dedicatedRoles = new Set([
-    'remote-scout', 'remote-hauler', 'remote-builder', 'digger', 'refiller',
-    'rebalancer', 'claimer', 'expansion-builder'
+    'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer'
   ]);
   const replacementRoles = new Set([
-    'upgrader', 'builder', 'fixer', 'digger', 'remote-scout',
-    'remote-hauler', 'remote-builder', 'refiller', 'rebalancer', 'claimer',
-    'expansion-builder'
+    'upgrader', 'builder', 'remote-scout', 'remote-hauler', 'refiller',
+    'rebalancer', 'claimer'
   ]);
   const fullBodyRoles = new Set([
-    'miner', 'harvester', 'digger', 'hauler', 'refiller', 'rebalancer',
-    'upgrader', 'builder', 'fixer', 'remote-scout', 'remote-hauler',
-    'claimer', 'expansion-builder'
+    'miner', 'harvester', 'hauler', 'refiller', 'rebalancer', 'upgrader',
+    'builder', 'remote-scout', 'remote-hauler', 'claimer'
   ]);
 
   const getSpawnChargeWaitLimit = (current, target) => {
@@ -37,7 +34,10 @@ const createSpawnPolicy = ({
     spawn, assignment, workers, workerLimit, hasWorkParts
   }) => {
     const requiresDedicatedBody = assignment &&
-      dedicatedRoles.has(assignment.role);
+      (dedicatedRoles.has(assignment.role) ||
+        assignment.role === 'builder' &&
+          (assignment.builderScope && assignment.builderScope !== 'local' ||
+            assignment.builderMission === 'tunnel'));
     const hasCapableIdleWorker = assignment && !assignment.forceSpawn &&
       !requiresDedicatedBody && workers.some(creep =>
         !creep.spawning && creep.memory.idleNow &&
@@ -53,8 +53,12 @@ const createSpawnPolicy = ({
       return { needsWorker: false, body: null };
     }
 
-    if (spawn.room.memory.spawnWaitRole !== assignment.role) {
-      spawn.room.memory.spawnWaitRole = assignment.role;
+    const assignmentKey = assignment.role === 'builder'
+      ? ['builder', assignment.builderScope || 'local',
+        assignment.builderMission || 'build'].join(':')
+      : assignment.role;
+    if (spawn.room.memory.spawnWaitRole !== assignmentKey) {
+      spawn.room.memory.spawnWaitRole = assignmentKey;
       spawn.room.memory.spawnWaitSince = Game.time;
     }
     const waitLimit = getSpawnChargeWaitLimit(workers.length, workerLimit);
@@ -80,8 +84,7 @@ const createSpawnPolicy = ({
     const candidateBody = chargeComplete
       ? buildBody(assignment.role, spawn.room.energyAvailable)
       : null;
-    const mobileWorkRole = assignment.role === 'builder' ||
-      assignment.role === 'fixer';
+    const mobileWorkRole = assignment.role === 'builder';
     const workParts = candidateBody
       ? candidateBody.filter(part => part === WORK).length : 0;
     const moveParts = candidateBody

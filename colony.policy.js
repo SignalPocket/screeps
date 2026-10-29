@@ -80,12 +80,12 @@ const derivePopulationPolicy = state => {
     : 0;
 
   const repairBacklog = Math.max(0, repair.remaining || 0);
-  const fixerMinimum = repair.critical ? 1 : 0;
-  const fixerDesired = repairBacklog > 0
+  const repairBuilderMinimum = repair.critical ? 1 : 0;
+  const repairBuilderDesired = repairBacklog > 0
     ? clamp(Math.ceil(repairBacklog / 200000), 1, starved ? 1 : 3)
     : 0;
-  const fixerMaximum = repairBacklog > 100000 && !starved
-    ? Math.max(fixerDesired, 3) : fixerDesired;
+  const repairBuilderMaximum = repairBacklog > 100000 && !starved
+    ? Math.max(repairBuilderDesired, 3) : repairBuilderDesired;
 
   const upgraderMinimum = state.controllerOwned === false ? 0 : 1;
   const controllerWorkSpots = Math.max(1,
@@ -151,13 +151,14 @@ const derivePopulationPolicy = state => {
       'source route length and buffered energy')),
     builder: normalize(role(builderMinimum, builderDesired, builderMaximum,
       'construction backlog and priority structures')),
-    fixer: normalize(role(fixerMinimum, fixerDesired, fixerMaximum,
+    repairBuilder: normalize(role(repairBuilderMinimum, repairBuilderDesired,
+      repairBuilderMaximum,
       'repair backlog and critical damage')),
     upgrader: normalize(role(upgraderMinimum, upgraderDesired,
       upgraderMaximum, 'controller risk and energy surplus')),
     rebalancer: normalize(role(rebalancerMinimum, rebalancerDesired,
       rebalancerMaximum, 'outpost count and container energy imbalance')),
-    digger: normalize(role(0, state.blockedSourceSite ? 1 : 0,
+    tunnelBuilder: normalize(role(0, state.blockedSourceSite ? 1 : 0,
       state.blockedSourceSite ? 1 : 0, 'blocked source access'))
   };
 

@@ -100,7 +100,7 @@ const createRefillManagement = ({
     const keeperNames = new Set(keepers.map(creep => creep.name));
     for (const creep of active.filter(candidate =>
       !keeperNames.has(candidate.name))) {
-      creep.memory.role = 'worker';
+      creep.memory.role = 'hauler';
       delete creep.memory.promotedFromSource;
       delete creep.memory.refillTarget;
       delete creep.memory.refillPickupTarget;

@@ -25,6 +25,8 @@ const { createCreepNaming } = require('./creep.naming');
 const { createColonyDashboard } = require('./colony.dashboard');
 const { createRefillManagement } = require('./refill.management');
 const { createSpawnPolicy } = require('./spawn.policy');
+const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
+  isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
   require('./creep.routing');
 
@@ -35,6 +37,21 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const legacyFixer = { memory: { role: 'fixer', birthRole: 'fixer' } };
+assert.strictEqual(normalizeBuilderMemory(legacyFixer.memory), true);
+assert.deepStrictEqual(legacyFixer.memory, {
+  role: 'builder', birthRole: 'builder', builderScope: 'local',
+  builderMission: 'repair'
+});
+assert.strictEqual(isBuilder(legacyFixer), true);
+assert.strictEqual(isLocalBuilder(legacyFixer), true);
+const outpostBuilder = { memory: { role: 'remote-builder' } };
+normalizeBuilderMemory(outpostBuilder.memory);
+assert.strictEqual(isOutpostBuilder(outpostBuilder), true);
+const expansionBuilder = { memory: { role: 'expansion-builder' } };
+normalizeBuilderMemory(expansionBuilder.memory);
+assert.strictEqual(isExpansionBuilder(expansionBuilder), true);
 
 const spawnPolicyGame = { time: 100 };
 const spawnPolicy = createSpawnPolicy({
@@ -61,7 +78,7 @@ const idleRoom = {
 };
 const idleRequest = spawnPolicy.prepareSpawnRequest({
   spawn: { room: idleRoom },
-  assignment: { role: 'worker' },
+  assignment: { role: 'builder' },
   workers: [spawnPolicyCreep('harvester', true)],
   workerLimit: 2,
   hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
@@ -186,7 +203,7 @@ assert.strictEqual(overflowRefiller.memory.refillClusterId, 'overflow');
 refillManagement.releaseUndersizedRefillers(refillRoom,
   [overflowRefiller, primaryRefiller]);
 assert.strictEqual(primaryRefiller.memory.role, 'refiller');
-assert.strictEqual(overflowRefiller.memory.role, 'worker');
+assert.strictEqual(overflowRefiller.memory.role, 'hauler');
 assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
   { structureType: 'spawn' }), true);
 
@@ -214,6 +231,10 @@ assert.deepStrictEqual(namingMemory.roomOrdinals,
 assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
   role: 'remote-scout', remoteRoom: 'W8N4', remoteSlot: 0
 }), '02-OP-S1-500');
+assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
+  role: 'builder', builderScope: 'outpost', builderMission: 'maintenance',
+  remoteRoom: 'W8N4', remoteBuilderSlot: 0
+}), '02-BU-M1-500');
 namingMemory.creeps['01-RF-P-500'] = {};
 assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
   role: 'refiller', refillClusterId: 'primary'
@@ -260,8 +281,10 @@ const dashboardCreeps = [
   { memory: { home: 'W1N1', role: 'harvester' }, store: { energy: 0 } }
 ];
 const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
-  buildTargets: 7,
-  fixTargets: 3
+  localBuildTargets: 5,
+  outpostBuildTargets: 2,
+  localFixTargets: 1,
+  outpostFixTargets: 2
 });
 assert.strictEqual(dashboardSnapshot.creeps, 2);
 assert.strictEqual(dashboardSnapshot.spawning, 1);
@@ -271,11 +294,15 @@ assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
 assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1 });
 assert.strictEqual(dashboardSnapshot.buildTargets, 7);
 assert.strictEqual(dashboardSnapshot.fixTargets, 3);
+assert.strictEqual(dashboardSnapshot.localBuildTargets, 5);
+assert.strictEqual(dashboardSnapshot.outpostBuildTargets, 2);
+assert.strictEqual(dashboardSnapshot.localFixTargets, 1);
+assert.strictEqual(dashboardSnapshot.outpostFixTargets, 2);
 dashboard.drawDashboard();
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'COLONY'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'Targets build 7 | fix 3'));
+  call[1] === 'Targets build L5/O2 | fix L1/O2'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'Types LM 1 | LC 1'));
 
@@ -339,6 +366,10 @@ assert.deepStrictEqual(bodies.buildBody('refiller', 100), ['carry', 'move']);
 assert.strictEqual(bodies.buildBody('refiller', 99), null);
 assert.ok(bodies.buildBody('upgrader', 800)
   .filter(part => part === 'work').length >= 6);
+const fullBuilderBody = bodies.buildBody('builder', 1300);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'work').length, 6);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'carry').length, 6);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'move').length, 6);
 assert.strictEqual(bodies.getBodyCode(['work', 'carry', 'move']), 'M-C-W');
 
 const outpostMaintenance = createOutpostMaintenance({
@@ -404,7 +435,16 @@ assert.strictEqual(roomIndex.getSlowWorkInventory(room).sites[0].id, 'site');
 
 let moveOptions;
 const movementGame = { time: 20, rooms: { W1N1: {
-  find: () => []
+  memory: { travelPathPlan: { paths: [
+    { points: [{ x: 2, y: 2 }, { x: 4, y: 4 }] },
+    { points: [{ x: 2, y: 2 }, { x: 4, y: 4 }] }
+  ] } },
+  find: type => type === 'structures'
+    ? [
+      { structureType: 'road', pos: { x: 2, y: 2 } },
+      { structureType: 'road', pos: { x: 3, y: 3 } }
+    ]
+    : []
 } } };
 const movement = createMovementService({
   Game: movementGame,
@@ -428,6 +468,18 @@ assert.strictEqual(movement.moveCreep(movingCreep,
   { id: 'target', pos: { x: 5, y: 5, roomName: 'W1N1' } }, 1), 0);
 assert.strictEqual(moveOptions.reusePath, 25);
 assert.strictEqual(moveOptions.range, 1);
+assert.strictEqual(moveOptions.plainCost, 3);
+assert.strictEqual(moveOptions.swampCost, 12);
+const movementCosts = {
+  values: {},
+  set(x, y, value) { this.values[`${x}:${y}`] = value; },
+  get(x, y) { return this.values[`${x}:${y}`] || 0; }
+};
+moveOptions.costCallback('W1N1', movementCosts);
+assert.strictEqual(movementCosts.get(2, 2), 1);
+assert.strictEqual(movementCosts.get(3, 3), 2);
+assert.strictEqual(movementCosts.get(4, 4), 2);
+assert.strictEqual(movingCreep.memory.navCostVersion, 'planned-roads-v5');
 
 const lifecycle = createCreepLifecycle({
   Game: { map: { findRoute: () => [{ room: 'W1N2' }, { room: 'W1N3' }] } },
@@ -741,8 +793,8 @@ const limitRoom = {
   getTerrain: () => ({ get: () => 0 }),
   lookForAt: () => []
 };
-const limitRoleNames = ['source', 'builder', 'fixer', 'upgrader', 'hauler',
-  'refiller', 'rebalancer', 'digger'];
+const limitRoleNames = ['source', 'builder', 'repairBuilder', 'upgrader',
+  'hauler', 'refiller', 'rebalancer', 'tunnelBuilder'];
 const limitRoles = Object.fromEntries(limitRoleNames.map(name =>
   [name, { min: 1, desired: 1, max: 2 }]));
 const limitTargets = Object.fromEntries(limitRoleNames.map(name =>
@@ -852,8 +904,17 @@ for (const object of [roadSpawn, roadSource, roadController]) {
   object.pos.getRangeTo = target => rangeTo(object.pos, target);
 }
 const roadRoom = {
-  name: 'W8N8', memory: {}, controller: roadController,
+  name: 'W8N8', memory: {
+    extensionCluster: { x: 8, y: 12 },
+    remoteRoadPlan: { paths: [{ slot: 0, points: [
+      { x: 47, y: 20, roomName: 'W8N8' },
+      { x: 48, y: 20, roomName: 'W8N8' },
+      { x: 0, y: 20, roomName: 'W9N8' },
+      { x: 1, y: 20, roomName: 'W9N8' }
+    ] }] }
+  }, controller: roadController,
   find: type => type === 'spawns' ? [roadSpawn] : [],
+  getPositionAt: (x, y) => ({ x, y }),
   findPath: () => [{ x: 6, y: 6 }, { x: 7, y: 7 }]
 };
 const roadPlanner = createRoadPlanner({
@@ -861,12 +922,31 @@ const roadPlanner = createRoadPlanner({
   getRoomSources: () => [roadSource], getRoomCreeps: () => [],
   showTrafficHeatmap: false, FIND_MY_SPAWNS: 'spawns',
   FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
-  STRUCTURE_ROAD: 'road', LOOK_STRUCTURES: 'structures-at',
+  STRUCTURE_ROAD: 'road', STRUCTURE_CONTAINER: 'container',
+  LOOK_STRUCTURES: 'structures-at',
   LOOK_CONSTRUCTION_SITES: 'sites-at', TERRAIN_MASK_WALL: 1,
   TERRAIN_MASK_SWAMP: 2, OK: 0
 });
 const importantPaths = roadPlanner.getImportantRoadPaths(roadRoom);
 assert.strictEqual(importantPaths.length, 2);
+const travelPaths = roadPlanner.getImportantTravelPaths(roadRoom);
+assert.strictEqual(travelPaths.length, 6);
+assert.ok(roadRoom.memory.travelPathPlan.signature
+  .startsWith('v2-converging-important-pairs'));
+assert.ok(travelPaths.every(path => path.points.length === 2));
+assert.ok(travelPaths.some(path =>
+  path.kinds.includes('extensions') && path.kinds.includes('controller')));
+const interRoomPaths = roadPlanner.getInterRoomTravelPaths(roadRoom);
+assert.strictEqual(interRoomPaths.W8N8.length, 1);
+assert.strictEqual(interRoomPaths.W9N8.length, 1);
+assert.deepStrictEqual(interRoomPaths.W9N8[0].points,
+  [{ x: 0, y: 20 }, { x: 1, y: 20 }]);
+const convergedPaths = roadPlanner.getConvergedTravelPaths([
+  { label: 'a', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] },
+  { label: 'b', points: [{ x: 2, y: 2 }, { x: 3, y: 3 }] }
+]);
+assert.deepStrictEqual(convergedPaths.map(path => path.points),
+  [[{ x: 2, y: 2 }], [{ x: 2, y: 2 }]]);
 assert.strictEqual(roadPlanner.isSingleLaneRoadPosition(roadRoom,
   { pos: { x: 6, y: 6 } }), true);
 assert.strictEqual(roadPlanner.isHeatmapRoadPosition(roadRoom,

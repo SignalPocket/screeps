@@ -3,7 +3,8 @@
 const createRoadPlanner = ({
   Game, scheduledRoomTick, getRoomSources, getRoomCreeps,
   showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
-  FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, LOOK_STRUCTURES,
+  FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+  LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
 }) => {
   const getImportantRoadPaths = room => {
@@ -64,20 +65,168 @@ const createRoadPlanner = ({
     room.memory.roadPlan = { signature, updated: Game.time, paths: usablePaths };
     return usablePaths;
   };
+  const getImportantTravelPaths = room => {
+    const places = [];
+    const addPlace = (key, kind, position) => {
+      if (!position || !Number.isInteger(position.x) ||
+          !Number.isInteger(position.y)) return;
+      if (places.some(place => place.position.x === position.x &&
+          place.position.y === position.y)) return;
+      places.push({ key, kind, position });
+    };
+    const spawns = room.find(FIND_MY_SPAWNS).slice()
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const [index, spawn] of spawns.entries()) {
+      addPlace(`spawn-${index + 1}-${spawn.id}`, 'spawn', spawn.pos);
+    }
+    for (const [index, source] of getRoomSources(room).slice()
+      .sort((a, b) => a.id.localeCompare(b.id)).entries()) {
+      addPlace(`source-${index + 1}-${source.id}`, 'source', source.pos);
+    }
+    if (room.controller) {
+      addPlace(`controller-${room.controller.id}`, 'controller',
+        room.controller.pos);
+    }
+    if (room.storage) {
+      addPlace(`storage-${room.storage.id}`, 'storage', room.storage.pos);
+    }
+    if (!room.controller || !room.controller.my) {
+      const containers = room.find(FIND_STRUCTURES, {
+        filter: structure => structure.structureType === STRUCTURE_CONTAINER
+      }).slice().sort((a, b) => a.id.localeCompare(b.id));
+      for (const [index, container] of containers.entries()) {
+        addPlace(`container-${index + 1}-${container.id}`, 'container',
+          container.pos);
+      }
+    }
+    for (const [key, anchor] of [
+      ['extension-primary', room.memory.extensionCluster],
+      ['extension-overflow', room.memory.extensionOverflowCluster]
+    ]) {
+      if (!anchor) continue;
+      const position = room.getPositionAt
+        ? room.getPositionAt(anchor.x, anchor.y) : anchor;
+      addPlace(key, 'extensions', position);
+    }
+    const signature = ['v2-converging-important-pairs',
+      ...places.map(place => `${place.key}@${place.position.x},` +
+        `${place.position.y}`)].join(':');
+    const cached = room.memory.travelPathPlan;
+    if (cached && cached.signature === signature &&
+        Game.time - cached.updated < 1000 && Array.isArray(cached.paths)) {
+      return cached.paths;
+    }
+
+    const existingRoads = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_ROAD
+    });
+    const selectedTravelNetwork = new Set();
+    const paths = [];
+    for (let originIndex = 0; originIndex < places.length; originIndex++) {
+      for (let destinationIndex = originIndex + 1;
+        destinationIndex < places.length; destinationIndex++) {
+        const origin = places[originIndex];
+        const destination = places[destinationIndex];
+        const points = room.findPath(origin.position, destination.position, {
+          ignoreCreeps: true,
+          range: 1,
+          plainCost: 3,
+          swampCost: 12,
+          maxOps: 4000,
+          maxRooms: 1,
+          costCallback: (roomName, costs) => {
+            // Give already selected visual corridors a modest advantage over
+            // open ground. Later pairs converge where useful, but cost 2
+            // still permits a substantially shorter cost-3 direct route.
+            for (const key of selectedTravelNetwork) {
+              const [x, y] = key.split(':').map(Number);
+              costs.set(x, y, 2);
+            }
+            for (const road of existingRoads) {
+              costs.set(road.pos.x, road.pos.y, 1);
+            }
+            return costs;
+          }
+        }).map(step => ({ x: step.x, y: step.y }));
+        if (points.length > 0) {
+          for (const point of points) {
+            selectedTravelNetwork.add(`${point.x}:${point.y}`);
+          }
+          paths.push({
+            label: `${origin.key}-${destination.key}`,
+            kinds: [origin.kind, destination.kind],
+            points
+          });
+        }
+      }
+    }
+    room.memory.travelPathPlan = { signature, updated: Game.time, paths };
+    return paths;
+  };
+  const getInterRoomTravelPaths = homeRoom => {
+    const byRoom = {};
+    const plans = [
+      ['left', homeRoom.memory.remoteRoadPlan],
+      ['south', homeRoom.memory.southRemoteRoadPlan],
+      ['southwest', homeRoom.memory.southwestRemoteRoadPlan]
+    ];
+    for (const [planLabel, plan] of plans) {
+      for (const path of plan && Array.isArray(plan.paths) ? plan.paths : []) {
+        let segment = [];
+        let segmentRoom;
+        const storeSegment = () => {
+          if (!segmentRoom || segment.length < 2) return;
+          if (!byRoom[segmentRoom]) byRoom[segmentRoom] = [];
+          byRoom[segmentRoom].push({
+            label: `${planLabel}-${path.slot || 0}-${segmentRoom}`,
+            kinds: ['outpost'],
+            points: segment
+          });
+        };
+        for (const point of path.points || []) {
+          if (!point.roomName) continue;
+          if (segmentRoom && point.roomName !== segmentRoom) {
+            storeSegment();
+            segment = [];
+          }
+          segmentRoom = point.roomName;
+          segment.push({ x: point.x, y: point.y });
+        }
+        storeSegment();
+      }
+    }
+    return byRoom;
+  };
+  const getConvergedTravelPaths = paths => {
+    const uses = {};
+    for (const path of paths) {
+      for (const point of path.points || []) {
+        const key = `${point.x}:${point.y}`;
+        uses[key] = (uses[key] || 0) + 1;
+      }
+    }
+    return paths.map(path => ({
+      ...path,
+      points: (path.points || []).filter(point =>
+        uses[`${point.x}:${point.y}`] >= 2)
+    })).filter(path => path.points.length > 0);
+  };
   const isSingleLaneRoadPosition = (room, target) => {
     if (!target || !target.pos) return false;
-    return getImportantRoadPaths(room).some(path => path.points.some(point =>
-      point.x === target.pos.x && point.y === target.pos.y));
+    return getConvergedTravelPaths(getImportantTravelPaths(room))
+      .some(path => path.points.some(point =>
+        point.x === target.pos.x && point.y === target.pos.y));
   };
   const heatmapRoadTileCache = {};
   const getHeatmapRoadTiles = room => {
     if (heatmapRoadTileCache[room.name]) {
       return heatmapRoadTileCache[room.name];
     }
-    // Maintenance follows the canonical road network. A detour can be useful
-    // for movement without becoming a permanently repaired extra lane.
+    // Maintenance follows the converged important-place network. Old or
+    // incidental roads remain usable but do not keep consuming repair work.
     const tiles = new Set();
-    for (const path of getImportantRoadPaths(room)) {
+    for (const path of getConvergedTravelPaths(
+      getImportantTravelPaths(room))) {
       for (const point of path.points) tiles.add(`${point.x}:${point.y}`);
     }
     heatmapRoadTileCache[room.name] = tiles;
@@ -153,18 +302,25 @@ const createRoadPlanner = ({
     }
     return traffic;
   };
-  const drawRoadPlan = (room, paths, traffic, roadBudget) => {
+  const drawTravelPaths = (room, paths) => {
     for (const path of paths) {
-      const stroke = path.label === 'controller' ? '#64d2ff' :
-        path.label === 'source-controller' ? '#bf5af2' : '#30d158';
+      const kinds = path.kinds || [];
+      const stroke = kinds.includes('outpost') ? '#bf5af2' :
+        kinds.includes('controller') ? '#64d2ff' :
+        kinds.includes('storage') ? '#ffd60a' :
+          kinds.includes('extensions') ? '#ff9f0a' :
+            kinds.includes('container') ? '#ffcc80' : '#30d158';
       room.visual.poly(path.points.map(point => [point.x, point.y]), {
         fill: 'transparent',
         stroke,
-        strokeWidth: 0.08,
-        opacity: 0.28,
-        lineStyle: 'dashed'
+        strokeWidth: 0.07,
+        opacity: 0.3,
+        lineStyle: 'dotted'
       });
     }
+  };
+  const drawRoadPlan = (room, paths, traffic, roadBudget) => {
+    drawTravelPaths(room, paths);
     const samples = Object.values(traffic.tiles)
       .reduce((total, visits) => total + visits, 0);
     let roadStatus = room.memory.roadVisualStatus;
@@ -282,11 +438,15 @@ const createRoadPlanner = ({
 
   return {
     getImportantRoadPaths,
+    getImportantTravelPaths,
+    getInterRoomTravelPaths,
+    getConvergedTravelPaths,
     isSingleLaneRoadPosition,
     getHeatmapRoadTiles,
     isHeatmapRoadPosition,
     updateTrafficHeatmap,
     drawRoadPlan,
+    drawTravelPaths,
     getRoadBudget,
     placeRoadSite
   };

@@ -26,6 +26,8 @@ const { createCreepNaming } = require('creep.naming');
 const { createColonyDashboard } = require('colony.dashboard');
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
+const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
+  isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
   require('creep.routing');
 
@@ -90,6 +92,60 @@ module.exports.loop = function () {
   const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
     createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
   logDeadCreeps(Memory.creeps);
+  for (const creep of Object.values(Game.creeps)) {
+    normalizeBuilderMemory(creep.memory);
+    if (creep.memory.role === 'worker' && hasBuilderBody(creep)) {
+      creep.memory.role = 'builder';
+      creep.memory.birthRole = creep.memory.birthRole === 'worker'
+        ? 'builder' : creep.memory.birthRole;
+      creep.memory.builderScope = 'local';
+      creep.memory.builderMission = 'flexible';
+    }
+  }
+  // Preserve one outpost builder per planned slot. A replacement may already
+  // be spawning when an old builder becomes visible again; keep the active
+  // roster and turn the duplicate into useful local construction capacity.
+  for (const homeRoom of Object.values(Game.rooms).filter(room =>
+    room.controller && room.controller.my)) {
+    const plans = [homeRoom.memory.leftSurvey, homeRoom.memory.southSurvey,
+      homeRoom.memory.southwestSurvey].filter(plan => plan && plan.active &&
+      plan.targetRoom && (plan.remoteBuilderTarget || 0) > 0);
+    for (const plan of plans) {
+      const candidates = Object.values(Game.creeps).filter(creep =>
+        creep.memory.home === homeRoom.name && isOutpostBuilder(creep) &&
+        creep.memory.remoteRoom === plan.targetRoom)
+        .sort((a, b) =>
+          (b.spawning ? Infinity : b.ticksToLive || 0) -
+            (a.spawning ? Infinity : a.ticksToLive || 0) ||
+          a.name.localeCompare(b.name));
+      const retained = new Set();
+      for (let slot = 0; slot < plan.remoteBuilderTarget; slot++) {
+        const selected = candidates.find(creep =>
+          !retained.has(creep.name) &&
+          creep.memory.remoteBuilderSlot === slot) ||
+          candidates.find(creep => !retained.has(creep.name));
+        if (selected) {
+          retained.add(selected.name);
+          selected.memory.builderRosterRoom = plan.targetRoom;
+        }
+      }
+      for (const creep of candidates.filter(candidate =>
+        !retained.has(candidate.name))) {
+        creep.memory.builderScope = 'local';
+        creep.memory.builderMission = 'flexible';
+        delete creep.memory.remoteHome;
+        delete creep.memory.remoteRoom;
+        delete creep.memory.remoteTeam;
+        delete creep.memory.remoteDelivery;
+        delete creep.memory.remoteBuilderSlot;
+        delete creep.memory.remoteRepairTarget;
+        delete creep.memory.remoteRoadBuilding;
+        delete creep.memory.builderRosterRoom;
+        console.log(`[${Game.time}] ${creep.name} duplicate outpost builder ` +
+          `-> local builder`);
+      }
+    }
+  }
   if (!Memory.memoryMaintenance ||
       Game.time - (Memory.memoryMaintenance.lastRun || 0) >= 1000) {
     const { runMemoryMaintenance } = createMemoryMaintenance({ Game });
@@ -136,11 +192,15 @@ module.exports.loop = function () {
     });
   const { updateEnergyWorkPhase } = createEnergyPhase({ Game, workerCost });
   const { getImportantRoadPaths, isSingleLaneRoadPosition,
-    getHeatmapRoadTiles, isHeatmapRoadPosition, updateTrafficHeatmap,
-    drawRoadPlan, getRoadBudget, placeRoadSite } = createRoadPlanner({
+    getImportantTravelPaths, getInterRoomTravelPaths,
+    getConvergedTravelPaths, getHeatmapRoadTiles, isHeatmapRoadPosition,
+    updateTrafficHeatmap,
+    drawRoadPlan, drawTravelPaths, getRoadBudget, placeRoadSite } =
+    createRoadPlanner({
     Game, scheduledRoomTick, getRoomSources, getRoomCreeps,
     showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
-    FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, LOOK_STRUCTURES,
+    FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+    LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
   });
   const { isExtensionClusterTile, placeExtensionSite, placeStorageSite,
@@ -296,7 +356,7 @@ module.exports.loop = function () {
       entry.survey.targetRoom && entry.survey.remoteBuilderTarget > 0);
     const missingMaintainer = maintenanceSurveys.map(entry => {
       const assigned = workers.filter(creep =>
-        creep.memory.role === 'remote-builder' &&
+        isOutpostBuilder(creep) &&
         creep.memory.remoteRoom === entry.survey.targetRoom &&
         hasRemoteReplacementLife(creep));
       const usedSlots = new Set(assigned.map(creep =>
@@ -308,7 +368,9 @@ module.exports.loop = function () {
     }).find(entry => Number.isInteger(entry.missingSlot));
     if (missingMaintainer) {
       return {
-        role: 'remote-builder',
+        role: 'builder',
+        builderScope: 'outpost',
+        builderMission: 'maintenance',
         remoteRoom: missingMaintainer.survey.targetRoom,
         remoteBuilderSlot: missingMaintainer.missingSlot,
         remoteTeam: missingMaintainer.team,
@@ -422,11 +484,13 @@ module.exports.loop = function () {
     // does not sit unfinished while general builders upgrade at the RC.
     const tunnelSite = getSource2TunnelSite(room);
     if (tunnelSite && !workers.some(creep =>
-      creep.memory.role === 'digger' &&
+      isBuilder(creep, 'local', 'tunnel') &&
       (creep.spawning || hasLocalReplacementLife(creep)))) {
       return {
-        role: 'digger',
-        diggerTarget: tunnelSite.id,
+        role: 'builder',
+        builderScope: 'local',
+        builderMission: 'tunnel',
+        builderTarget: tunnelSite.id,
         forceSpawn: true,
         minimumEnergy: room.energyCapacityAvailable
       };
@@ -435,7 +499,7 @@ module.exports.loop = function () {
       filter: site => site.structureType === STRUCTURE_CONTAINER
     })[0];
     const viableContainerBuilder = workers.some(creep =>
-      creep.memory.role === 'builder' && hasBuilderBody(creep) &&
+        isLocalBuilder(creep) && hasBuilderBody(creep) &&
       hasLocalReplacementLife(creep));
     if (pendingContainer && !viableContainerBuilder) {
       const convertibleBuilder = workers.some(creep => !creep.spawning &&
@@ -487,10 +551,12 @@ module.exports.loop = function () {
         };
       }
       if (Game.rooms[southwestSurvey.targetRoom] && !workers.some(creep =>
-        creep.memory.role === 'remote-builder' &&
+        isOutpostBuilder(creep) &&
         creep.memory.remoteRoom === southwestSurvey.targetRoom)) {
         return {
-          role: 'remote-builder',
+          role: 'builder',
+          builderScope: 'outpost',
+          builderMission: 'maintenance',
           remoteRoom: southwestSurvey.targetRoom,
           remoteBuilderSlot: 0,
           remoteTeam: 'southwest',
@@ -536,30 +602,24 @@ module.exports.loop = function () {
     // Home-room income is the first staffing floor. Restore enough viable
     // WORK at every local source before sending emergency replacements to an
     // outpost; optional extra local source positions are handled later.
-    const viableBuilders = workers.filter(creep =>
-      creep.memory.role === 'builder' && hasBuilderBody(creep) &&
+    const viableBuilders = workers.filter(creep => isLocalBuilder(creep) &&
+      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep) &&
       hasLocalReplacementLife(creep));
-    if (viableBuilders.length < situationTargets.builder) {
+    const requiredBuilders = situationTargets.builder +
+      situationTargets.repairBuilder;
+    if (viableBuilders.length < requiredBuilders) {
       const availableBuilder = workers.find(creep => !creep.spawning &&
         (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
         hasBuilderBody(creep) && hasLocalReplacementLife(creep));
+      const repairBuilders = viableBuilders.filter(creep =>
+        creep.memory.builderMission === 'repair').length;
       return availableBuilder ? null : {
         role: 'builder',
+        builderScope: 'local',
+        builderMission: repairBuilders < situationTargets.repairBuilder
+          ? 'repair' : 'build',
         forceSpawn: true,
         minimumEnergy: Math.min(700, room.energyCapacityAvailable)
-      };
-    }
-    const viableFixers = workers.filter(creep =>
-      creep.memory.role === 'fixer' && hasBuilderBody(creep) &&
-      hasLocalReplacementLife(creep));
-    if (viableFixers.length < situationTargets.fixer) {
-      const availableFixer = workers.find(creep => !creep.spawning &&
-        creep.memory.role === 'worker' &&
-        hasBuilderBody(creep) && hasLocalReplacementLife(creep));
-      return availableFixer ? null : {
-        role: 'fixer',
-        forceSpawn: true,
-        minimumEnergy: Math.min(350, room.energyCapacityAvailable)
       };
     }
     // Assess each source by active WORK, not occupied tiles. One strong miner
@@ -633,13 +693,15 @@ module.exports.loop = function () {
       }
       if (expansion.status === 'bootstrap') {
         const pioneers = workers.filter(creep =>
-          creep.memory.role === 'expansion-builder' &&
+          isExpansionBuilder(creep) &&
           creep.memory.expansionTarget === expansion.targetRoom);
         const expansionBuilderTarget = Math.max(1, Math.min(3,
           Math.ceil(room.energyCapacityAvailable / 600)));
         if (pioneers.length < expansionBuilderTarget) {
           return {
-            role: 'expansion-builder',
+            role: 'builder',
+            builderScope: 'expansion',
+            builderMission: 'bootstrap',
             expansionTarget: expansion.targetRoom,
             forceSpawn: true
           };
@@ -684,7 +746,7 @@ module.exports.loop = function () {
         };
       }
       const remoteBuilders = workers.filter(creep =>
-        creep.memory.role === 'remote-builder' &&
+        isOutpostBuilder(creep) &&
         creep.memory.remoteRoom === survey.targetRoom);
       if (remoteBuilders.length < (survey.remoteBuilderTarget || 0)) {
         const usedSlots = new Set(remoteBuilders.map(creep =>
@@ -692,7 +754,9 @@ module.exports.loop = function () {
         const remoteBuilderSlot = [...Array(survey.remoteBuilderTarget || 0).keys()]
           .find(slot => !usedSlots.has(slot));
         return {
-          role: 'remote-builder',
+          role: 'builder',
+          builderScope: 'outpost',
+          builderMission: 'maintenance',
           remoteRoom: survey.targetRoom,
           remoteBuilderSlot,
           remoteTeam: 'left'
@@ -739,7 +803,7 @@ module.exports.loop = function () {
         }
       }
       const southBuilders = workers.filter(creep =>
-        creep.memory.role === 'remote-builder' &&
+        isOutpostBuilder(creep) &&
         creep.memory.remoteRoom === southSurvey.targetRoom);
       if (southBuilders.length < (southSurvey.remoteBuilderTarget || 0)) {
         const usedSlots = new Set(southBuilders.map(creep =>
@@ -748,7 +812,9 @@ module.exports.loop = function () {
           southSurvey.remoteBuilderTarget || 0).keys()]
           .find(slot => !usedSlots.has(slot));
         return {
-          role: 'remote-builder',
+          role: 'builder',
+          builderScope: 'outpost',
+          builderMission: 'maintenance',
           remoteRoom: southSurvey.targetRoom,
           remoteBuilderSlot,
           remoteTeam: 'south',
@@ -799,7 +865,7 @@ module.exports.loop = function () {
         }
       }
       const southwestBuilders = workers.filter(creep =>
-        creep.memory.role === 'remote-builder' &&
+        isOutpostBuilder(creep) &&
         creep.memory.remoteRoom === southwestSurvey.targetRoom);
       if (southwestBuilders.length <
           (southwestSurvey.remoteBuilderTarget || 0)) {
@@ -809,7 +875,9 @@ module.exports.loop = function () {
           southwestSurvey.remoteBuilderTarget || 0).keys()]
           .find(slot => !usedSlots.has(slot));
         return {
-          role: 'remote-builder',
+          role: 'builder',
+          builderScope: 'outpost',
+          builderMission: 'maintenance',
           remoteRoom: southwestSurvey.targetRoom,
           remoteBuilderSlot,
           remoteTeam: 'southwest',
@@ -837,21 +905,18 @@ module.exports.loop = function () {
         };
       }
     }
-    const builderTarget = getBuilderTarget(room);
-    const builderCount = workers.filter(creep =>
-      creep.memory.role === 'builder' && hasBuilderBody(creep)).length;
+    const situation = getRoomSituation(room);
+    const builderTarget = getBuilderTarget(room) +
+      situation.targets.repairBuilder;
+    const builderCount = workers.filter(creep => isLocalBuilder(creep) &&
+      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep)).length;
     if (builderCount < builderTarget) {
       const availableBuilder = workers.find(creep => !creep.spawning &&
         (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
         hasBuilderBody(creep));
-      return availableBuilder ? null : { role: 'builder' };
-    }
-    if (workers.filter(creep => creep.memory.role === 'fixer').length <
-        getRoomSituation(room).targets.fixer) {
-      const availableFixer = workers.find(creep => !creep.spawning &&
-        (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
-        hasBuilderBody(creep));
-      return availableFixer ? null : { role: 'fixer' };
+      return availableBuilder ? null : {
+        role: 'builder', builderScope: 'local', builderMission: 'flexible'
+      };
     }
     if (Number.isInteger(room.memory.containerHaulerPendingTarget) &&
         workers.length < room.memory.containerHaulerPendingTarget) {
@@ -903,7 +968,7 @@ module.exports.loop = function () {
     const { surplus } = selectRebalancerSurplus(active, target,
       hasLocalReplacementLife, RESOURCE_ENERGY);
     for (const creep of surplus) {
-      creep.memory.role = 'worker';
+      creep.memory.role = 'hauler';
       delete creep.memory.rebalancerSource;
       delete creep.memory.rebalanceTarget;
       delete creep.memory.rebalancePickupTarget;
@@ -1031,7 +1096,9 @@ module.exports.loop = function () {
           markedRemoteBuilders.length);
         index++) {
         const builder = markedRemoteBuilders[index];
-        builder.memory.role = 'remote-builder';
+        builder.memory.role = 'builder';
+        builder.memory.builderScope = 'outpost';
+        builder.memory.builderMission = 'maintenance';
         builder.memory.remoteHome = room.name;
         builder.memory.remoteRoom = targetRoom;
         builder.memory.remoteTeam = 'left';
@@ -1045,7 +1112,7 @@ module.exports.loop = function () {
       const missingRemoteBuilders = Math.max(0,
         (survey.remoteBuilderTarget || 0) -
         homeCreeps.filter(creep =>
-          creep.memory.role === 'remote-builder' &&
+          isOutpostBuilder(creep) &&
           creep.memory.remoteRoom === targetRoom).length);
       if (missingRemoteBuilders > 0) {
         room.memory.workerTarget = Math.max(room.memory.workerTarget || 0,
@@ -1707,7 +1774,7 @@ module.exports.loop = function () {
   }
 
   // The S2 wall tunnel is the one RCL2 road exception. Add one dedicated
-  // digger without consuming the population reserved for the rest of the room.
+  // tunnel builder without consuming population reserved for the room.
   for (const room of Object.values(Game.rooms)) {
     if (!room.controller || !room.controller.my ||
         room.memory.s2DiggerRequested) continue;
@@ -1721,7 +1788,7 @@ module.exports.loop = function () {
       tick: Game.time,
       siteId: tunnelSite.id
     };
-    console.log(`[${Game.time}] ${room.name} dedicated S2 digger requested ` +
+    console.log(`[${Game.time}] ${room.name} S2 tunnel builder requested ` +
       `for tunnel ${tunnelSite.pos.x},${tunnelSite.pos.y}`);
   }
 
@@ -1774,13 +1841,18 @@ module.exports.loop = function () {
           working: false,
           role: assignment.role,
           birthRole: assignment.role,
+          builderScope: assignment.builderScope,
+          builderMission: assignment.builderMission,
+          builderTarget: assignment.builderTarget,
           birthRoomOrdinal: getRoomOrdinal(assignment.remoteRoom ||
             assignment.expansionTarget || spawn.room.name),
           refillClusterId: assignment.refillClusterId,
           refillClusterX: assignment.refillClusterX,
           refillClusterY: assignment.refillClusterY,
           refillSpawnOwner: assignment.refillSpawnOwner || undefined,
-          remoteHome: assignment.role && assignment.role.indexOf('remote-') === 0
+          remoteHome: assignment.role && assignment.role.indexOf('remote-') === 0 ||
+              assignment.role === 'builder' &&
+                assignment.builderScope === 'outpost'
             ? spawn.room.name
             : undefined,
           minerSource: assignment.source && assignment.source.id,
@@ -1791,7 +1863,6 @@ module.exports.loop = function () {
           minerContainer: assignment.container && assignment.container.id,
           minerX: assignment.station && assignment.station.x,
           minerY: assignment.station && assignment.station.y,
-          diggerTarget: assignment.diggerTarget,
           remoteRoom: assignment.remoteRoom,
           remoteSlot: assignment.remoteSlot,
           remoteTeam: assignment.remoteTeam,
@@ -1835,18 +1906,43 @@ module.exports.loop = function () {
       console.log(`[${Game.time}] ${room.name} situation ` +
         `${room.memory.situationMode || 'unknown'} -> ${situation.mode}; ` +
         `targets Src${situation.targets.source} Ha${situation.targets.hauler} ` +
-        `B${situation.targets.builder} F${situation.targets.fixer} ` +
-        `U${situation.targets.upgrader} D${situation.targets.digger}`);
+        `B${situation.targets.builder} repairB` +
+        `${situation.targets.repairBuilder} U${situation.targets.upgrader} ` +
+        `tunnelB${situation.targets.tunnelBuilder}`);
       room.memory.situationMode = situation.mode;
       room.memory.situationChanged = Game.time;
     }
     const traffic = trafficByRoom[room.name] || updateTrafficHeatmap(room);
     const paths = getImportantRoadPaths(room);
+    const travelPaths = getImportantTravelPaths(room);
+    const interRoomTravelPaths = getInterRoomTravelPaths(room);
     delete room.memory.highwayPlan;
-    const plannedPaths = paths;
+    // Build within the corridors where multiple important-place routes
+    // converge. The compact canonical plan still owns the total road budget,
+    // preventing the richer visual network from increasing the road cap.
+    const plannedPaths = getConvergedTravelPaths(travelPaths);
     const controllerLevel = room.controller ? room.controller.level : 0;
-    const roadBudget = getRoadBudget(room, plannedPaths, controllerLevel);
-    drawRoadPlan(room, plannedPaths, traffic, roadBudget);
+    const roadBudget = getRoadBudget(room, paths, controllerLevel);
+    drawRoadPlan(room, [
+      ...travelPaths,
+      ...(interRoomTravelPaths[room.name] || [])
+    ], traffic, roadBudget);
+    const relatedRoomNames = new Set([
+      ...Object.keys(interRoomTravelPaths),
+      ...[room.memory.leftSurvey, room.memory.southSurvey,
+        room.memory.southwestSurvey]
+        .filter(survey => survey && survey.active && survey.targetRoom)
+        .map(survey => survey.targetRoom)
+    ]);
+    for (const relatedRoomName of relatedRoomNames) {
+      if (relatedRoomName === room.name) continue;
+      const relatedRoom = Game.rooms[relatedRoomName];
+      if (!relatedRoom) continue;
+      drawTravelPaths(relatedRoom, [
+        ...getImportantTravelPaths(relatedRoom),
+        ...(interRoomTravelPaths[relatedRoomName] || [])
+      ]);
+    }
     // Site placement and migration are stable planning work. Ten-tick,
     // room-staggered checks are responsive enough without rescanning every
     // structure and construction tile on every game tick.
@@ -1894,8 +1990,8 @@ module.exports.loop = function () {
           creep.memory.lastTask === 'upgrade');
       if (!assignedToController) return false;
     }
-    if (creep.memory.role === 'digger') {
-      const site = Game.getObjectById(creep.memory.diggerTarget) ||
+    if (isBuilder(creep, 'local', 'tunnel')) {
+      const site = Game.getObjectById(creep.memory.builderTarget) ||
         getSource2TunnelSite(creep.room);
       return !!site && target.pos.getRangeTo(site) <= 3;
     }
@@ -1919,8 +2015,8 @@ module.exports.loop = function () {
   }
   const roomUpgraders = {};
   const roomBuilders = {};
-  const roomFixers = {};
-  const roomDiggers = {};
+  const roomRepairBuilders = {};
+  const roomTunnelBuilders = {};
   const roomHaulers = {};
   const assignedCreeps = {};
   const sourceWorkerShortages = {};
@@ -1936,9 +2032,11 @@ module.exports.loop = function () {
   }
 
   for (const creep of creeps) {
-    if ((creep.memory.role === 'remote-scout' ||
+    if (isExpansionBuilder(creep)) {
+      assignedCreeps[creep.name] = true;
+    } else if ((creep.memory.role === 'remote-scout' ||
           creep.memory.role === 'remote-hauler' ||
-          creep.memory.role === 'remote-builder') &&
+          isOutpostBuilder(creep)) &&
         creep.memory.remoteHome) {
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
@@ -1959,7 +2057,9 @@ module.exports.loop = function () {
       roomUpgraders[creep.room.name].push(creep);
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
-        creep.memory.role === 'builder' &&
+        isLocalBuilder(creep) &&
+        creep.memory.builderMission !== 'repair' &&
+        creep.memory.builderMission !== 'tunnel' &&
         hasBuilderBody(creep) &&
         (!roomBuilders[creep.room.name] ||
           roomBuilders[creep.room.name].length <
@@ -1968,17 +2068,20 @@ module.exports.loop = function () {
       roomBuilders[creep.room.name].push(creep);
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
-        creep.memory.role === 'fixer' && hasBuilderBody(creep) &&
-        (!roomFixers[creep.room.name] ||
-          roomFixers[creep.room.name].length <
-            getRoomSituation(creep.room).targets.fixer)) {
-      if (!roomFixers[creep.room.name]) roomFixers[creep.room.name] = [];
-      roomFixers[creep.room.name].push(creep);
+        isBuilder(creep, 'local', 'repair') && hasBuilderBody(creep) &&
+        (!roomRepairBuilders[creep.room.name] ||
+          roomRepairBuilders[creep.room.name].length <
+            getRoomSituation(creep.room).targets.repairBuilder)) {
+      if (!roomRepairBuilders[creep.room.name]) {
+        roomRepairBuilders[creep.room.name] = [];
+      }
+      roomRepairBuilders[creep.room.name].push(creep);
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
-        creep.memory.role === 'digger' &&
-        getSource2TunnelSite(creep.room) && !roomDiggers[creep.room.name]) {
-      roomDiggers[creep.room.name] = creep;
+        isBuilder(creep, 'local', 'tunnel') &&
+        getSource2TunnelSite(creep.room) &&
+        !roomTunnelBuilders[creep.room.name]) {
+      roomTunnelBuilders[creep.room.name] = creep;
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
         creep.memory.role === 'hauler' &&
@@ -2032,20 +2135,25 @@ module.exports.loop = function () {
       if (!builder) break;
       delete assignedCreeps[builder.name];
       builder.memory.role = 'builder';
+      builder.memory.builderScope = 'local';
+      builder.memory.builderMission = 'build';
       roomBuilders[room.name].push(builder);
       assignedCreeps[builder.name] = true;
     }
-    if (getRoomSituation(room).targets.fixer > 0 &&
-        !roomFixers[room.name]) {
-      const fixer = roomCreeps.find(creep => !assignedCreeps[creep.name] &&
+    if (getRoomSituation(room).targets.repairBuilder > 0 &&
+        !roomRepairBuilders[room.name]) {
+      const repairBuilder = roomCreeps.find(creep =>
+        !assignedCreeps[creep.name] &&
         creep.memory.role === 'hauler' && creep.memory.task === 'repair' &&
         hasBuilderBody(creep)) ||
         roomCreeps.find(creep => !assignedCreeps[creep.name] &&
           creep.memory.role === 'hauler' && hasBuilderBody(creep));
-      if (fixer) {
-        fixer.memory.role = 'fixer';
-        roomFixers[room.name] = [fixer];
-        assignedCreeps[fixer.name] = true;
+      if (repairBuilder) {
+        repairBuilder.memory.role = 'builder';
+        repairBuilder.memory.builderScope = 'local';
+        repairBuilder.memory.builderMission = 'repair';
+        roomRepairBuilders[room.name] = [repairBuilder];
+        assignedCreeps[repairBuilder.name] = true;
       }
     }
 
@@ -2165,6 +2273,10 @@ module.exports.loop = function () {
             `body is not road-mobile enough for build/repair work`);
           creep.memory.mobilityRoleVersion = 'road-v1';
         }
+      } else if (creep.memory.role === 'worker' && hasBuilderBody(creep)) {
+        creep.memory.role = 'builder';
+        creep.memory.builderScope = 'local';
+        creep.memory.builderMission = 'flexible';
       }
       assignedCreeps[creep.name] = true;
       if (creep.memory.minerSource && creep.memory.role === 'harvester') {
@@ -2257,9 +2369,11 @@ module.exports.loop = function () {
   for (const creep of creeps) {
     if (creep.memory.role === 'remote-scout' ||
         creep.memory.role === 'remote-hauler' ||
-        creep.memory.role === 'remote-builder') continue;
+        isOutpostBuilder(creep) || isExpansionBuilder(creep)) continue;
     if (!creep.room.controller || !creep.room.controller.my) {
-      creep.memory.role = 'worker';
+        creep.memory.role = 'builder';
+        creep.memory.builderScope = 'local';
+        creep.memory.builderMission = 'flexible';
       delete creep.memory.minerSource;
       delete creep.memory.minerContainer;
       delete creep.memory.minerX;
@@ -2305,14 +2419,15 @@ module.exports.loop = function () {
 
     const workCreeps = roomCreeps.filter(creep => hasWorkParts(creep) &&
       creep.memory.role !== 'miner' && creep.memory.role !== 'harvester' &&
-      creep.memory.role !== 'digger');
+      !isBuilder(creep, 'local', 'tunnel') &&
+      !isOutpostBuilder(creep) && !isExpansionBuilder(creep));
     // Carriers may use their WORK part when logistics are covered, but they
     // are not delivery recipients. Counting haulers here made them reserve
     // one another as supply targets, then stage beside the controller when
     // the executor rejected that invalid handoff.
     const supplyRecipients = workCreeps.filter(creep =>
-      creep.memory.role === 'builder' || creep.memory.role === 'fixer' ||
-      creep.memory.role === 'upgrader' || creep.memory.role === 'worker');
+      isLocalBuilder(creep) || creep.memory.role === 'upgrader' ||
+      creep.memory.role === 'worker');
     for (const creep of workCreeps.filter(worker =>
       worker.memory.role === 'upgrader')) assignments[creep.name] = 'upgrade';
 
@@ -2320,14 +2435,17 @@ module.exports.loop = function () {
       for (const creep of workCreeps) assignments[creep.name] = 'upgrade';
     } else {
       let repairSlots = repairTargets.length > 0
-        ? (situation.mode === 'repair-crisis'
-          ? Math.max(2, situation.targets.fixer) : 1)
+        ? Math.max(1, situation.targets.repairBuilder)
         : 0;
-      const fixers = workCreeps.filter(creep => creep.memory.role === 'fixer');
-      const builders = workCreeps.filter(creep => creep.memory.role === 'builder');
-      const flexible = workCreeps.filter(creep => creep.memory.role === 'worker')
+      const repairBuilders = workCreeps.filter(creep =>
+        isBuilder(creep, 'local', 'repair'));
+      const flexible = workCreeps.filter(creep => isLocalBuilder(creep) &&
+        creep.memory.builderMission === 'flexible')
         .sort((a, b) => a.name.localeCompare(b.name));
-      for (const creep of fixers) {
+      const builders = workCreeps.filter(creep => isLocalBuilder(creep) &&
+        creep.memory.builderMission !== 'repair' &&
+        creep.memory.builderMission !== 'flexible');
+      for (const creep of repairBuilders) {
         if (repairSlots > 0) {
           assignments[creep.name] = 'repair';
           repairSlots--;
@@ -3135,7 +3253,7 @@ module.exports.loop = function () {
       creep.memory.role === 'remote-hauler'
       ? 1 : creep.memory.role === 'rebalancer'
         ? 2 : creep.memory.role === 'upgrader'
-          ? 3 : creep.memory.role === 'fixer' ? 4 : 5;
+          ? 3 : isBuilder(creep, 'local', 'repair') ? 4 : 5;
   const taskCreeps = creeps.slice().sort((a, b) =>
     taskPriority(a) - taskPriority(b));
   const reservedJobs = {
@@ -3192,7 +3310,8 @@ module.exports.loop = function () {
     retainExclusiveTarget(creep, ['repair', 'remote-haul'], 'repairTarget',
       reservedJobs.repair,
       target => target &&
-        (creep.memory.role === 'hauler' || creep.memory.role === 'fixer' ||
+        (creep.memory.role === 'hauler' ||
+          isBuilder(creep, 'local', 'repair') ||
           creep.memory.role === 'remote-hauler') &&
         hasWorkParts(creep) && target.hits < target.hitsMax &&
         creep.store[RESOURCE_ENERGY] > 0);
@@ -3208,8 +3327,8 @@ module.exports.loop = function () {
       target && target.my && !target.spawning && target.name !== creep.name &&
       roomDemandPlans[creep.room.name] &&
       roomDemandPlans[creep.room.name].supplyTargets[creep.name] === target.name &&
-      (target.memory.role === 'builder' || target.memory.role === 'fixer' ||
-        target.memory.role === 'upgrader' || target.memory.role === 'worker') &&
+      (isLocalBuilder(target) || target.memory.role === 'upgrader' ||
+        target.memory.role === 'worker') &&
       target.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
   }
   const executionCreeps = taskCreeps.slice().sort((a, b) =>
@@ -3520,7 +3639,7 @@ module.exports.loop = function () {
     };
     const getBuildTarget = extraFilter => {
       let target = Game.getObjectById(creep.memory.buildTarget);
-      const tunnelSite = creep.memory.role === 'digger'
+      const tunnelSite = isBuilder(creep, 'local', 'tunnel')
         ? getSource2TunnelSite(creep.room)
         : null;
       const extensionLimit = creep.room.controller &&
@@ -3623,8 +3742,8 @@ module.exports.loop = function () {
           creep.store[RESOURCE_ENERGY] === 0) return null;
       const valid = worker => worker && worker.my && !worker.spawning &&
         worker.name !== creep.name && hasWorkParts(worker) &&
-        (worker.memory.role === 'builder' || worker.memory.role === 'fixer' ||
-          worker.memory.role === 'upgrader' || worker.memory.role === 'worker') &&
+        (isLocalBuilder(worker) || worker.memory.role === 'upgrader' ||
+          worker.memory.role === 'worker') &&
         getUnreservedCapacity(worker) > 0;
       const plannedName = demandPlan && demandPlan.supplyTargets[creep.name];
       const plannedTarget = plannedName && Game.creeps[plannedName];
@@ -3640,7 +3759,7 @@ module.exports.loop = function () {
           creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 ||
           creep.memory.role === 'hauler' || creep.memory.role === 'miner' ||
           creep.memory.role === 'harvester' ||
-          creep.memory.role === 'digger') return false;
+          isBuilder(creep, 'local', 'tunnel')) return false;
       let anchor;
       if (demandLane === 'build') {
         anchor = creep.pos.findClosestByPath(FIND_MY_CONSTRUCTION_SITES, {
@@ -3754,7 +3873,18 @@ module.exports.loop = function () {
       return false;
     };
     let tasks;
-    if (creep.memory.role === 'refiller') {
+    if (isLocalBuilder(creep) && creep.memory.home &&
+        creep.room.name !== creep.memory.home) {
+      tasks = [{
+        name: 'builder-return',
+        run: () => {
+          moveCreep(creep,
+            new RoomPosition(25, 25, creep.memory.home), 20);
+          creep.memory.taskTarget = `${creep.memory.home} builder home`;
+          return true;
+        }
+      }];
+    } else if (creep.memory.role === 'refiller') {
       // Role identity is the authority. A second ownership list previously
       // allowed a creep to be labelled refiller while denying it refill work,
       // leaving it permanently staged beside an empty spawn.
@@ -4026,7 +4156,7 @@ module.exports.loop = function () {
           return true;
         }
       }];
-    } else if (creep.memory.role === 'expansion-builder') {
+    } else if (isExpansionBuilder(creep)) {
       tasks = [{
         name: 'expansion-build',
         run: () => {
@@ -4040,7 +4170,9 @@ module.exports.loop = function () {
           const spawn = creep.room.find(FIND_MY_SPAWNS)[0];
           if (spawn) {
             creep.memory.home = targetRoomName;
-            creep.memory.role = 'worker';
+            creep.memory.role = 'builder';
+            creep.memory.builderScope = 'local';
+            creep.memory.builderMission = 'flexible';
             delete creep.memory.expansionTarget;
             creep.memory.taskTarget = `${spawn.name} established`;
             return true;
@@ -4453,8 +4585,7 @@ module.exports.loop = function () {
               const recipient = creep.pos.findClosestByPath(FIND_MY_CREEPS, {
                 filter: worker => worker.name !== creep.name &&
                   hasWorkParts(worker) &&
-                  (worker.memory.role === 'builder' ||
-                    worker.memory.role === 'fixer' ||
+                  (isLocalBuilder(worker) ||
                     worker.memory.role === 'upgrader' ||
                     worker.memory.role === 'worker') &&
                   getUnreservedCapacity(worker) > 0 &&
@@ -4547,7 +4678,7 @@ module.exports.loop = function () {
           return true;
         }
       }];
-    } else if (creep.memory.role === 'remote-builder') {
+    } else if (isOutpostBuilder(creep)) {
       tasks = [{
         name: 'remote-road',
         run: () => {
@@ -5070,15 +5201,16 @@ module.exports.loop = function () {
           }
         }
       ];
-    } else if (creep.memory.working && creep.memory.role === 'digger') {
+    } else if (creep.memory.working &&
+        isBuilder(creep, 'local', 'tunnel')) {
       tasks = [
         {
           name: 'dig-road',
           run: () => {
-            const site = Game.getObjectById(creep.memory.diggerTarget) ||
+            const site = Game.getObjectById(creep.memory.builderTarget) ||
               getSource2TunnelSite(creep.room);
             if (!site) return false;
-            creep.memory.diggerTarget = site.id;
+            creep.memory.builderTarget = site.id;
             const target = getBuildTarget(candidate => candidate.id === site.id);
             return target
               ? perform(target, road => creep.build(road), 3)
@@ -5086,7 +5218,7 @@ module.exports.loop = function () {
           }
         }
       ];
-    } else if (creep.memory.working && creep.memory.role === 'builder') {
+    } else if (creep.memory.working && isLocalBuilder(creep)) {
       tasks = [
         {
           name: 'refill',
@@ -5094,6 +5226,16 @@ module.exports.loop = function () {
             if (demandLane !== 'refill') return false;
             const target = getRefillTarget();
             return target ? deliverRefill(target) : false;
+          }
+        },
+        {
+          name: 'repair',
+          run: () => {
+            if (demandLane !== 'repair') return false;
+            const target = getRepairTarget();
+            return target
+              ? perform(target, structure => creep.repair(structure), 3)
+              : false;
           }
         },
         {
@@ -5131,44 +5273,6 @@ module.exports.loop = function () {
                       (!tunnelSite || candidate.id !== tunnelSite.id));
             return site
               ? perform(site, target => creep.build(target), 3)
-              : false;
-          }
-        },
-        {
-          name: 'upgrade',
-          run: () => {
-            if (!controller || !controller.my) return false;
-            if (controllerStation &&
-                (creep.pos.x !== controllerStation.position.x ||
-                  creep.pos.y !== controllerStation.position.y)) {
-              moveCreep(creep, controllerStation.position, 0);
-              creep.memory.taskTarget =
-                `${controller.id} via ${controllerStation.position.x},` +
-                `${controllerStation.position.y}`;
-              return true;
-            }
-            return perform(controller,
-              target => creep.upgradeController(target), 3);
-          }
-        }
-      ];
-    } else if (creep.memory.working && creep.memory.role === 'fixer') {
-      tasks = [
-        {
-          name: 'refill',
-          run: () => {
-            if (demandLane !== 'refill') return false;
-            const target = getRefillTarget();
-            return target ? deliverRefill(target) : false;
-          }
-        },
-        {
-          name: 'repair',
-          run: () => {
-            if (demandLane !== 'repair') return false;
-            const target = getRepairTarget();
-            return target
-              ? perform(target, structure => creep.repair(structure), 3)
               : false;
           }
         },
@@ -5369,10 +5473,10 @@ module.exports.loop = function () {
         run: () => {
           // Dedicated haulers used the earlier buffer step; other mobile roles
           // may store unused energy without returning it to its source.
-          if (creep.memory.role === 'hauler' || creep.memory.role === 'worker' ||
-              creep.memory.role === 'builder' ||
-              creep.memory.role === 'fixer' ||
-              creep.memory.role === 'digger') return false;
+          if (creep.memory.role === 'hauler' ||
+              creep.memory.role === 'worker' || isLocalBuilder(creep)) {
+            return false;
+          }
           return storeEnergyInBuffer();
         }
       }
@@ -5397,15 +5501,13 @@ module.exports.loop = function () {
         name: 'harvest',
         run: () => {
           if (creep.memory.role === 'hauler') return false;
-          if (creep.memory.role === 'builder' ||
-              creep.memory.role === 'fixer' ||
-              creep.memory.role === 'worker') {
+          if (isLocalBuilder(creep) || creep.memory.role === 'worker') {
             const storedEnergy = getRoomStructures(creep.room).some(
               structure => canWithdrawFrom(creep, structure) &&
                 getUnreservedEnergy(structure) > 0);
             if (storedEnergy) return false;
           }
-          if (creep.memory.role === 'digger') {
+          if (isBuilder(creep, 'local', 'tunnel')) {
             const source = getRoomSources(creep.room)[1];
             const sourceContainer = source &&
               getRoomStructures(creep.room).some(structure =>
@@ -5626,8 +5728,7 @@ module.exports.loop = function () {
         const recipient = getRoomCreeps(creep.room)
           .filter(worker => !worker.spawning && worker.name !== creep.name &&
             hasWorkParts(worker) &&
-            (worker.memory.role === 'builder' ||
-              worker.memory.role === 'fixer' ||
+            (isLocalBuilder(worker) ||
               worker.memory.role === 'upgrader' ||
               worker.memory.role === 'worker') &&
             getUnreservedCapacity(worker) > 0 &&
@@ -5672,8 +5773,8 @@ module.exports.loop = function () {
       const recipient = creep.pos.findClosestByPath(FIND_MY_CREEPS, {
         filter: worker => !worker.spawning && worker.name !== creep.name &&
           hasWorkParts(worker) &&
-          (worker.memory.role === 'builder' || worker.memory.role === 'fixer' ||
-            worker.memory.role === 'upgrader' || worker.memory.role === 'worker') &&
+          (isLocalBuilder(worker) || worker.memory.role === 'upgrader' ||
+            worker.memory.role === 'worker') &&
           getUnreservedCapacity(worker) > 0 &&
           creep.pos.getRangeTo(worker) <= 3
       });
@@ -5686,8 +5787,8 @@ module.exports.loop = function () {
     if (!creep.memory.task) {
       let anchor;
       let range = 3;
-      if (creep.memory.role === 'digger') {
-        anchor = Game.getObjectById(creep.memory.diggerTarget) ||
+      if (isBuilder(creep, 'local', 'tunnel')) {
+        anchor = Game.getObjectById(creep.memory.builderTarget) ||
           getSource2TunnelSite(creep.room);
         range = 3;
       } else if (creep.store[RESOURCE_ENERGY] === 0) {
@@ -5811,9 +5912,10 @@ module.exports.loop = function () {
         .filter(isOutpostRepairTarget).length
     }), { buildTargets: 0, fixTargets: 0 });
   updateDashboard(creeps, {
-    buildTargets: ownedWorkTargets.buildTargets +
-      outpostWorkTargets.buildTargets,
-    fixTargets: ownedWorkTargets.fixTargets + outpostWorkTargets.fixTargets
+    localBuildTargets: ownedWorkTargets.buildTargets,
+    outpostBuildTargets: outpostWorkTargets.buildTargets,
+    localFixTargets: ownedWorkTargets.fixTargets,
+    outpostFixTargets: outpostWorkTargets.fixTargets
   });
   drawDashboard();
 
@@ -5877,12 +5979,12 @@ module.exports.loop = function () {
         creep.memory.role === 'refiller').length;
       const rebalancerCount = roomCreeps.filter(creep =>
         creep.memory.role === 'rebalancer').length;
-      const builderCount = roomCreeps.filter(creep =>
-        creep.memory.role === 'builder').length;
-      const fixerCount = roomCreeps.filter(creep =>
-        creep.memory.role === 'fixer').length;
-      const diggerCount = roomCreeps.filter(creep =>
-        creep.memory.role === 'digger').length;
+      const localBuilders = roomCreeps.filter(isLocalBuilder);
+      const builderCount = localBuilders.length;
+      const repairBuilderCount = localBuilders.filter(creep =>
+        creep.memory.builderMission === 'repair').length;
+      const tunnelBuilderCount = localBuilders.filter(creep =>
+        creep.memory.builderMission === 'tunnel').length;
       const idleCreeps = roomCreeps.filter(creep => creep.memory.idleNow);
       const idleCount = idleCreeps.length;
       const retireCandidate = idleCreeps.find(creep =>
@@ -5981,8 +6083,8 @@ module.exports.loop = function () {
           `Src ${sourceWorkerCount}/${desiredSourceWorkers} spots${minerLimit} ` +
           `Ha ${haulerCount} Rf ${refillerCount}/${situation.targets.refiller} ` +
           `Bal ${rebalancerCount}/${situation.targets.rebalancer} ` +
-          `B ${builderCount}/${getBuilderTarget(room)} F ${fixerCount} ` +
-          `D ${diggerCount}/${situation.targets.digger} ` +
+          `B ${builderCount} build${getBuilderTarget(room)} ` +
+          `repair${repairBuilderCount} tunnel${tunnelBuilderCount} ` +
           `Idle ${idleCount} | ` +
           `Energy available ${room.energyAvailable} | max ${room.energyCapacityAvailable}`,
         `  ${sources.join(' | ') || 'No sources'}`,
@@ -5992,8 +6094,9 @@ module.exports.loop = function () {
         expansionStatus,
         `  Sit ${situation.mode} Src${situation.targets.source} ` +
           `Ha${situation.targets.hauler} B${situation.targets.builder} ` +
-          `F${situation.targets.fixer} U${situation.targets.upgrader} ` +
-          `D${situation.targets.digger} | ` +
+          `repairB${situation.targets.repairBuilder} ` +
+          `U${situation.targets.upgrader} ` +
+          `tunnelB${situation.targets.tunnelBuilder} | ` +
           `Buf${Math.round(situation.signals.bufferRatio * 100)}% ` +
           `Drop${situation.signals.droppedEnergy} | stable-v1`,
         `  Health ${situation.status.label} ${situation.status.score}/100 | ` +

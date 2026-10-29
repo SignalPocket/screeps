@@ -151,7 +151,11 @@ const createSourceStaffing = ({
         const carryParts = creep.getActiveBodyparts(CARRY);
         const workParts = creep.getActiveBodyparts(WORK);
         creep.memory.role = carryParts >= Math.max(2, workParts * 2)
-          ? 'hauler' : 'worker';
+          ? 'hauler' : 'builder';
+        if (creep.memory.role === 'builder') {
+          creep.memory.builderScope = 'local';
+          creep.memory.builderMission = 'flexible';
+        }
       } else {
         creep.memory.role = 'hauler';
       }

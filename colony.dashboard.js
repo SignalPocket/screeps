@@ -7,8 +7,8 @@ const createColonyDashboard = ({
 }) => {
   const compact = value => value >= 1000
     ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
-  const roleOrder = ['LM', 'LC', 'RF', 'RB', 'UP', 'BU', 'FX', 'DG',
-    'OP', 'OC', 'OM', 'W', 'CL', 'EB'];
+  const roleOrder = ['LM', 'LC', 'RF', 'RB', 'UP', 'BU-L', 'BU-O', 'BU-X',
+    'OP', 'OC', 'W', 'CL'];
 
   const updateDashboard = (creeps, workTargets = {}) => {
     if (Game.time % 5 !== 0) return Memory.colonyDashboard;
@@ -57,10 +57,17 @@ const createColonyDashboard = ({
       spawn.spawning).length;
     const needed = populationNeed + replacementNeed;
     const roleCounts = creeps.reduce((counts, creep) => {
-      const role = shortRoles[creep.memory.role] || creep.memory.role || 'W';
+      const role = creep.memory.role === 'builder'
+        ? creep.memory.builderScope === 'outpost' ? 'BU-O'
+          : creep.memory.builderScope === 'expansion' ? 'BU-X' : 'BU-L'
+        : shortRoles[creep.memory.role] || creep.memory.role || 'W';
       counts[role] = (counts[role] || 0) + 1;
       return counts;
     }, {});
+    const localBuildTargets = workTargets.localBuildTargets || 0;
+    const outpostBuildTargets = workTargets.outpostBuildTargets || 0;
+    const localFixTargets = workTargets.localFixTargets || 0;
+    const outpostFixTargets = workTargets.outpostFixTargets || 0;
     const dashboard = {
       updated: Game.time,
       creeps: creeps.length,
@@ -74,8 +81,14 @@ const createColonyDashboard = ({
       carriedEnergy,
       looseEnergy,
       roleCounts,
-      buildTargets: workTargets.buildTargets || 0,
-      fixTargets: workTargets.fixTargets || 0
+      localBuildTargets,
+      outpostBuildTargets,
+      localFixTargets,
+      outpostFixTargets,
+      buildTargets: workTargets.buildTargets ||
+        localBuildTargets + outpostBuildTargets,
+      fixTargets: workTargets.fixTargets ||
+        localFixTargets + outpostFixTargets
     };
     Memory.colonyDashboard = dashboard;
     if (Game.time % 25 === 0) {
@@ -87,7 +100,8 @@ const createColonyDashboard = ({
         `reserve ${compact(reserveEnergy)}, ` +
         `carried ${compact(carriedEnergy)}, ` +
         `loose ${compact(looseEnergy)}) | Targets build ` +
-        `${dashboard.buildTargets}, fix ${dashboard.fixTargets} | Roles ` +
+        `L${dashboard.localBuildTargets}/O${dashboard.outpostBuildTargets}, ` +
+        `fix L${dashboard.localFixTargets}/O${dashboard.outpostFixTargets} | Roles ` +
         `${roleOrder.filter(role => roleCounts[role]).map(role =>
           `${role}${roleCounts[role]}`).join(' ')}`);
     }
@@ -146,8 +160,10 @@ const createColonyDashboard = ({
         { align: 'left', color: '#d1d1d6', font: 0.6 }
       );
       room.visual.text(
-        `Targets build ${dashboard.buildTargets || 0} | ` +
-          `fix ${dashboard.fixTargets || 0}`,
+        `Targets build L${dashboard.localBuildTargets || 0}/` +
+          `O${dashboard.outpostBuildTargets || 0} | fix ` +
+          `L${dashboard.localFixTargets || 0}/` +
+          `O${dashboard.outpostFixTargets || 0}`,
         1.2, 25.55,
         { align: 'left', color: '#ff8ad8', font: 0.62 }
       );

@@ -7,14 +7,10 @@ const shortRoles = {
   refiller: 'RF',
   rebalancer: 'RB',
   builder: 'BU',
-  digger: 'DG',
-  fixer: 'FX',
   upgrader: 'UP',
   'remote-scout': 'OP',
   'remote-hauler': 'OC',
-  'remote-builder': 'OM',
   claimer: 'CL',
-  'expansion-builder': 'EB',
   worker: 'W'
 };
 

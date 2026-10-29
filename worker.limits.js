@@ -63,11 +63,11 @@ const createWorkerLimits = ({
     const targets = situation.targets;
     const roles = situation.policy.roles;
     const localWorkerMinimum = roles.source.min + roles.builder.min +
-      roles.fixer.min + roles.upgrader.min + roles.hauler.min +
-      roles.refiller.min + roles.rebalancer.min + roles.digger.min;
+      roles.repairBuilder.min + roles.upgrader.min + roles.hauler.min +
+      roles.refiller.min + roles.rebalancer.min + roles.tunnelBuilder.min;
     const localWorkerDesired = sourceWorkerTargetTotal + targets.builder +
-      targets.fixer + targets.upgrader + targets.hauler + targets.refiller +
-      targets.rebalancer + targets.digger;
+      targets.repairBuilder + targets.upgrader + targets.hauler +
+      targets.refiller + targets.rebalancer + targets.tunnelBuilder;
     const countedRemoteRooms = new Set();
     let remoteWorkerMinimum = 0;
     let remoteWorkerDesired = 0;

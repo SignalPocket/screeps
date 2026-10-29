@@ -4,9 +4,7 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
   const roleCodes = {
     worker: 'WK', miner: 'LM', harvester: 'LM', hauler: 'LC',
     refiller: 'RF', rebalancer: 'RB', upgrader: 'UP', builder: 'BU',
-    fixer: 'FX', digger: 'DG', 'remote-scout': 'OP',
-    'remote-hauler': 'OC', 'remote-builder': 'OM', claimer: 'CL',
-    'expansion-builder': 'EB'
+    'remote-scout': 'OP', 'remote-hauler': 'OC', claimer: 'CL'
   };
 
   const nextOrdinal = () => Math.max(0,
@@ -47,7 +45,8 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
     const targetRoom = assignment.remoteRoom || assignment.expansionTarget ||
       spawn.room.name;
     const parts = [getRoomOrdinal(targetRoom),
-      roleCodes[assignment.role] || 'WK'];
+      assignment.role === 'builder'
+        ? 'BU' : roleCodes[assignment.role] || 'WK'];
     if (assignment.role === 'refiller' && assignment.refillClusterId) {
       parts.push(assignment.refillClusterId === 'primary' ? 'P' : 'O');
     } else if (assignment.role === 'remote-scout' &&
@@ -56,7 +55,8 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
     } else if (assignment.role === 'remote-hauler' &&
         Number.isInteger(assignment.remoteHaulerSlot)) {
       parts.push(`S${assignment.remoteHaulerSlot + 1}`);
-    } else if (assignment.role === 'remote-builder' &&
+    } else if (assignment.role === 'builder' &&
+        assignment.builderScope === 'outpost' &&
         Number.isInteger(assignment.remoteBuilderSlot)) {
       parts.push(`M${assignment.remoteBuilderSlot + 1}`);
     } else if ((assignment.role === 'harvester' ||

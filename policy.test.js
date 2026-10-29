@@ -75,8 +75,8 @@ assert.strictEqual(imbalancedRemote.roles.rebalancer.desired, 3);
 const repairSurge = derivePopulationPolicy({ ...base,
   storedEnergy: 12000, bufferRatio: 0.8,
   repair: { critical: true, remaining: 600000 } });
-assert.strictEqual(repairSurge.roles.fixer.desired, 3);
-assert.ok(repairSurge.roles.fixer.max >= 3);
+assert.strictEqual(repairSurge.roles.repairBuilder.desired, 3);
+assert.ok(repairSurge.roles.repairBuilder.max >= 3);
 
 const emergency = derivePopulationPolicy({ ...base, controllerTicks: 2500 });
 assert.strictEqual(emergency.mode, 'controller-emergency');

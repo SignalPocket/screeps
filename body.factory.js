@@ -59,7 +59,7 @@ const createBodyFactory = constants => {
       return [...Array(workParts).fill(WORK), CARRY,
         ...Array(moveParts).fill(MOVE)];
     }
-    if (role === 'miner' || role === 'harvester' || role === 'digger') {
+    if (role === 'miner' || role === 'harvester') {
       const moveParts = energy >= 350 ? 2 : 1;
       const workParts = Math.min(48,
         Math.floor((energy - BODYPART_COST[CARRY] -
@@ -112,18 +112,9 @@ const createBodyFactory = constants => {
       body.push(...workerBody);
       cost += workerCost;
     }
-    if (body.filter(part => part === MOVE).length === 1 &&
-        body.length < 50 && cost + BODYPART_COST[MOVE] <= energy) {
-      body.push(MOVE);
-      cost += BODYPART_COST[MOVE];
-    }
-    if (body.length < 50 && cost + BODYPART_COST[WORK] <= energy) {
-      body.push(WORK);
-      cost += BODYPART_COST[WORK];
-    }
-    if (body.length < 50 && cost + BODYPART_COST[CARRY] <= energy) {
-      body.push(CARRY);
-    }
+    // Builders remain road-mobile at every energy level. Spare energy cannot
+    // buy a lone WORK or CARRY part because that would create more road
+    // fatigue than the MOVE parts can clear each tick.
     if (body.indexOf(WORK) === -1 || body.indexOf(CARRY) === -1 ||
         body.indexOf(MOVE) === -1) return null;
     return body.length ? body : null;

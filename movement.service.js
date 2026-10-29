@@ -9,10 +9,26 @@ const createMovementService = options => {
     if (movementRoomCache[roomName]) return movementRoomCache[roomName];
     const room = Game.rooms[roomName];
     if (!room) return null;
+    const preferredUses = {};
+    for (const path of room.memory.travelPathPlan &&
+      Array.isArray(room.memory.travelPathPlan.paths)
+      ? room.memory.travelPathPlan.paths : []) {
+      for (const point of path.points || []) {
+        const key = `${point.x}:${point.y}`;
+        preferredUses[key] = (preferredUses[key] || 0) + 1;
+      }
+    }
+    const preferredRoadTiles = new Set(Object.entries(preferredUses)
+      .filter(([, uses]) => uses >= 2).map(([key]) => key));
     const cached = {
       roads: room.find(FIND_STRUCTURES, {
         filter: structure => structure.structureType === STRUCTURE_ROAD
-      }).map(road => ({ x: road.pos.x, y: road.pos.y })),
+      }).map(road => ({
+        x: road.pos.x,
+        y: road.pos.y,
+        preferred: preferredRoadTiles.has(`${road.pos.x}:${road.pos.y}`)
+      })),
+      preferredRoadTiles,
       creeps: room.find(FIND_MY_CREEPS).map(other => ({
         name: other.name,
         x: other.pos.x,
@@ -57,8 +73,8 @@ const createMovementService = options => {
     const effectiveRange = targetRoomName === creep.room.name ? range : 0;
     if (targetRoomName === creep.room.name &&
         creep.pos.getRangeTo(position) <= effectiveRange) return OK;
-    if (creep.memory.navCostVersion !== 'cached-routes-v3') {
-      creep.memory.navCostVersion = 'cached-routes-v3';
+    if (creep.memory.navCostVersion !== 'planned-roads-v5') {
+      creep.memory.navCostVersion = 'planned-roads-v5';
       delete creep.memory._move;
       delete creep.memory.navGoal;
     }
@@ -84,14 +100,21 @@ const createMovementService = options => {
       range: effectiveRange,
       reusePath: recalculate ? 0 : routeReuse,
       ignoreCreeps: !recalculate,
-      plainCost: 2,
-      swampCost: 10,
+      // Roads should win over a modest shortcut, while still allowing a
+      // clearly shorter off-road route. This avoids both road avoidance and
+      // long ornamental detours.
+      plainCost: 3,
+      swampCost: 12,
       maxOps: 2000,
       costCallback: (roomName, costs) => {
         if (!Game.rooms[roomName]) return costs;
         const roomCache = getMovementRoomCache(roomName);
+        for (const key of roomCache ? roomCache.preferredRoadTiles : []) {
+          const [x, y] = key.split(':').map(Number);
+          costs.set(x, y, 2);
+        }
         for (const road of roomCache ? roomCache.roads : []) {
-          costs.set(road.x, road.y, 1);
+          costs.set(road.x, road.y, road.preferred ? 1 : 2);
         }
         const reservations = movementReservations[roomName] || {};
         for (const key of Object.keys(reservations)) {
