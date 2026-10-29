@@ -108,11 +108,18 @@ const derivePopulationPolicy = state => {
   const activeOutposts = Math.max(0, state.activeRemoteRooms || 0);
   const containerImbalance = state.containerImbalance || 0;
   const rebalancerMinimum = hasBufferNetwork && activeOutposts > 0 ? 1 : 0;
-  let rebalancerDesired = hasBufferNetwork && activeOutposts > 0
-    ? clamp(activeOutposts, 2, 4)
-    : hasBufferNetwork && containerImbalance >= 0.35 ? 1 : 0;
-  if (containerImbalance >= 0.6 && rebalancerDesired > 0) {
-    rebalancerDesired = Math.min(5, rebalancerDesired + 1);
+  // Outposts justify one standing handoff specialist, not one specialist per
+  // outpost. Add more only when the room's buffers actually diverge.
+  let rebalancerDesired = rebalancerMinimum ||
+    (hasBufferNetwork && containerImbalance >= 0.35 ? 1 : 0);
+  if (hasBufferNetwork && containerImbalance >= 0.25) {
+    rebalancerDesired = Math.max(rebalancerDesired, 2);
+  }
+  if (hasBufferNetwork && containerImbalance >= 0.5) {
+    rebalancerDesired = Math.max(rebalancerDesired, 3);
+  }
+  if (hasBufferNetwork && containerImbalance >= 0.75) {
+    rebalancerDesired = Math.max(rebalancerDesired, 4);
   }
   const rebalancerMaximum = rebalancerDesired > 0
     ? Math.min(6, rebalancerDesired + 1) : 0;

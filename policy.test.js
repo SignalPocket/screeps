@@ -52,8 +52,12 @@ assert.strictEqual(remote.remote.miners, 4);
 assert.ok(remote.remote.haulers >= 4);
 assert.strictEqual(remote.remote.builders, 1);
 assert.strictEqual(remote.roles.rebalancer.min, 1);
-assert.strictEqual(remote.roles.rebalancer.desired, 2);
-assert.ok(remote.roles.rebalancer.max >= 3);
+  assert.strictEqual(remote.roles.rebalancer.desired, 1);
+  assert.ok(remote.roles.rebalancer.max >= 2);
+
+const imbalancedRemote = derivePopulationPolicy({ ...base,
+  activeRemoteRooms: 3, activeRemoteSources: 4, containerImbalance: 0.65 });
+assert.strictEqual(imbalancedRemote.roles.rebalancer.desired, 3);
 
 const emergency = derivePopulationPolicy({ ...base, controllerTicks: 2500 });
 assert.strictEqual(emergency.mode, 'controller-emergency');
@@ -67,7 +71,7 @@ const stillFullController = derivePopulationPolicy({ ...base,
 assert.strictEqual(stillFullController.roles.upgrader.desired, 4);
 
 for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
-  emergency, fullController, stillFullController]) {
+  imbalancedRemote, emergency, fullController, stillFullController]) {
   for (const entry of Object.values(scenario.roles)) {
     assert.ok(entry.min <= entry.desired);
     assert.ok(entry.desired <= entry.max);

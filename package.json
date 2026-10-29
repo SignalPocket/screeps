@@ -4,6 +4,6 @@
   "private": true,
   "description": "Personal Screeps colony starter",
   "scripts": {
-    "check": "node --check main.js && node --check colony.policy.js && node --check policy.test.js && node policy.test.js"
+    "check": "node --check main.js && node --check colony.policy.js && node --check body.factory.js && node --check resource.reservations.js && node --check room.index.js && node --check movement.service.js && node --check policy.test.js && node --check common.test.js && node policy.test.js && node common.test.js"
   }
 }

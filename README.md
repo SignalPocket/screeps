@@ -21,12 +21,22 @@ backlogs, controller downgrade risk, extensions, containers, and active outpost
 rooms. `main.js` executes those roles and keeps the policy snapshot in
 `room.memory.populationPolicy` for inspection.
 
+`main.js` is the tick orchestrator. Reusable, game-independent behavior lives
+in small modules: `colony.policy.js` derives staffing, `body.factory.js` builds
+role bodies and log labels, and `resource.reservations.js` provides the shared
+per-tick energy/capacity ledger. `room.index.js` owns cached room lookups and
+`movement.service.js` owns navigation, traffic costs, and route reservations.
+Pure scenarios in `policy.test.js` and `common.test.js` protect those boundaries
+while role executors are migrated out of `main.js` incrementally.
+
 Outposts scale from their visible sources, route distance, construction sites,
 and container pressure. A completed remote source container immediately opens a
 haul lane; each ready source gets an essential carrier before surplus local work.
 Returning inter-room haulers unload into the first reachable home buffer, while
 the room rebalancers distribute that energy between extension and controller
-buffers. Balancer staffing scales with active outposts and container imbalance.
+buffers. One balancer covers the outpost handoff network; additional balancers
+are assigned only while container imbalance exists and return to flexible work
+when the buffers recover.
 Empty remote haulers may switch away from an exhausted lane to the fullest
 visible outpost container; loaded and in-transit carriers finish their trip.
 When the controller buffer reaches 90%, the policy fills every usable controller
