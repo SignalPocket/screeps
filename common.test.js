@@ -19,6 +19,8 @@ const { createRemoteHauling } = require('./remote.hauling');
 const { createEnergyPhase } = require('./energy.phase');
 const { createRoadPlanner } = require('./road.planner');
 const { createInfrastructurePlanner } = require('./infrastructure.planner');
+const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
+  require('./creep.routing');
 
 const parts = {
   WORK: 'work', CARRY: 'carry', MOVE: 'move', ATTACK: 'attack',
@@ -545,5 +547,31 @@ const extensionBuffer = {
 };
 assert.strictEqual(infrastructurePlanner.isExtensionRefillBuffer(
   infrastructureRoom, extensionBuffer), true);
+
+const expiringBalancer = {
+  name: 'old-balancer', ticksToLive: 20, viable: false,
+  store: { getCapacity: () => 200 }, memory: { role: 'rebalancer' }
+};
+const viableBalancer = {
+  name: 'new-balancer', ticksToLive: 1000, viable: true,
+  store: { getCapacity: () => 100 }, memory: { role: 'rebalancer' }
+};
+const rebalancerSelection = selectRebalancerSurplus(
+  [expiringBalancer, viableBalancer], 1, creep => creep.viable, 'energy');
+assert.strictEqual(rebalancerSelection.keepers[0].name, 'new-balancer');
+assert.strictEqual(rebalancerSelection.surplus[0].name, 'old-balancer');
+
+const routingUpgrader = { memory: { role: 'upgrader' } };
+const controllerBuffer = { id: 'controller-buffer' };
+const sourceBuffer = { id: 'source-buffer' };
+const controllerPosition = { x: 30, y: 30 };
+const routingStation = {
+  buffer: controllerBuffer,
+  position: controllerPosition
+};
+assert.strictEqual(getWithdrawalApproachTarget(routingUpgrader,
+  controllerBuffer, routingStation), controllerPosition);
+assert.strictEqual(getWithdrawalApproachTarget(routingUpgrader,
+  sourceBuffer, routingStation), sourceBuffer);
 
 console.log('common module scenarios passed');

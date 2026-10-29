@@ -20,6 +20,8 @@ const { createRemoteHauling } = require('remote.hauling');
 const { createEnergyPhase } = require('energy.phase');
 const { createRoadPlanner } = require('road.planner');
 const { createInfrastructurePlanner } = require('infrastructure.planner');
+const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
+  require('creep.routing');
 
 const { workerCost, buildBody, getBodyCode } = createBodyFactory({
   WORK, CARRY, MOVE, ATTACK, RANGED_ATTACK, HEAL, CLAIM, TOUGH,
@@ -819,12 +821,9 @@ module.exports.loop = function () {
   const releaseSurplusRebalancers = (room, workers) => {
     const target = getRoomSituation(room).targets.rebalancer;
     const active = workers.filter(creep => !creep.spawning &&
-      creep.memory.role === 'rebalancer')
-      .sort((a, b) =>
-        b.store.getCapacity(RESOURCE_ENERGY) -
-          a.store.getCapacity(RESOURCE_ENERGY) ||
-        b.ticksToLive - a.ticksToLive || a.name.localeCompare(b.name));
-    const surplus = active.slice(target);
+      creep.memory.role === 'rebalancer');
+    const { surplus } = selectRebalancerSurplus(active, target,
+      hasLocalReplacementLife, RESOURCE_ENERGY);
     for (const creep of surplus) {
       creep.memory.role = 'worker';
       delete creep.memory.rebalancerSource;
@@ -5234,11 +5233,11 @@ module.exports.loop = function () {
           if (amount <= 0) return false;
           const result = creep.withdraw(container, RESOURCE_ENERGY);
           if (result === ERR_NOT_IN_RANGE) {
-            if (creep.memory.role === 'upgrader' && controllerStation) {
-              moveCreep(creep, controllerStation.position, 0);
-            } else {
-              moveCreep(creep, container);
-            }
+            const approach = getWithdrawalApproachTarget(creep, container,
+              controllerStation);
+            moveCreep(creep, approach,
+              controllerStation && approach === controllerStation.position
+                ? 0 : 1);
             creep.memory.taskTarget = container.id;
             return true;
           }

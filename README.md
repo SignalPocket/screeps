@@ -52,6 +52,9 @@ selection, road visualization, road budgets, and ranked site placement.
 `infrastructure.planner.js` owns extension clusters, source and extension
 buffers, controller containers, container retirement, and the safeguards that
 keep essential containers ahead of road construction.
+`creep.routing.js` protects replacement-worthy role retention and routes
+upgraders to the container they actually selected when the controller buffer
+is empty.
 Pure scenarios in `policy.test.js` and `common.test.js` protect those boundaries
 while role executors are migrated out of `main.js` incrementally.
 
