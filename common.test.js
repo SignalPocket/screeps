@@ -24,6 +24,7 @@ const { createMemoryMaintenance } = require('./memory.maintenance');
 const { createCreepNaming } = require('./creep.naming');
 const { createColonyDashboard } = require('./colony.dashboard');
 const { createRefillManagement } = require('./refill.management');
+const { createSpawnPolicy } = require('./spawn.policy');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
   require('./creep.routing');
 
@@ -34,6 +35,68 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const spawnPolicyGame = { time: 100 };
+const spawnPolicy = createSpawnPolicy({
+  Game: spawnPolicyGame,
+  buildBody: bodies.buildBody,
+  CARRY: parts.CARRY,
+  WORK: parts.WORK,
+  MOVE: parts.MOVE
+});
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(0, 10), 5);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(5, 10), 15);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(10, 10), 60);
+const spawnPolicyCreep = (role, idleNow = false) => ({
+  spawning: false,
+  memory: { role, idleNow },
+  getActiveBodyparts: part => part === parts.WORK || part === parts.CARRY
+    ? 1 : 0
+});
+const idleRoom = {
+  memory: { spawnWaitSince: 1, spawnWaitRole: 'worker', spawnWaitLimit: 60 },
+  energyAvailable: 300,
+  energyCapacityAvailable: 300,
+  controller: { ticksToDowngrade: 10000 }
+};
+const idleRequest = spawnPolicy.prepareSpawnRequest({
+  spawn: { room: idleRoom },
+  assignment: { role: 'worker' },
+  workers: [spawnPolicyCreep('harvester', true)],
+  workerLimit: 2,
+  hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
+});
+assert.strictEqual(idleRequest.needsWorker, false);
+assert.strictEqual(idleRoom.memory.spawnWaitSince, undefined);
+const refillerRoom = {
+  memory: { spawnWaitSince: 75, spawnWaitRole: 'refiller' },
+  energyAvailable: 100,
+  energyCapacityAvailable: 1300,
+  controller: { ticksToDowngrade: 10000 }
+};
+const refillerRequest = spawnPolicy.prepareSpawnRequest({
+  spawn: { room: refillerRoom },
+  assignment: { role: 'refiller', refillerFallbackAllowed: true },
+  workers: [spawnPolicyCreep('harvester')],
+  workerLimit: 2,
+  hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
+});
+assert.deepStrictEqual(refillerRequest.body, ['carry', 'move']);
+const builderRoom = {
+  memory: {},
+  energyAvailable: 300,
+  energyCapacityAvailable: 300,
+  controller: { ticksToDowngrade: 10000 }
+};
+const builderRequest = spawnPolicy.prepareSpawnRequest({
+  spawn: { room: builderRoom },
+  assignment: { role: 'builder' },
+  workers: [spawnPolicyCreep('harvester')],
+  workerLimit: 2,
+  hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
+});
+assert.strictEqual(builderRequest.needsWorker, true);
+assert.strictEqual(builderRequest.body, null);
 
 const rosterStaffing = createSourceStaffing({
   Game: { time: 1 },
@@ -185,7 +248,7 @@ const dashboard = createColonyDashboard({
     { my: true, structureType: 'spawn', store: { energy: 100 } },
     { my: true, structureType: 'container', store: { energy: 500 } }
   ],
-  shortRoles: { hauler: 'LC' },
+  shortRoles: { hauler: 'LC', harvester: 'LM' },
   maxSpawnWait: 60,
   RESOURCE_ENERGY: 'energy',
   STRUCTURE_SPAWN: 'spawn',
@@ -193,18 +256,28 @@ const dashboard = createColonyDashboard({
   FIND_DROPPED_RESOURCES: 'drops'
 });
 const dashboardCreeps = [
-  { memory: { home: 'W1N1' }, store: { energy: 50 } },
-  { memory: { home: 'W1N1' }, store: { energy: 0 } }
+  { memory: { home: 'W1N1', role: 'hauler' }, store: { energy: 50 } },
+  { memory: { home: 'W1N1', role: 'harvester' }, store: { energy: 0 } }
 ];
-const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps);
+const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
+  buildTargets: 7,
+  fixTargets: 3
+});
 assert.strictEqual(dashboardSnapshot.creeps, 2);
 assert.strictEqual(dashboardSnapshot.spawning, 1);
 assert.strictEqual(dashboardSnapshot.needed, 1);
 assert.deepStrictEqual(dashboardSnapshot.waits, ['LC 4/15t']);
 assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
+assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1 });
+assert.strictEqual(dashboardSnapshot.buildTargets, 7);
+assert.strictEqual(dashboardSnapshot.fixTargets, 3);
 dashboard.drawDashboard();
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'COLONY'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'Targets build 7 | fix 3'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'Types LM 1 | LC 1'));
 
 const maintenanceMemory = {
   creeps: {
@@ -358,7 +431,7 @@ assert.strictEqual(moveOptions.range, 1);
 
 const lifecycle = createCreepLifecycle({
   Game: { map: { findRoute: () => [{ room: 'W1N2' }, { room: 'W1N3' }] } },
-  WORK: 'work', CREEP_SPAWN_TIME: 3
+  WORK: 'work', MOVE: 'move', CREEP_SPAWN_TIME: 3
 });
 const remoteCreep = {
   body: ['work', 'carry', 'move'],
@@ -366,9 +439,23 @@ const remoteCreep = {
   room: { name: 'W1N2' },
   ticksToLive: 310,
   spawning: false,
-  getActiveBodyparts: part => part === 'work' ? 1 : 0
+  getActiveBodyparts: part => part === 'work' || part === 'move' ? 1 : 0
 };
 assert.strictEqual(lifecycle.hasWorkParts(remoteCreep), true);
+assert.strictEqual(lifecycle.hasRoadMobility(remoteCreep), true);
+assert.strictEqual(lifecycle.hasBuilderBody(remoteCreep), false);
+const balancedBuilder = {
+  body: ['work', 'work', 'work', 'work', 'carry', 'carry', 'move', 'move',
+    'move'],
+  getActiveBodyparts: part => part === 'work' ? 4 : part === 'move' ? 3 : 0
+};
+const fatiguedUpgrader = {
+  body: [...Array(11).fill('work'), 'carry', 'carry', 'move', 'move'],
+  getActiveBodyparts: part => part === 'work' ? 11 : part === 'move' ? 2 : 0
+};
+assert.strictEqual(lifecycle.hasBuilderBody(balancedBuilder), true);
+assert.strictEqual(lifecycle.hasRoadMobility(fatiguedUpgrader), false);
+assert.strictEqual(lifecycle.hasBuilderBody(fatiguedUpgrader), false);
 assert.strictEqual(lifecycle.getRemoteReplacementLead(remoteCreep), 309);
 assert.strictEqual(lifecycle.hasRemoteReplacementLife(remoteCreep), true);
 remoteCreep.ticksToLive = 309;
@@ -678,6 +765,7 @@ assert.strictEqual(workerLimits.workerLimit, 14);
 assert.strictEqual(limitRoom.memory.congestionCount, 1);
 
 const remoteContainer = {
+  id: 'remote-container',
   structureType: 'container',
   store: { energy: 1600, getCapacity: () => 2000 }
 };
@@ -690,6 +778,20 @@ const remoteSource = {
   }
 };
 const remoteSpawn = { pos: { x: 25, y: 25 } };
+const richContainers = [
+  { id: 'rich-1', structureType: 'container',
+    store: { energy: 2000, getCapacity: () => 2000 } },
+  { id: 'rich-2', structureType: 'container',
+    store: { energy: 1000, getCapacity: () => 2000 } }
+];
+const richSource = {
+  id: 'rich-source', energyCapacity: 3000,
+  pos: {
+    x: 20, y: 20,
+    getRangeTo: () => 1,
+    findInRange: () => richContainers
+  }
+};
 const haulingGame = {
   time: 500,
   map: { getRoomLinearDistance: () => 1 },
@@ -701,6 +803,10 @@ const haulingGame = {
     W6N7: {
       find: type => type === 'sources' ? [remoteSource] :
         type === 'structures' ? [remoteContainer] : []
+    },
+    W6N8: {
+      find: type => type === 'sources' ? [richSource] :
+        type === 'structures' ? richContainers : []
     }
   }
 };
@@ -715,6 +821,12 @@ const remoteHauling = createRemoteHauling({
 });
 assert.strictEqual(remoteHauling.getRemoteHaulReadiness('W6N7', 0).ready,
   true);
+assert.strictEqual(remoteHauling.getRemoteResourceSummary('W6N8').storedEnergy,
+  3000);
+assert.strictEqual(remoteHauling.rankRemoteDispatchRooms(
+  ['W6N7', 'W6N8'], { W6N8: 1000 })[0].roomName, 'W6N8');
+assert.strictEqual(remoteHauling.rankRemoteDispatchRooms(
+  ['W6N7', 'W6N8'], { W6N8: 2500 })[0].roomName, 'W6N7');
 const savedLog = console.log;
 console.log = () => {};
 assert.strictEqual(remoteHauling.getRemoteHaulerTarget('W6N6', 'W6N7'), 6);
@@ -736,6 +848,9 @@ console.log = savedLog;
 const roadSpawn = { id: 'road-spawn', pos: { x: 5, y: 5 } };
 const roadSource = { id: 'road-source', pos: { x: 15, y: 15 } };
 const roadController = { id: 'road-controller', pos: { x: 25, y: 25 } };
+for (const object of [roadSpawn, roadSource, roadController]) {
+  object.pos.getRangeTo = target => rangeTo(object.pos, target);
+}
 const roadRoom = {
   name: 'W8N8', memory: {}, controller: roadController,
   find: type => type === 'spawns' ? [roadSpawn] : [],
@@ -751,9 +866,13 @@ const roadPlanner = createRoadPlanner({
   TERRAIN_MASK_SWAMP: 2, OK: 0
 });
 const importantPaths = roadPlanner.getImportantRoadPaths(roadRoom);
-assert.strictEqual(importantPaths.length, 3);
+assert.strictEqual(importantPaths.length, 2);
 assert.strictEqual(roadPlanner.isSingleLaneRoadPosition(roadRoom,
   { pos: { x: 6, y: 6 } }), true);
+assert.strictEqual(roadPlanner.isHeatmapRoadPosition(roadRoom,
+  { pos: { x: 6, y: 6 } }), true);
+assert.strictEqual(roadPlanner.isHeatmapRoadPosition(roadRoom,
+  { pos: { x: 8, y: 8 } }), false);
 assert.strictEqual(roadPlanner.getRoadBudget(roadRoom, importantPaths, 3), 50);
 
 const infrastructureSource = {

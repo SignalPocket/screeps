@@ -81,8 +81,11 @@ const derivePopulationPolicy = state => {
 
   const repairBacklog = Math.max(0, repair.remaining || 0);
   const fixerMinimum = repair.critical ? 1 : 0;
-  const fixerDesired = repairBacklog > 0 ? 1 : 0;
-  const fixerMaximum = repairBacklog > 100000 && !starved ? 2 : fixerDesired;
+  const fixerDesired = repairBacklog > 0
+    ? clamp(Math.ceil(repairBacklog / 200000), 1, starved ? 1 : 3)
+    : 0;
+  const fixerMaximum = repairBacklog > 100000 && !starved
+    ? Math.max(fixerDesired, 3) : fixerDesired;
 
   const upgraderMinimum = state.controllerOwned === false ? 0 : 1;
   const controllerWorkSpots = Math.max(1,

@@ -16,8 +16,9 @@ const createRoadPlanner = ({
       ...sources.map(source => ({ label: 'source', object: source })),
       ...(room.controller ? [{ label: 'controller', object: room.controller }] : []),
       ...(room.storage ? [{ label: 'storage', object: room.storage }] : [])
-    ];
-    const signature = ['v2', spawn.id,
+    ].sort((a, b) => spawn.pos.getRangeTo(b.object) -
+      spawn.pos.getRangeTo(a.object));
+    const signature = ['v3-single-network', spawn.id,
       ...targets.map(target => target.object.id)].join(':');
     const cached = room.memory.roadPlan;
     if (cached && cached.signature === signature &&
@@ -25,29 +26,40 @@ const createRoadPlanner = ({
       return cached.paths;
     }
 
-    const findPath = (origin, destination) => room.findPath(origin, destination, {
-      ignoreCreeps: true,
-      range: 1,
-      plainCost: 2,
-      swampCost: 10,
-      maxOps: 4000,
-      maxRooms: 1
-    }).map(step => ({ x: step.x, y: step.y }));
+    const selectedNetwork = new Set([`${spawn.pos.x}:${spawn.pos.y}`]);
+    const existingRoads = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_ROAD
+    });
+    const findPath = (origin, destination) => {
+      const points = room.findPath(origin, destination, {
+        ignoreCreeps: true,
+        range: 1,
+        plainCost: 2,
+        swampCost: 10,
+        maxOps: 4000,
+        maxRooms: 1,
+        costCallback: (roomName, costs) => {
+          // Old traffic roads should not pull a new plan into another parallel
+          // lane. Prefer only the trunk selected by earlier destinations.
+          for (const road of existingRoads) costs.set(road.pos.x, road.pos.y, 2);
+          for (const key of selectedNetwork) {
+            const [x, y] = key.split(':').map(Number);
+            costs.set(x, y, 1);
+          }
+          return costs;
+        }
+      }).map(step => ({ x: step.x, y: step.y }));
+      for (const point of points) selectedNetwork.add(`${point.x}:${point.y}`);
+      return points;
+    };
+    // One path per destination is enough. Source-to-controller paths created
+    // a second triangle across the room even though creeps can use this shared
+    // network to travel between any two endpoints.
     const paths = targets.map(target => ({
       label: target.label,
       targetId: target.object.id,
       points: findPath(spawn.pos, target.object.pos)
     }));
-    if (room.controller) {
-      for (const source of sources) {
-        paths.push({
-          label: 'source-controller',
-          targetId: room.controller.id,
-          sourceId: source.id,
-          points: findPath(source.pos, room.controller.pos)
-        });
-      }
-    }
     const usablePaths = paths.filter(path => path.points.length > 0);
     room.memory.roadPlan = { signature, updated: Game.time, paths: usablePaths };
     return usablePaths;
@@ -62,16 +74,12 @@ const createRoadPlanner = ({
     if (heatmapRoadTileCache[room.name]) {
       return heatmapRoadTileCache[room.name];
     }
-    const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-    const savedHotTiles = room.memory.traffic &&
-      room.memory.traffic.hotTiles;
-    const rankedTiles = Array.isArray(savedHotTiles)
-      ? savedHotTiles
-      : Object.entries(trafficTiles)
-        .filter(([, visits]) => visits >= 2)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 80);
-    const tiles = new Set(rankedTiles.map(([key]) => key));
+    // Maintenance follows the canonical road network. A detour can be useful
+    // for movement without becoming a permanently repaired extra lane.
+    const tiles = new Set();
+    for (const path of getImportantRoadPaths(room)) {
+      for (const point of path.points) tiles.add(`${point.x}:${point.y}`);
+    }
     heatmapRoadTileCache[room.name] = tiles;
     return tiles;
   };
@@ -191,13 +199,8 @@ const createRoadPlanner = ({
         strategicTiles.add(`${point.x}:${point.y}`);
       }
     }
-    const offNetworkRoads = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_ROAD &&
-        !strategicTiles.has(`${structure.pos.x}:${structure.pos.y}`)
-    }).length;
-    const dottedNetworkMinimum = strategicTiles.size + offNetworkRoads;
     const value = Math.max(50, controllerLevel * 10,
-      dottedNetworkMinimum + 25);
+      strategicTiles.size + 10);
     room.memory.roadBudgetCache = {
       value,
       updated: Game.time,
@@ -220,10 +223,6 @@ const createRoadPlanner = ({
       `${road.pos.x}:${road.pos.y}`));
     const queuedRoadTiles = new Set(roadSites.map(site =>
       `${site.pos.x}:${site.pos.y}`));
-    const budgetRemaining = roadBudget - roads.length - roadSites.length;
-    const batchLimit = Math.min(2 - roadSites.length, budgetRemaining);
-    if (batchLimit <= 0) return false;
-
     const corridorUses = {};
     for (const path of paths) {
       for (const point of path.points) {
@@ -232,24 +231,16 @@ const createRoadPlanner = ({
       }
     }
     const terrain = room.getTerrain();
-    const candidates = [];
     const candidateKeys = new Set(Object.keys(corridorUses));
-    // The heatmap is now an input to construction, not just a visual. Limit
-    // it to the hottest established traffic so occasional detours do not
-    // become permanent roads.
-    Object.entries(traffic.tiles)
-      .filter(([, visits]) => visits >= 10)
-      .filter(([key]) => {
-        const [x, y] = key.split(':').map(Number);
-        return x > 0 && x < 49 && y > 0 && y < 49 &&
-          !builtRoadTiles.has(key) && !queuedRoadTiles.has(key) &&
-          terrain.get(x, y) !== TERRAIN_MASK_WALL &&
-          room.lookForAt(LOOK_STRUCTURES, x, y).length === 0 &&
-          room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length === 0;
-      })
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 60)
-      .forEach(([key]) => candidateKeys.add(key));
+    const networkRoadCount = roads.filter(road =>
+      candidateKeys.has(`${road.pos.x}:${road.pos.y}`)).length;
+    const networkSiteCount = roadSites.filter(site =>
+      candidateKeys.has(`${site.pos.x}:${site.pos.y}`)).length;
+    const budgetRemaining = roadBudget - networkRoadCount - networkSiteCount;
+    const batchLimit = Math.min(2 - networkSiteCount, budgetRemaining);
+    if (batchLimit <= 0) return false;
+
+    const candidates = [];
     for (const key of candidateKeys) {
       const visits = traffic.tiles[key] || 0;
       const corridorCount = corridorUses[key] || 0;

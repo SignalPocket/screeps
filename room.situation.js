@@ -76,14 +76,15 @@ const createRoomSituation = dependencies => {
       total + site.progressTotal - site.progress, 0);
     const repairStructures = slowInventory.structures.filter(structure =>
       structure.hitsMax > 0 &&
-        (structure.my || structure.structureType === STRUCTURE_CONTAINER) &&
+        (structure.my || structure.structureType === STRUCTURE_ROAD ||
+          structure.structureType === STRUCTURE_CONTAINER) &&
         (!roadsPaused(room) || structure.structureType !== STRUCTURE_ROAD) &&
         structure.structureType !== STRUCTURE_WALL &&
         structure.structureType !== STRUCTURE_RAMPART);
     const repairCrisis = repairStructures.some(structure =>
       structure.hits < structure.hitsMax * 0.35);
     const repairRemaining = repairStructures.reduce((total, structure) =>
-      total + Math.max(0, structure.hitsMax - structure.hits), 0);
+      total + Math.max(0, structure.hitsMax * 0.75 - structure.hits), 0);
     const activeRemotePlans = [room.memory.leftSurvey,
       room.memory.southSurvey, room.memory.southwestSurvey]
       .filter(plan => plan && plan.active && plan.targetRoom);

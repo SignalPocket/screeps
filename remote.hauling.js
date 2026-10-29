@@ -5,6 +5,49 @@ const createRemoteHauling = ({
   FIND_MY_SPAWNS, STRUCTURE_CONTAINER, RESOURCE_ENERGY, CARRY,
   CARRY_CAPACITY, ENERGY_REGEN_TIME
 }) => {
+  const getRemoteResourceSummary = targetRoomName => {
+    const remoteRoom = Game.rooms[targetRoomName];
+    if (!remoteRoom) return {
+      roomName: targetRoomName,
+      visible: false,
+      storedEnergy: 0,
+      containerCount: 0,
+      richestSlot: 0
+    };
+    const sources = remoteRoom.find(FIND_SOURCES)
+      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
+    const containers = remoteRoom.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
+        sources.some(source => source.pos.getRangeTo(structure) <= 2)
+    });
+    const richest = containers.slice().sort((a, b) =>
+      b.store[RESOURCE_ENERGY] - a.store[RESOURCE_ENERGY] ||
+      a.id.localeCompare(b.id))[0];
+    const richestSlot = richest ? Math.max(0, sources.findIndex(source =>
+      source.pos.getRangeTo(richest) <= 2)) : 0;
+    return {
+      roomName: targetRoomName,
+      visible: true,
+      storedEnergy: containers.reduce((total, container) =>
+        total + container.store[RESOURCE_ENERGY], 0),
+      containerCount: containers.length,
+      richestSlot,
+      richestContainerId: richest && richest.id
+    };
+  };
+
+  const rankRemoteDispatchRooms = (targetRoomNames, claimedByRoom = {}) =>
+    [...new Set(targetRoomNames)].map(getRemoteResourceSummary)
+      .map(summary => ({
+        ...summary,
+        availableEnergy: Math.max(0, summary.storedEnergy -
+          (claimedByRoom[summary.roomName] || 0))
+      }))
+      .filter(summary => summary.visible && summary.containerCount > 0)
+      .sort((a, b) => b.availableEnergy - a.availableEnergy ||
+        b.storedEnergy - a.storedEnergy ||
+        a.roomName.localeCompare(b.roomName));
+
   const getRemoteHaulReadiness = (targetRoomName, slot) => {
     const remoteRoom = Game.rooms[targetRoomName];
     if (!remoteRoom) return { ready: false, reason: 'room not visible' };
@@ -12,9 +55,11 @@ const createRemoteHauling = ({
       .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
     const source = sources[slot % Math.max(1, sources.length)];
     if (!source) return { ready: false, reason: 'source not visible' };
-    const container = source.pos.findInRange(FIND_STRUCTURES, 1, {
+    const container = source.pos.findInRange(FIND_STRUCTURES, 2, {
       filter: structure => structure.structureType === STRUCTURE_CONTAINER
-    })[0];
+    }).sort((a, b) =>
+      b.store[RESOURCE_ENERGY] - a.store[RESOURCE_ENERGY] ||
+      source.pos.getRangeTo(a) - source.pos.getRangeTo(b))[0];
     if (!container) return { ready: false, reason: 'container unfinished' };
     return {
       ready: true,
@@ -95,7 +140,12 @@ const createRemoteHauling = ({
     return target;
   };
 
-  return { getRemoteHaulReadiness, getRemoteHaulerTarget };
+  return {
+    getRemoteResourceSummary,
+    rankRemoteDispatchRooms,
+    getRemoteHaulReadiness,
+    getRemoteHaulerTarget
+  };
 };
 
 module.exports = { createRemoteHauling };

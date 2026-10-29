@@ -7,8 +7,10 @@ const createColonyDashboard = ({
 }) => {
   const compact = value => value >= 1000
     ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
+  const roleOrder = ['LM', 'LC', 'RF', 'RB', 'UP', 'BU', 'FX', 'DG',
+    'OP', 'OC', 'OM', 'W', 'CL', 'EB'];
 
-  const updateDashboard = creeps => {
+  const updateDashboard = (creeps, workTargets = {}) => {
     if (Game.time % 5 !== 0) return Memory.colonyDashboard;
     const ownedRooms = Object.values(Game.rooms).filter(room =>
       room.controller && room.controller.my);
@@ -54,6 +56,11 @@ const createColonyDashboard = ({
     const spawning = Object.values(Game.spawns).filter(spawn =>
       spawn.spawning).length;
     const needed = populationNeed + replacementNeed;
+    const roleCounts = creeps.reduce((counts, creep) => {
+      const role = shortRoles[creep.memory.role] || creep.memory.role || 'W';
+      counts[role] = (counts[role] || 0) + 1;
+      return counts;
+    }, {});
     const dashboard = {
       updated: Game.time,
       creeps: creeps.length,
@@ -65,7 +72,10 @@ const createColonyDashboard = ({
       readyCapacity,
       reserveEnergy,
       carriedEnergy,
-      looseEnergy
+      looseEnergy,
+      roleCounts,
+      buildTargets: workTargets.buildTargets || 0,
+      fixTargets: workTargets.fixTargets || 0
     };
     Memory.colonyDashboard = dashboard;
     if (Game.time % 25 === 0) {
@@ -76,7 +86,10 @@ const createColonyDashboard = ({
         `(ready ${readyEnergy}/${readyCapacity}, ` +
         `reserve ${compact(reserveEnergy)}, ` +
         `carried ${compact(carriedEnergy)}, ` +
-        `loose ${compact(looseEnergy)})`);
+        `loose ${compact(looseEnergy)}) | Targets build ` +
+        `${dashboard.buildTargets}, fix ${dashboard.fixTargets} | Roles ` +
+        `${roleOrder.filter(role => roleCounts[role]).map(role =>
+          `${role}${roleCounts[role]}`).join(' ')}`);
     }
     return dashboard;
   };
@@ -86,38 +99,63 @@ const createColonyDashboard = ({
     if (!dashboard) return;
     const waitText = dashboard.waits && dashboard.waits.length
       ? `Wait ${dashboard.waits.join(' | ')}` : 'Wait none';
+    const roleEntries = Object.entries(dashboard.roleCounts || {})
+      .sort((a, b) => {
+        const aIndex = roleOrder.indexOf(a[0]);
+        const bIndex = roleOrder.indexOf(b[0]);
+        return (aIndex < 0 ? roleOrder.length : aIndex) -
+          (bIndex < 0 ? roleOrder.length : bIndex) ||
+          a[0].localeCompare(b[0]);
+      })
+      .map(([role, count]) => `${role} ${count}`);
+    const roleLines = [];
+    for (let index = 0; index < roleEntries.length; index += 5) {
+      roleLines.push(roleEntries.slice(index, index + 5).join(' | '));
+    }
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
-      room.visual.rect(0.5, 20.5, 15.5, 4.9, {
+      room.visual.rect(0.5, 20.5, 15.5,
+        5.75 + roleLines.length * 0.8, {
         fill: '#101820', opacity: 0.82, stroke: '#64d2ff',
         strokeWidth: 0.08
       });
       room.visual.text('COLONY', 1.2, 21.3, {
-        align: 'left', color: '#64d2ff', font: 'bold 0.65'
+        align: 'left', color: '#64d2ff', font: 'bold 0.75'
       });
       room.visual.text(
         `Creeps ${dashboard.creeps} | spawning ${dashboard.spawning} | ` +
           `need ${dashboard.needed}`,
         1.2, 22.2,
-        { align: 'left', color: '#ffffff', font: 0.55 }
+        { align: 'left', color: '#ffffff', font: 0.65 }
       );
       room.visual.text(waitText, 1.2, 23.05, {
         align: 'left', color: dashboard.waits && dashboard.waits.length
-          ? '#ff9f0a' : '#30d158', font: 0.55
+          ? '#ff9f0a' : '#30d158', font: 0.65
       });
       room.visual.text(
         `Energy ${compact(dashboard.totalEnergy)} | ready ` +
           `${dashboard.readyEnergy}/${dashboard.readyCapacity}`,
         1.2, 23.9,
-        { align: 'left', color: '#ffd60a', font: 0.55 }
+        { align: 'left', color: '#ffd60a', font: 0.65 }
       );
       room.visual.text(
         `Reserve ${compact(dashboard.reserveEnergy)} | carry ` +
           `${compact(dashboard.carriedEnergy)} | loose ` +
           `${compact(dashboard.looseEnergy)}`,
         1.2, 24.75,
-        { align: 'left', color: '#d1d1d6', font: 0.5 }
+        { align: 'left', color: '#d1d1d6', font: 0.6 }
       );
+      room.visual.text(
+        `Targets build ${dashboard.buildTargets || 0} | ` +
+          `fix ${dashboard.fixTargets || 0}`,
+        1.2, 25.55,
+        { align: 'left', color: '#ff8ad8', font: 0.62 }
+      );
+      roleLines.forEach((line, index) => room.visual.text(
+        `${index === 0 ? 'Types ' : '      '}${line}`,
+        1.2, 26.35 + index * 0.8,
+        { align: 'left', color: '#8fd3ff', font: 0.6 }
+      ));
     }
   };
 

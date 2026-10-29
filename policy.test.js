@@ -72,6 +72,12 @@ const imbalancedRemote = derivePopulationPolicy({ ...base,
   activeRemoteRooms: 3, activeRemoteSources: 4, containerImbalance: 0.65 });
 assert.strictEqual(imbalancedRemote.roles.rebalancer.desired, 3);
 
+const repairSurge = derivePopulationPolicy({ ...base,
+  storedEnergy: 12000, bufferRatio: 0.8,
+  repair: { critical: true, remaining: 600000 } });
+assert.strictEqual(repairSurge.roles.fixer.desired, 3);
+assert.ok(repairSurge.roles.fixer.max >= 3);
+
 const emergency = derivePopulationPolicy({ ...base, controllerTicks: 2500 });
 assert.strictEqual(emergency.mode, 'controller-emergency');
 assert.ok(emergency.roles.upgrader.desired >= 2);
@@ -84,7 +90,8 @@ const stillFullController = derivePopulationPolicy({ ...base,
 assert.strictEqual(stillFullController.roles.upgrader.desired, 4);
 
 for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
-  imbalancedRemote, emergency, fullController, stillFullController]) {
+  imbalancedRemote, repairSurge, emergency, fullController,
+  stillFullController]) {
   for (const entry of Object.values(scenario.roles)) {
     assert.ok(entry.min <= entry.desired);
     assert.ok(entry.desired <= entry.max);
