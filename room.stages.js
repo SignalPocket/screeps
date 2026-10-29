@@ -64,7 +64,7 @@ const ROOM_STAGE_PLANS = Object.freeze({
       'scale upgrading from stored energy and controller buffer pressure',
       'repair critical infrastructure before spending deep reserves'
     ]),
-    construction: Object.freeze(['storage', 'extensions', 'tower',
+    construction: Object.freeze(['extensions', 'storage', 'tower',
       'controller infrastructure', 'roads']),
     advanceWhen: Object.freeze(['storage is operating',
       'reserve health is stable', 'controller reaches RCL 5'])

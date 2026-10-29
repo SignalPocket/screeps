@@ -127,10 +127,23 @@ const createRoomSituation = dependencies => {
     const sourceSampleTicks = sourceStatsTotal('sampleTicks');
     const storedEnergy = structures.reduce((total, structure) =>
       total + (structure.store && structure.store[RESOURCE_ENERGY] || 0), 0);
+    const energyStarvedSignal = energyRatio < 0.35 && bufferRatio < 0.25 &&
+      storedEnergy < 500;
+    if (energyStarvedSignal) {
+      room.memory.energyStarvedUntil = Game.time + 25;
+    } else if ((room.memory.energyStarvedUntil || 0) <= Game.time) {
+      delete room.memory.energyStarvedUntil;
+    }
     const construction = sites.reduce((summary, site) => {
       summary[site.structureType] = (summary[site.structureType] || 0) + 1;
       return summary;
     }, { remaining: buildRemaining });
+    const extensionClusters = [room.memory.extensionCluster,
+      room.memory.extensionOverflowCluster].filter(cluster => cluster &&
+      structures.some(structure => structure.my &&
+        structure.structureType === STRUCTURE_EXTENSION &&
+        Math.max(Math.abs(structure.pos.x - cluster.x),
+          Math.abs(structure.pos.y - cluster.y)) <= 3));
     const policy = derivePopulationPolicy({
       rcl: room.controller && room.controller.level,
       controllerOwned: Boolean(room.controller && room.controller.my),
@@ -147,6 +160,7 @@ const createRoomSituation = dependencies => {
       energyRatio,
       bufferRatio,
       storedEnergy,
+      energyStarvedHold: (room.memory.energyStarvedUntil || 0) > Game.time,
       storedSourceEnergy,
       controllerBufferRatio,
       controllerBufferStored,
@@ -155,6 +169,7 @@ const createRoomSituation = dependencies => {
       droppedEnergy,
       extensionCount: structures.filter(structure =>
         structure.structureType === STRUCTURE_EXTENSION && structure.my).length,
+      extensionClusterCount: extensionClusters.length,
       energyConsumerCount: structures.filter(structure => structure.my &&
         (structure.structureType === STRUCTURE_SPAWN ||
           structure.structureType === STRUCTURE_EXTENSION)).length,

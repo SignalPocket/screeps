@@ -81,10 +81,10 @@ const createRemoteHauling = ({
       const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
       return container.store[RESOURCE_ENERGY] / capacity;
     }));
-    const pressureSurge = highestPressure >= 0.75 ? 2 :
-      highestPressure >= 0.5 ? 1 : 0;
-    const target = Math.min(haulSources.length * 6,
-      routeTarget + pressureSurge);
+    // Population follows route throughput, not momentary container pressure.
+    // Pressure spikes are dispatch information; turning them into bodies made
+    // the stable roster grow and shrink faster than a creep lifetime.
+    const target = Math.min(haulSources.length * 6, routeTarget);
     if (routePlan.target !== target) {
       console.log(`[${Game.time}] ${targetRoomName} remote hauling -> ` +
         `${target} carriers; routes ${routePlan.routeLengths.join('/')} ` +

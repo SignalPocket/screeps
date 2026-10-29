@@ -19,6 +19,8 @@ const { createRemoteHauling } = require('./remote.hauling');
 const { createEnergyPhase } = require('./energy.phase');
 const { createRoadPlanner } = require('./road.planner');
 const { createInfrastructurePlanner } = require('./infrastructure.planner');
+const { createOutpostMaintenance } = require('./outpost.maintenance');
+const { createMemoryMaintenance } = require('./memory.maintenance');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
   require('./creep.routing');
 
@@ -29,14 +31,86 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const maintenanceMemory = {
+  creeps: {
+    dead: { role: 'hauler' },
+    active: {
+      navGoal: 'old', navLastTick: 800, navLastX: 1,
+      dispatchCommitment: {
+        roomName: 'W1N1', targetId: 'missing', lane: 'collect'
+      }
+    }
+  },
+  rooms: {
+    W1N1: {
+      leftSurvey: { targetRoom: 'W2N1', started: 10 },
+      salvageScan: { updated: 800 },
+      demandPlan: { tick: 800 },
+      refillCarrier: 'dead', refillCarriers: ['dead'],
+      spawnWaitSince: 700, spawnWaitLimit: 60,
+      roadPlan: { signature: 'keep-me' }
+    }
+  },
+  roomOrdinals: { W1N1: 1, W2N1: 2 },
+  colonyDashboard: { updated: 800 }
+};
+const maintenance = createMemoryMaintenance({
+  Game: {
+    time: 1000,
+    creeps: { active: {} },
+    rooms: { W1N1: {} },
+    getObjectById: () => null
+  }
+});
+const maintenanceStats = maintenance.runMemoryMaintenance(maintenanceMemory);
+assert.strictEqual(maintenanceStats.deadCreeps, 1);
+assert.strictEqual(maintenanceStats.staleNavigation, 1);
+assert.strictEqual(maintenanceStats.staleCommitments, 1);
+assert.strictEqual(maintenanceStats.staleRoomState, 2);
+assert.strictEqual(maintenanceMemory.creeps.dead, undefined);
+assert.strictEqual(maintenanceMemory.creeps.active.navGoal, undefined);
+assert.strictEqual(maintenanceMemory.creeps.active.dispatchCommitment,
+  undefined);
+assert.deepStrictEqual(maintenanceMemory.roomOrdinals,
+  { W1N1: 1, W2N1: 2 });
+assert.deepStrictEqual(maintenanceMemory.rooms.W1N1.leftSurvey,
+  { targetRoom: 'W2N1', started: 10 });
+assert.deepStrictEqual(maintenanceMemory.rooms.W1N1.roadPlan,
+  { signature: 'keep-me' });
+
 assert.strictEqual(bodies.workerCost, 200);
 assert.deepStrictEqual(bodies.buildBody('harvester', 300),
   ['work', 'work', 'carry', 'move']);
 assert.deepStrictEqual(bodies.buildBody('remote-hauler', 400),
-  ['work', 'carry', 'move', 'carry', 'move', 'carry', 'move']);
+  ['carry', 'carry', 'carry', 'carry', 'move', 'move', 'move', 'move']);
+assert.deepStrictEqual(bodies.buildBody('remote-scout', 1000),
+  ['work', 'work', 'work', 'carry', 'move', 'move']);
+assert.strictEqual(bodies.buildBody('refiller', 800)
+  .filter(part => part === 'carry').length, 8);
+assert.deepStrictEqual(bodies.buildBody('refiller', 100), ['carry', 'move']);
+assert.strictEqual(bodies.buildBody('refiller', 99), null);
 assert.ok(bodies.buildBody('upgrader', 800)
   .filter(part => part === 'work').length >= 6);
 assert.strictEqual(bodies.getBodyCode(['work', 'carry', 'move']), 'M-C-W');
+
+const outpostMaintenance = createOutpostMaintenance({
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_ROAD: 'road'
+});
+const maintenancePosition = { getRangeTo: target => target.range };
+const damagedRoad = {
+  id: 'road', structureType: 'road', hits: 1500, hitsMax: 5000, range: 1
+};
+const damagedContainer = {
+  id: 'container', structureType: 'container', hits: 100000,
+  hitsMax: 250000, range: 10
+};
+assert.strictEqual(outpostMaintenance.needsMaintenance(
+  [damagedRoad, damagedContainer]), true);
+assert.strictEqual(outpostMaintenance.selectRepairTarget(
+  [damagedRoad, damagedContainer], maintenancePosition).id, 'container');
+damagedContainer.hits = 225000;
+assert.strictEqual(outpostMaintenance.isRepairTarget(damagedContainer), false);
 
 const target = {
   id: 'buffer',
@@ -162,7 +236,7 @@ console.log = message => { deathLog = message; };
 reporting.logDeadCreeps(deadMemory);
 console.log = originalLog;
 assert.deepStrictEqual(deadMemory, {});
-assert.strictEqual(deathLog, '[42] EXPIRED 9 Ha/RHaul in W2N2');
+assert.strictEqual(deathLog, '[42] EXPIRED 9 LC/RHaul in W2N2');
 
 const staffingGame = { time: 100 };
 const staffingSource = {
@@ -520,8 +594,11 @@ const infrastructurePlanner = createInfrastructurePlanner({
   RoomPosition: function (x, y, roomName) { return { x, y, roomName }; },
   getRoomSources: () => [infrastructureSource],
   isSingleLaneRoadPosition: () => false,
-  CONTROLLER_STRUCTURES: { extension: {}, container: {} },
+  CONTROLLER_STRUCTURES: {
+    extension: { 4: 20 }, container: {}, storage: { 4: 1 }
+  },
   STRUCTURE_EXTENSION: 'extension', STRUCTURE_CONTAINER: 'container',
+  STRUCTURE_STORAGE: 'storage',
   STRUCTURE_ROAD: 'road', STRUCTURE_RAMPART: 'rampart',
   FIND_MY_STRUCTURES: 'my-structures',
   FIND_MY_CONSTRUCTION_SITES: 'sites', FIND_MY_SPAWNS: 'spawns',
@@ -547,6 +624,78 @@ const extensionBuffer = {
 };
 assert.strictEqual(infrastructurePlanner.isExtensionRefillBuffer(
   infrastructureRoom, extensionBuffer), true);
+
+const overflowSites = [];
+const saturatedCluster = { x: 10, y: 10, version: 'low-traffic-v1' };
+const overflowSpawn = {
+  pos: { x: 25, y: 25, getRangeTo: (x, y) =>
+    Math.max(Math.abs(25 - x), Math.abs(25 - y)) }
+};
+const overflowRoom = {
+  name: 'W8N7',
+  memory: { extensionCluster: saturatedCluster, traffic: { tiles: {} } },
+  controller: { my: true, level: 4, pos: { getRangeTo: () => 10 } },
+  find: (type, options) => {
+    if (type === 'spawns') return [overflowSpawn];
+    if (type === 'sites') return [];
+    if (type === 'my-structures') {
+      return Array.from({ length: 14 }, () => ({
+        structureType: 'extension'
+      })).filter(options && options.filter || (() => true));
+    }
+    return [];
+  },
+  findPath: () => Array(7).fill({}),
+  getTerrain: () => ({ get: () => 0 }),
+  lookForAt: (type, x, y) => type === 'structures-at' &&
+    infrastructurePlanner.isExtensionClusterTile(saturatedCluster, x, y)
+    ? [{ structureType: 'road' }] : [],
+  createConstructionSite: (x, y, structureType) => {
+    overflowSites.push({ x, y, structureType });
+    return 0;
+  }
+};
+assert.strictEqual(infrastructurePlanner.placeExtensionSite(overflowRoom), true);
+assert.strictEqual(overflowSites.length, 3);
+assert.ok(overflowRoom.memory.extensionOverflowCluster);
+assert.ok(overflowSites.every(site => site.structureType === 'extension'));
+
+let storageSite;
+let builtExtensionCount = 19;
+const storageSpawn = {
+  pos: { x: 5, y: 5, getRangeTo: (x, y) =>
+    Math.max(Math.abs(5 - x), Math.abs(5 - y)) }
+};
+const storageRoom = {
+  name: 'W8N8', storage: null,
+  memory: { extensionCluster: { x: 20, y: 20 }, traffic: { tiles: {} } },
+  controller: {
+    my: true, level: 4,
+    pos: { getRangeTo: (x, y) =>
+      Math.max(Math.abs(30 - x), Math.abs(30 - y)) }
+  },
+  find: (type, options) => {
+    if (type === 'spawns') return [storageSpawn];
+    if (type === 'sites') return [];
+    if (type === 'my-structures') {
+      return Array.from({ length: builtExtensionCount }, () => ({
+        structureType: 'extension'
+      })).filter(options && options.filter || (() => true));
+    }
+    return [];
+  },
+  getTerrain: () => ({ get: () => 0 }),
+  lookForAt: () => [],
+  createConstructionSite: (x, y, structureType) => {
+    storageSite = { x, y, structureType };
+    return 0;
+  }
+};
+assert.strictEqual(infrastructurePlanner.placeStorageSite(storageRoom), false);
+assert.strictEqual(storageSite, undefined);
+builtExtensionCount = 20;
+assert.strictEqual(infrastructurePlanner.placeStorageSite(storageRoom), true);
+assert.strictEqual(storageSite.structureType, 'storage');
 
 const expiringBalancer = {
   name: 'old-balancer', ticksToLive: 20, viable: false,

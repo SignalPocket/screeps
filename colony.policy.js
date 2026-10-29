@@ -32,8 +32,8 @@ const derivePopulationPolicy = state => {
   const repair = state.repair || {};
   const controllerDanger = (state.controllerTicks || Infinity) < 3000;
   const bootstrap = rcl <= 1 || state.spawnCount === 0;
-  const starved = energyRatio < 0.35 && bufferRatio < 0.25 &&
-    storedEnergy < 500;
+  const starved = state.energyStarvedHold ||
+    energyRatio < 0.35 && bufferRatio < 0.25 && storedEnergy < 500;
   const logisticsBacklog = bufferRatio >= 0.65 ||
     (state.droppedEnergy || 0) >= 500;
 
@@ -44,13 +44,14 @@ const derivePopulationPolicy = state => {
   const sourceMaximum = Math.max(sourceDesired,
     state.sourceWorkSpots || sourceDesired);
 
-  const refillerMinimum = rcl >= 2 && energyConsumers > 1 ? 1 : 0;
-  const refillerDesired = refillerMinimum
-    ? clamp(1 + Math.floor(extensionCount / 10), 1, 4)
-    : 0;
-  const refillerMaximum = refillerMinimum
-    ? clamp(Math.ceil(energyConsumers / 6), refillerDesired, 4)
-    : 0;
+  const extensionClusters = Math.max(0,
+    state.extensionClusterCount || 0);
+  const refillerMinimum = rcl >= 2 && energyConsumers > 1
+    ? Math.max(1, extensionClusters) : 0;
+  // Each physical extension clump has one stable owner. This scales by layout,
+  // not raw extension count, so specialists do not overlap within a clump.
+  const refillerDesired = refillerMinimum;
+  const refillerMaximum = refillerMinimum;
 
   const averageSourceDistance = Math.max(5,
     state.averageSourceDistance || 15);
@@ -142,7 +143,7 @@ const derivePopulationPolicy = state => {
     source: normalize(role(sourceMinimum, sourceDesired, sourceMaximum,
       'harvest work and usable source tiles')),
     refiller: normalize(role(refillerMinimum, refillerDesired,
-      refillerMaximum, 'spawn and extension count')),
+      refillerMaximum, 'one owner per extension clump')),
     hauler: normalize(role(haulerMinimum, haulerDesired, haulerMaximum,
       'source route length and buffered energy')),
     builder: normalize(role(builderMinimum, builderDesired, builderMaximum,

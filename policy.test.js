@@ -39,11 +39,24 @@ const lowEnergy = derivePopulationPolicy({ ...base, energyRatio: 0.2,
 assert.strictEqual(lowEnergy.mode, 'energy-starved');
 assert.strictEqual(lowEnergy.roles.builder.desired, 1);
 
+const heldLowEnergy = derivePopulationPolicy({ ...base,
+  energyRatio: 0.5, bufferRatio: 0.1, storedEnergy: 600,
+  energyStarvedHold: true,
+  construction: { remaining: 20000, road: 4 } });
+assert.strictEqual(heldLowEnergy.mode, 'energy-starved');
+assert.strictEqual(heldLowEnergy.roles.builder.desired, 1);
+
 const infrastructure = derivePopulationPolicy({ ...base,
   construction: { remaining: 20000, container: 1, extension: 2 } });
 assert.strictEqual(infrastructure.roles.builder.min, 1);
 assert.ok(infrastructure.roles.builder.desired >= 2);
-assert.strictEqual(infrastructure.roles.refiller.desired, 2);
+assert.strictEqual(infrastructure.roles.refiller.desired, 1);
+
+const splitExtensions = derivePopulationPolicy({ ...base,
+  extensionCount: 18, energyConsumerCount: 19, extensionClusterCount: 2 });
+assert.strictEqual(splitExtensions.roles.refiller.min, 2);
+assert.strictEqual(splitExtensions.roles.refiller.desired, 2);
+assert.strictEqual(splitExtensions.roles.refiller.max, 2);
 
 const remote = derivePopulationPolicy({ ...base, activeRemoteRooms: 2,
   activeRemoteSources: 4, averageRemoteDistance: 40,

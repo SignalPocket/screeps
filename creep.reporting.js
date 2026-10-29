@@ -1,19 +1,19 @@
 'use strict';
 
 const shortRoles = {
-  miner: 'M',
-  harvester: 'Hv',
-  hauler: 'Ha',
-  refiller: 'Rf',
-  rebalancer: 'Bal',
-  builder: 'B',
-  digger: 'D',
-  fixer: 'F',
-  upgrader: 'U',
-  'remote-scout': 'Sc',
-  'remote-hauler': 'RH',
-  'remote-builder': 'RB',
-  claimer: 'Cl',
+  miner: 'LM',
+  harvester: 'LM',
+  hauler: 'LC',
+  refiller: 'RF',
+  rebalancer: 'RB',
+  builder: 'BU',
+  digger: 'DG',
+  fixer: 'FX',
+  upgrader: 'UP',
+  'remote-scout': 'OP',
+  'remote-hauler': 'OC',
+  'remote-builder': 'OM',
+  claimer: 'CL',
   'expansion-builder': 'EB',
   worker: 'W'
 };
@@ -48,10 +48,12 @@ const shortTasks = {
   'committed-refill': 'Fill',
   'committed-refill-buffer': 'StockSp',
   'committed-buffer': 'StockRC',
+  'committed-storage': 'Store',
   'committed-supply': 'Give',
   standby: 'Wait',
   withdraw: 'Get',
-  store: 'Store'
+  store: 'Store',
+  'store-storage': 'Store'
 };
 
 const shortCreepName = name => name

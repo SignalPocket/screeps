@@ -50,8 +50,16 @@ const createBodyFactory = constants => {
       return energy >= BODYPART_COST[CLAIM] + BODYPART_COST[MOVE]
         ? [CLAIM, MOVE] : null;
     }
-    if (role === 'miner' || role === 'harvester' || role === 'digger' ||
-        role === 'remote-scout') {
+    if (role === 'remote-scout') {
+      const moveParts = energy >= 450 ? 2 : 1;
+      const workParts = Math.min(3, Math.floor(
+        (energy - BODYPART_COST[CARRY] -
+          moveParts * BODYPART_COST[MOVE]) / BODYPART_COST[WORK]));
+      if (workParts < 1) return null;
+      return [...Array(workParts).fill(WORK), CARRY,
+        ...Array(moveParts).fill(MOVE)];
+    }
+    if (role === 'miner' || role === 'harvester' || role === 'digger') {
       const moveParts = energy >= 350 ? 2 : 1;
       const workParts = Math.min(48,
         Math.floor((energy - BODYPART_COST[CARRY] -
@@ -61,8 +69,13 @@ const createBodyFactory = constants => {
       return [...Array(workParts).fill(WORK), CARRY,
         ...Array(moveParts).fill(MOVE)];
     }
-    if (role === 'hauler' || role === 'remote-hauler' ||
-        role === 'refiller' || role === 'rebalancer') {
+    if (role === 'remote-hauler' || role === 'refiller') {
+      const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+      const pairs = Math.min(25, Math.floor(energy / pairCost));
+      return pairs > 0
+        ? [...Array(pairs).fill(CARRY), ...Array(pairs).fill(MOVE)] : null;
+    }
+    if (role === 'hauler' || role === 'rebalancer') {
       const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
       if (energy < workerCost) return null;
       const body = [WORK, CARRY, MOVE];
