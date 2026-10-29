@@ -21,6 +21,9 @@ const { createRoadPlanner } = require('./road.planner');
 const { createInfrastructurePlanner } = require('./infrastructure.planner');
 const { createOutpostMaintenance } = require('./outpost.maintenance');
 const { createMemoryMaintenance } = require('./memory.maintenance');
+const { createCreepNaming } = require('./creep.naming');
+const { createColonyDashboard } = require('./colony.dashboard');
+const { createRefillManagement } = require('./refill.management');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
   require('./creep.routing');
 
@@ -31,6 +34,177 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const rosterStaffing = createSourceStaffing({
+  Game: { time: 1 },
+  getRoomSources: () => [],
+  TERRAIN_MASK_WALL: 1,
+  LOOK_STRUCTURES: 'structures',
+  LOOK_CONSTRUCTION_SITES: 'sites',
+  OBSTACLE_OBJECT_TYPES: [],
+  BODYPART_COST: parts.BODYPART_COST,
+  CARRY: parts.CARRY,
+  MOVE: parts.MOVE,
+  WORK: parts.WORK,
+  ENERGY_REGEN_TIME: 300,
+  HARVEST_POWER: 2
+});
+const roleCandidate = (name, work, carry, memory = {}) => ({
+  name,
+  memory: { ...memory },
+  getActiveBodyparts: part => part === parts.WORK ? work :
+    part === parts.CARRY ? carry : 0
+});
+const travellingReplacement = roleCandidate('replacement', 5, 1,
+  { sourceReplacement: 'source-1' });
+const surplusCarrier = roleCandidate('01-RB-61946', 1, 12,
+  { role: 'hauler' });
+const allocated = rosterStaffing.assignUnallocatedRoles({
+  candidates: [travellingReplacement, surplusCarrier],
+  sourceWorkerCount: 4,
+  sourceWorkerLimit: 5,
+  haulerCount: 2,
+  haulerTarget: 2
+});
+assert.strictEqual(allocated.sourceWorkerCount, 5);
+assert.strictEqual(travellingReplacement.memory.role, 'harvester');
+assert.strictEqual(surplusCarrier.memory.role, 'hauler');
+
+const refillRoom = {
+  memory: {
+    extensionCluster: { x: 12, y: 10 },
+    extensionOverflowCluster: { x: 30, y: 30 }
+  },
+  energyCapacityAvailable: 1300,
+  find: () => [{ pos: { getRangeTo: (x, y) =>
+    Math.max(Math.abs(10 - x), Math.abs(10 - y)) } }]
+};
+const refillStructures = [
+  { my: true, structureType: 'extension', pos: { x: 12, y: 10 } },
+  { my: true, structureType: 'extension', pos: { x: 30, y: 30 } }
+];
+const refillManagement = createRefillManagement({
+  Game: { time: 10 },
+  getRoomStructures: () => refillStructures,
+  isExtensionClusterTile: (anchor, x, y) =>
+    Math.max(Math.abs(anchor.x - x), Math.abs(anchor.y - y)) <= 3,
+  getRoomSituation: () => ({ targets: { refiller: 1 } }),
+  FIND_MY_SPAWNS: 'spawns',
+  STRUCTURE_SPAWN: 'spawn',
+  STRUCTURE_EXTENSION: 'extension',
+  RESOURCE_ENERGY: 'energy',
+  BODYPART_COST: parts.BODYPART_COST,
+  CARRY: parts.CARRY,
+  MOVE: parts.MOVE,
+  CARRY_CAPACITY: 50
+});
+const refillClusters = refillManagement.getRefillClusters(refillRoom);
+assert.deepStrictEqual(refillClusters.map(cluster =>
+  [cluster.id, cluster.fillsSpawn]), [
+  ['primary', true], ['overflow', false]
+]);
+assert.strictEqual(refillManagement.getRefillerCarryFloor(refillRoom), 400);
+const refiller = (name, capacity, x, y, memory = {}) => ({
+  name,
+  spawning: false,
+  ticksToLive: 1000,
+  memory: { role: 'refiller', ...memory },
+  store: { getCapacity: () => capacity },
+  pos: { getRangeTo: (targetX, targetY) =>
+    Math.max(Math.abs(x - targetX), Math.abs(y - targetY)) }
+});
+const primaryRefiller = refiller('large', 400, 12, 10,
+  { refillClusterId: 'primary' });
+const overflowRefiller = refiller('small', 100, 30, 30);
+refillManagement.reconcileRefillerClusters(refillRoom,
+  [overflowRefiller, primaryRefiller]);
+assert.strictEqual(primaryRefiller.memory.refillSpawnOwner, true);
+assert.strictEqual(overflowRefiller.memory.refillClusterId, 'overflow');
+refillManagement.releaseUndersizedRefillers(refillRoom,
+  [overflowRefiller, primaryRefiller]);
+assert.strictEqual(primaryRefiller.memory.role, 'refiller');
+assert.strictEqual(overflowRefiller.memory.role, 'worker');
+assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
+  { structureType: 'spawn' }), true);
+
+const namingMemory = { creeps: {}, roomOrdinals: {} };
+const namingRoom = {
+  name: 'W7N4',
+  memory: {
+    leftSurvey: { targetRoom: 'W8N4', started: 10 },
+    southSurvey: { targetRoom: 'W7N3', started: 20 }
+  }
+};
+const namingGame = {
+  time: 500,
+  creeps: {},
+  spawns: { Spawn1: { room: namingRoom } }
+};
+const naming = createCreepNaming({
+  Game: namingGame,
+  Memory: namingMemory,
+  getRoomSources: () => [{ id: 'source-1' }, { id: 'source-2' }]
+});
+naming.refreshRoomOrdinals();
+assert.deepStrictEqual(namingMemory.roomOrdinals,
+  { W7N4: 1, W8N4: 2, W7N3: 3 });
+assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
+  role: 'remote-scout', remoteRoom: 'W8N4', remoteSlot: 0
+}), '02-OP-S1-500');
+namingMemory.creeps['01-RF-P-500'] = {};
+assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
+  role: 'refiller', refillClusterId: 'primary'
+}), '01-RF-P-500-2');
+
+const dashboardDraws = [];
+const dashboardRoom = {
+  name: 'W1N1',
+  controller: { my: true },
+  memory: {
+    spawnWaitRole: 'hauler', spawnWaitSince: 6, spawnWaitLimit: 15
+  },
+  energyAvailable: 100,
+  energyCapacityAvailable: 300,
+  visual: {
+    rect: (...args) => dashboardDraws.push(['rect', ...args]),
+    text: (...args) => dashboardDraws.push(['text', ...args])
+  },
+  find: () => [{ resourceType: 'energy', amount: 25 }]
+};
+const dashboardMemory = {};
+const dashboardGame = {
+  time: 10,
+  rooms: { W1N1: dashboardRoom },
+  spawns: { Spawn1: { spawning: { name: 'new' } } }
+};
+const dashboard = createColonyDashboard({
+  Game: dashboardGame,
+  Memory: dashboardMemory,
+  getWorkerLimits: () => ({ workerLimit: 3 }),
+  getRoomStructures: () => [
+    { my: true, structureType: 'spawn', store: { energy: 100 } },
+    { my: true, structureType: 'container', store: { energy: 500 } }
+  ],
+  shortRoles: { hauler: 'LC' },
+  maxSpawnWait: 60,
+  RESOURCE_ENERGY: 'energy',
+  STRUCTURE_SPAWN: 'spawn',
+  STRUCTURE_EXTENSION: 'extension',
+  FIND_DROPPED_RESOURCES: 'drops'
+});
+const dashboardCreeps = [
+  { memory: { home: 'W1N1' }, store: { energy: 50 } },
+  { memory: { home: 'W1N1' }, store: { energy: 0 } }
+];
+const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps);
+assert.strictEqual(dashboardSnapshot.creeps, 2);
+assert.strictEqual(dashboardSnapshot.spawning, 1);
+assert.strictEqual(dashboardSnapshot.needed, 1);
+assert.deepStrictEqual(dashboardSnapshot.waits, ['LC 4/15t']);
+assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
+dashboard.drawDashboard();
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'COLONY'));
 
 const maintenanceMemory = {
   creeps: {

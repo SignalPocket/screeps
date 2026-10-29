@@ -126,11 +126,45 @@ const createSourceStaffing = ({
     return targets;
   };
 
+  const assignUnallocatedRoles = ({
+    candidates,
+    sourceWorkerCount,
+    sourceWorkerLimit,
+    haulerCount,
+    haulerTarget
+  }) => {
+    for (const creep of candidates) {
+      const hasWork = creep.getActiveBodyparts(WORK) > 0;
+      if (creep.memory.sourceReplacement && hasWork) {
+        // Replacement bodies reserve a roster slot while travelling. Count
+        // that reservation so a second flexible worker is not promoted and
+        // released again later in this same allocation pass.
+        creep.memory.role = 'harvester';
+        sourceWorkerCount++;
+      } else if (sourceWorkerCount < sourceWorkerLimit && hasWork) {
+        creep.memory.role = 'harvester';
+        sourceWorkerCount++;
+      } else if (haulerCount < haulerTarget) {
+        creep.memory.role = 'hauler';
+        haulerCount++;
+      } else if (hasWork) {
+        const carryParts = creep.getActiveBodyparts(CARRY);
+        const workParts = creep.getActiveBodyparts(WORK);
+        creep.memory.role = carryParts >= Math.max(2, workParts * 2)
+          ? 'hauler' : 'worker';
+      } else {
+        creep.memory.role = 'hauler';
+      }
+    }
+    return { sourceWorkerCount, haulerCount };
+  };
+
   return {
     getSourceSpotCount,
     getSourceBodyWorkCapacity,
     reviewSourceStaffing,
-    getSourceWorkerTargets
+    getSourceWorkerTargets,
+    assignUnallocatedRoles
   };
 };
 
