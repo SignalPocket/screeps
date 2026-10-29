@@ -7,6 +7,9 @@ const base = {
   rcl: 3,
   controllerOwned: true,
   controllerTicks: 10000,
+  controllerWorkSpots: 4,
+  controllerBufferRatio: 0.2,
+  currentUpgraders: 1,
   spawnCount: 1,
   sourceCount: 2,
   efficientSourceWorkers: 2,
@@ -48,14 +51,23 @@ const remote = derivePopulationPolicy({ ...base, activeRemoteRooms: 2,
 assert.strictEqual(remote.remote.miners, 4);
 assert.ok(remote.remote.haulers >= 4);
 assert.strictEqual(remote.remote.builders, 1);
-assert.strictEqual(remote.roles.rebalancer.desired, 1);
+assert.strictEqual(remote.roles.rebalancer.min, 1);
+assert.strictEqual(remote.roles.rebalancer.desired, 2);
+assert.ok(remote.roles.rebalancer.max >= 3);
 
 const emergency = derivePopulationPolicy({ ...base, controllerTicks: 2500 });
 assert.strictEqual(emergency.mode, 'controller-emergency');
 assert.ok(emergency.roles.upgrader.desired >= 2);
 
+const fullController = derivePopulationPolicy({ ...base,
+  controllerBufferRatio: 1, currentUpgraders: 1 });
+assert.strictEqual(fullController.roles.upgrader.desired, 4);
+const stillFullController = derivePopulationPolicy({ ...base,
+  controllerBufferRatio: 1, currentUpgraders: 2 });
+assert.strictEqual(stillFullController.roles.upgrader.desired, 4);
+
 for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
-  emergency]) {
+  emergency, fullController, stillFullController]) {
   for (const entry of Object.values(scenario.roles)) {
     assert.ok(entry.min <= entry.desired);
     assert.ok(entry.desired <= entry.max);

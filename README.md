@@ -25,8 +25,12 @@ Outposts scale from their visible sources, route distance, construction sites,
 and container pressure. A completed remote source container immediately opens a
 haul lane; each ready source gets an essential carrier before surplus local work.
 Returning inter-room haulers unload into the first reachable home buffer, while
-the room rebalancer distributes that energy between extension and controller
-buffers.
+the room rebalancers distribute that energy between extension and controller
+buffers. Balancer staffing scales with active outposts and container imbalance.
+Empty remote haulers may switch away from an exhausted lane to the fullest
+visible outpost container; loaded and in-transit carriers finish their trip.
+When the controller buffer reaches 90%, the policy fills every usable controller
+station with a WORK-heavy upgrader, capped by the room's RCL limit.
 
 The room planner places source and controller containers on accessible,
 low-swamp routes, clusters extensions away from established traffic, and queues

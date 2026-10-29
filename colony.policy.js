@@ -84,19 +84,38 @@ const derivePopulationPolicy = state => {
   const fixerMaximum = repairBacklog > 100000 && !starved ? 2 : fixerDesired;
 
   const upgraderMinimum = state.controllerOwned === false ? 0 : 1;
+  const controllerWorkSpots = Math.max(1,
+    state.controllerWorkSpots || 1);
+  const upgraderStationCapacity = Math.max(upgraderMinimum,
+    Math.min(controllerWorkSpots, Math.max(1, rcl + 1)));
   let upgraderDesired = upgraderMinimum;
-  if (controllerDanger) upgraderDesired = Math.max(2, upgraderDesired);
+  if (controllerDanger) upgraderDesired = Math.min(
+    upgraderStationCapacity, Math.max(2, upgraderDesired));
   else if (!starved && (bufferRatio >= 0.75 || storedEnergy >= 6000)) {
     upgraderDesired = clamp(1 + Math.floor(storedEnergy / 6000), 2,
-      Math.max(2, Math.ceil(rcl / 2) + 1));
+      upgraderStationCapacity);
+  }
+  if (!starved && (state.controllerBufferRatio || 0) >= 0.9) {
+    // A persistently full controller buffer means delivery is outrunning RC
+    // consumption. Fill every usable controller station immediately instead
+    // of raising the target one creep at a time across several spawn cycles.
+    upgraderDesired = Math.max(upgraderDesired, upgraderStationCapacity);
   }
   const upgraderMaximum = Math.max(upgraderDesired,
-    Math.max(1, Math.ceil(rcl / 2) + 1));
+    upgraderStationCapacity);
 
-  const rebalancerNeeded = (state.sourceContainerCount || 0) >= 2 &&
-    ((state.containerImbalance || 0) >= 0.35 ||
-      (state.activeRemoteRooms || 0) > 0);
-  const rebalancerDesired = rebalancerNeeded ? 1 : 0;
+  const hasBufferNetwork = (state.sourceContainerCount || 0) >= 2;
+  const activeOutposts = Math.max(0, state.activeRemoteRooms || 0);
+  const containerImbalance = state.containerImbalance || 0;
+  const rebalancerMinimum = hasBufferNetwork && activeOutposts > 0 ? 1 : 0;
+  let rebalancerDesired = hasBufferNetwork && activeOutposts > 0
+    ? clamp(activeOutposts, 2, 4)
+    : hasBufferNetwork && containerImbalance >= 0.35 ? 1 : 0;
+  if (containerImbalance >= 0.6 && rebalancerDesired > 0) {
+    rebalancerDesired = Math.min(5, rebalancerDesired + 1);
+  }
+  const rebalancerMaximum = rebalancerDesired > 0
+    ? Math.min(6, rebalancerDesired + 1) : 0;
 
   const activeRemoteRooms = Math.max(0, state.activeRemoteRooms || 0);
   const activeRemoteSources = Math.max(activeRemoteRooms,
@@ -125,8 +144,8 @@ const derivePopulationPolicy = state => {
       'repair backlog and critical damage')),
     upgrader: normalize(role(upgraderMinimum, upgraderDesired,
       upgraderMaximum, 'controller risk and energy surplus')),
-    rebalancer: normalize(role(0, rebalancerDesired, 1,
-      'container energy imbalance')),
+    rebalancer: normalize(role(rebalancerMinimum, rebalancerDesired,
+      rebalancerMaximum, 'outpost count and container energy imbalance')),
     digger: normalize(role(0, state.blockedSourceSite ? 1 : 0,
       state.blockedSourceSite ? 1 : 0, 'blocked source access'))
   };
