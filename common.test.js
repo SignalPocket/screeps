@@ -26,6 +26,10 @@ const { createColonyDashboard } = require('./colony.dashboard');
 const { createRefillManagement } = require('./refill.management');
 const { createSpawnPolicy } = require('./spawn.policy');
 const { createTaskReservations } = require('./task.reservations');
+const { planRefillTargets } = require('./refill.dispatch');
+const { planControllerStations } = require('./controller.stations');
+const { planSalvageAssignments } = require('./salvage.dispatch');
+const { runTowers } = require('./tower.control');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
@@ -173,6 +177,7 @@ const refillManagement = createRefillManagement({
   FIND_MY_SPAWNS: 'spawns',
   STRUCTURE_SPAWN: 'spawn',
   STRUCTURE_EXTENSION: 'extension',
+  STRUCTURE_TOWER: 'tower',
   RESOURCE_ENERGY: 'energy',
   BODYPART_COST: parts.BODYPART_COST,
   CARRY: parts.CARRY,
@@ -207,6 +212,8 @@ assert.strictEqual(primaryRefiller.memory.role, 'refiller');
 assert.strictEqual(overflowRefiller.memory.role, 'hauler');
 assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
   { structureType: 'spawn' }), true);
+assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
+  { structureType: 'tower' }), true);
 
 const namingMemory = { creeps: {}, roomOrdinals: {} };
 const namingRoom = {
@@ -430,6 +437,206 @@ retainedCreep.memory.task = 'upgrade';
 assert.strictEqual(taskReservations.retain(retainedCreep, 'build',
   'buildTarget', candidate => Boolean(candidate)), null);
 assert.strictEqual(retainedCreep.memory.buildTarget, undefined);
+
+const dispatchRefillStructures = {
+  full: { id: 'full', structureType: 'extension',
+    store: { getFreeCapacity: () => 0 } },
+  spawn: { id: 'spawn', structureType: 'spawn',
+    store: { getFreeCapacity: () => 50 } },
+  extension: { id: 'extension', structureType: 'extension',
+    store: { getFreeCapacity: () => 50 } },
+  tower: { id: 'tower', structureType: 'tower',
+    store: { getFreeCapacity: () => 100 } }
+};
+const refillCarrier = (name, distances, refillTarget) => ({
+  name,
+  room: { name: 'W1N1' },
+  memory: { role: 'hauler', task: 'refill', refillTarget },
+  store: { energy: 50 },
+  pos: { getRangeTo: target => distances[target.id] }
+});
+const refillA = refillCarrier('A', { spawn: 1, extension: 5 }, 'full');
+const refillB = refillCarrier('B', { spawn: 5, extension: 1 });
+const refillC = refillCarrier('C', { spawn: 6, extension: 5, tower: 1 });
+const dispatchRefillRoom = {
+  name: 'W1N1',
+  find: (type, options) => Object.values(dispatchRefillStructures)
+    .filter(options.filter)
+};
+const refillPlan = planRefillTargets({
+  rooms: [dispatchRefillRoom], creeps: [refillA, refillB, refillC],
+  roomDemandPlans: { W1N1: { assignments: {
+    A: 'refill', B: 'refill', C: 'refill'
+  } } },
+  Game: { getObjectById: id => dispatchRefillStructures[id] || null },
+  RESOURCE_ENERGY: 'energy', FIND_MY_STRUCTURES: 'structures',
+  STRUCTURE_SPAWN: 'spawn', STRUCTURE_EXTENSION: 'extension',
+  STRUCTURE_TOWER: 'tower', isRefillTargetFor: () => true,
+  getRefillPriority: (room, structure) =>
+    structure.structureType === 'spawn' ? 0
+      : structure.structureType === 'extension' ? 1 : 2
+});
+assert.strictEqual(refillPlan.A, 'spawn');
+assert.strictEqual(refillPlan.B, 'extension');
+assert.strictEqual(refillPlan.C, 'tower');
+assert.strictEqual(refillA.memory.refillTarget, undefined);
+
+const towerActions = [];
+const testTower = {
+  id: 'tower-1', structureType: 'tower', pos: { getRangeTo: () => 4 },
+  store: { energy: 1000, getCapacity: () => 1000 },
+  attack: target => (towerActions.push(`attack:${target.id}`), 0),
+  heal: target => (towerActions.push(`heal:${target.id}`), 0),
+  repair: target => (towerActions.push(`repair:${target.id}`), 0)
+};
+const testHealer = {
+  id: 'hostile-healer', hits: 500,
+  getActiveBodyparts: part => part === 'heal' ? 1 : 0
+};
+const testAttacker = {
+  id: 'hostile-attacker', hits: 100,
+  getActiveBodyparts: part => part === 'attack' ? 1 : 0
+};
+const injuredCreep = { id: 'injured', name: 'injured', hits: 50, hitsMax: 100 };
+const damagedSpawn = {
+  id: 'damaged-spawn', my: true, structureType: 'spawn',
+  hits: 1000, hitsMax: 5000
+};
+const towerState = {
+  hostiles: [testAttacker, testHealer], injured: [], structures: [damagedSpawn]
+};
+const towerRoom = {
+  name: 'W1N1', controller: { my: true },
+  find: (type, options) => {
+    const values = type === 'my-structures' ? [testTower]
+      : type === 'hostiles' ? towerState.hostiles
+        : type === 'my-creeps' ? towerState.injured
+          : type === 'structures' ? towerState.structures : [];
+    return options && options.filter ? values.filter(options.filter) : values;
+  }
+};
+const runTowerTest = () => runTowers({
+  rooms: [towerRoom], RESOURCE_ENERGY: 'energy',
+  FIND_MY_STRUCTURES: 'my-structures', FIND_HOSTILE_CREEPS: 'hostiles',
+  FIND_MY_CREEPS: 'my-creeps', FIND_STRUCTURES: 'structures',
+  STRUCTURE_TOWER: 'tower', STRUCTURE_ROAD: 'road',
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_WALL: 'wall',
+  STRUCTURE_RAMPART: 'rampart', ATTACK: 'attack',
+  RANGED_ATTACK: 'ranged_attack', HEAL: 'heal', WORK: 'work', CLAIM: 'claim'
+});
+let towerResult = runTowerTest();
+assert.deepStrictEqual(towerActions, ['attack:hostile-healer']);
+assert.strictEqual(towerResult.W1N1.mode, 'attack');
+towerActions.length = 0;
+towerState.hostiles = [];
+towerState.injured = [injuredCreep];
+towerResult = runTowerTest();
+assert.deepStrictEqual(towerActions, ['heal:injured']);
+assert.strictEqual(towerResult.W1N1.mode, 'heal');
+towerActions.length = 0;
+towerState.injured = [];
+towerResult = runTowerTest();
+assert.deepStrictEqual(towerActions, ['repair:damaged-spawn']);
+assert.strictEqual(towerResult.W1N1.mode, 'repair');
+towerActions.length = 0;
+testTower.store.energy = 400;
+towerResult = runTowerTest();
+assert.deepStrictEqual(towerActions, []);
+assert.strictEqual(towerResult.W1N1.mode, 'idle');
+
+const rangePosition = (x, y) => ({
+  x, y,
+  getRangeTo: (targetOrX, targetY) => {
+    const targetX = typeof targetOrX === 'number' ? targetOrX : targetOrX.pos.x;
+    const resolvedY = typeof targetOrX === 'number' ? targetY : targetOrX.pos.y;
+    return Math.max(Math.abs(x - targetX), Math.abs(y - resolvedY));
+  }
+});
+const stationBuffer = {
+  id: 'controller-buffer', structureType: 'container', pos: rangePosition(10, 10)
+};
+const stationRoom = {
+  name: 'W1N1', controller: { my: true, pos: rangePosition(12, 10) },
+  getTerrain: () => ({ get: () => 0 }),
+  lookForAt: () => []
+};
+const stationCreeps = ['Up-A', 'Up-B'].map(name => ({
+  name, room: stationRoom, memory: { role: 'upgrader', controllerStation: {
+    x: 11, y: 10, roomName: 'W1N1', bufferId: 'controller-buffer'
+  } }
+}));
+class TestRoomPosition {
+  constructor(x, y, roomName) {
+    this.x = x;
+    this.y = y;
+    this.roomName = roomName;
+  }
+}
+const controllerStationPlan = planControllerStations({
+  rooms: [stationRoom], creeps: stationCreeps,
+  getRoomStructures: () => [stationBuffer], RoomPosition: TestRoomPosition,
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_RAMPART: 'rampart',
+  TERRAIN_MASK_WALL: 1, LOOK_STRUCTURES: 'structures',
+  OBSTACLE_OBJECT_TYPES: ['spawn']
+});
+assert.strictEqual(Object.keys(controllerStationPlan).length, 2);
+assert.notDeepStrictEqual(stationCreeps[0].memory.controllerStation,
+  stationCreeps[1].memory.controllerStation);
+stationRoom.controller = { my: true, pos: rangePosition(12, 10) };
+planControllerStations({
+  rooms: [stationRoom], creeps: stationCreeps,
+  getRoomStructures: () => [], RoomPosition: TestRoomPosition,
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_RAMPART: 'rampart',
+  TERRAIN_MASK_WALL: 1, LOOK_STRUCTURES: 'structures',
+  OBSTACLE_OBJECT_TYPES: ['spawn']
+});
+assert.strictEqual(stationCreeps[0].memory.controllerStation, undefined);
+assert.strictEqual(stationCreeps[1].memory.controllerStation, undefined);
+
+const salvageItems = {
+  drop: { id: 'drop', resourceType: 'energy', amount: 100 },
+  ruin: { id: 'ruin', store: { energy: 200 } },
+  tombstone: { id: 'tombstone', store: { energy: 300 } }
+};
+const salvageCollector = (name, role, distances) => ({
+  name,
+  spawning: false,
+  room: { name: 'W1N1' },
+  memory: { role, dropTarget: 'stale-drop', ruinTarget: 'stale-ruin',
+    tombstoneTarget: 'stale-tombstone' },
+  store: { getFreeCapacity: () => 50 },
+  pos: { getRangeTo: item => distances[item.id] }
+});
+const sourceHarvester = salvageCollector('Harvester', 'harvester',
+  { drop: 2, ruin: 5, tombstone: 5 });
+const salvageHauler = salvageCollector('Hauler', 'hauler',
+  { drop: 1, ruin: 2, tombstone: 3 });
+const nearbyBuilder = salvageCollector('Builder', 'builder',
+  { drop: 3, ruin: 3, tombstone: 2 });
+const salvageRoom = {
+  name: 'W1N1',
+  memory: {},
+  find: (type, options) => {
+    const items = type === 'drops' ? [salvageItems.drop]
+      : type === 'ruins' ? [salvageItems.ruin]
+        : type === 'tombstones' ? [salvageItems.tombstone] : [];
+    return items.filter(options.filter);
+  }
+};
+const salvagePlan = planSalvageAssignments({
+  rooms: [salvageRoom],
+  creeps: [sourceHarvester, salvageHauler, nearbyBuilder],
+  Game: { time: 50, getObjectById: id => salvageItems[id] || null },
+  RESOURCE_ENERGY: 'energy', FIND_DROPPED_RESOURCES: 'drops',
+  FIND_RUINS: 'ruins', FIND_TOMBSTONES: 'tombstones',
+  canCollectDrop: collector => collector.memory.role === 'harvester'
+});
+assert.strictEqual(salvagePlan.dropAssignments.Harvester, 'drop');
+assert.strictEqual(salvagePlan.dropAssignments.Hauler, undefined);
+assert.strictEqual(salvagePlan.ruinAssignments.Hauler, 'ruin');
+assert.strictEqual(salvagePlan.tombstoneAssignments.Builder, 'tombstone');
+assert.strictEqual(sourceHarvester.memory.ruinTarget, undefined);
+assert.strictEqual(salvageHauler.memory.tombstoneTarget, undefined);
 
 const target = {
   id: 'buffer',

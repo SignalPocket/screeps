@@ -2,7 +2,8 @@
 
 const createRefillManagement = ({
   Game, getRoomStructures, isExtensionClusterTile, getRoomSituation,
-  FIND_MY_SPAWNS, STRUCTURE_SPAWN, STRUCTURE_EXTENSION, RESOURCE_ENERGY,
+  FIND_MY_SPAWNS, STRUCTURE_SPAWN, STRUCTURE_EXTENSION, STRUCTURE_TOWER,
+  RESOURCE_ENERGY,
   BODYPART_COST, CARRY, MOVE, CARRY_CAPACITY
 }) => {
   const getRefillClusters = room => {
@@ -33,6 +34,7 @@ const createRefillManagement = ({
     if (structure.structureType === STRUCTURE_SPAWN) {
       return Boolean(creep.memory.refillSpawnOwner);
     }
+    if (structure.structureType === STRUCTURE_TOWER) return true;
     if (structure.structureType !== STRUCTURE_EXTENSION) return false;
     if (!Number.isInteger(creep.memory.refillClusterX) ||
         !Number.isInteger(creep.memory.refillClusterY)) return true;

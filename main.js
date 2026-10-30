@@ -27,6 +27,10 @@ const { createColonyDashboard } = require('colony.dashboard');
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
 const { createTaskReservations } = require('task.reservations');
+const { planRefillTargets } = require('refill.dispatch');
+const { planControllerStations } = require('controller.stations');
+const { planSalvageAssignments } = require('salvage.dispatch');
+const { runTowers } = require('tower.control');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
@@ -93,6 +97,19 @@ module.exports.loop = function () {
   const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
     createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
   logDeadCreeps(Memory.creeps);
+  const towerStatuses = runTowers({
+    rooms: Object.values(Game.rooms), RESOURCE_ENERGY, FIND_MY_STRUCTURES,
+    FIND_HOSTILE_CREEPS, FIND_MY_CREEPS, FIND_STRUCTURES, STRUCTURE_TOWER,
+    STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_WALL, STRUCTURE_RAMPART,
+    ATTACK, RANGED_ATTACK, HEAL, WORK, CLAIM
+  });
+  const getRefillPriority = (room, structure) => {
+    const underAttack = towerStatuses[room.name] &&
+      towerStatuses[room.name].hostileCount > 0;
+    if (structure.structureType === STRUCTURE_TOWER) return underAttack ? 0 : 2;
+    if (structure.structureType === STRUCTURE_SPAWN) return underAttack ? 1 : 0;
+    return underAttack ? 2 : 1;
+  };
   for (const creep of Object.values(Game.creeps)) {
     normalizeBuilderMemory(creep.memory);
     if (creep.memory.role === 'worker' && hasBuilderBody(creep)) {
@@ -233,8 +250,8 @@ module.exports.loop = function () {
     reconcileRefillerClusters, releaseUndersizedRefillers } =
     createRefillManagement({
       Game, getRoomStructures, isExtensionClusterTile, getRoomSituation,
-      FIND_MY_SPAWNS, STRUCTURE_SPAWN, STRUCTURE_EXTENSION, RESOURCE_ENERGY,
-      BODYPART_COST, CARRY, MOVE, CARRY_CAPACITY
+      FIND_MY_SPAWNS, STRUCTURE_SPAWN, STRUCTURE_EXTENSION, STRUCTURE_TOWER,
+      RESOURCE_ENERGY, BODYPART_COST, CARRY, MOVE, CARRY_CAPACITY
     });
   const getDesiredSourceWorkerLimit = (room, population) => {
     const { sourceWorkerTargetTotal } = getWorkerLimits(room);
@@ -2496,6 +2513,10 @@ module.exports.loop = function () {
         structure.structureType === STRUCTURE_EXTENSION)).reduce(
       (total, structure) => total +
       structure.store.getFreeCapacity(RESOURCE_ENERGY), 0);
+    const towerFree = roomStructures.filter(structure => structure.my &&
+      structure.structureType === STRUCTURE_TOWER).reduce(
+      (total, structure) => total +
+      structure.store.getFreeCapacity(RESOURCE_ENERGY), 0);
     const controllerBuffers = roomStructures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER &&
         structure.pos.getRangeTo(room.controller) <= 3
@@ -2553,7 +2574,7 @@ module.exports.loop = function () {
     const emergencyEnergyRefill = room.energyAvailable < workerCost;
     // Dedicated haulers continuously top off room energy; the phase gate only
     // decides whether WORK creeps must join that refill wave.
-    let refillDemand = spawnFree;
+    let refillDemand = spawnFree + towerFree;
     // Keep enough room energy to replace a basic worker, then let haulers
     // stock the controller buffer. Mobile WORK creeps can continue topping
     // off spawn/extensions while the haulers remove the long energy commute
@@ -2603,7 +2624,8 @@ module.exports.loop = function () {
     }
     const refillStructures = roomStructures.filter(structure => structure.my &&
         (structure.structureType === STRUCTURE_SPAWN ||
-          structure.structureType === STRUCTURE_EXTENSION) &&
+          structure.structureType === STRUCTURE_EXTENSION ||
+          structure.structureType === STRUCTURE_TOWER) &&
         structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0
     );
     const refillDemandFor = creep => refillStructures.filter(structure =>
@@ -2927,7 +2949,7 @@ module.exports.loop = function () {
       supplyTargets,
       incomingSupply,
       collectionSources,
-      demand: { spawnFree, bufferFree, supplyFree, storageFree,
+      demand: { spawnFree, towerFree, bufferFree, supplyFree, storageFree,
         sourceStored, buildTargets: sites.length,
         fixTargets: repairTargets.length,
         sourceCritical, buildRemaining, repairEnergy, energyWorkPhase },
@@ -2938,6 +2960,7 @@ module.exports.loop = function () {
     room.memory.demandPlan = {
       tick: Game.time,
       spawnFree,
+      towerFree,
       bufferFree,
       supplyFree,
       storageFree,
@@ -3087,197 +3110,31 @@ module.exports.loop = function () {
     return best;
   };
 
-  // Match each dropped-energy pile to one closest capable creep so the room
-  // does not swarm it. Any creep within three tiles may interrupt its normal
-  // job; haulers remain eligible at longer range for general cleanup.
-  const dropAssignments = {};
-  const ruinAssignments = {};
-  const tombstoneAssignments = {};
   for (const creep of creeps) {
     delete creep.memory.reserveHauler;
     delete creep.memory.controllerFeedTarget;
-    delete creep.memory.dropTarget;
-    delete creep.memory.ruinTarget;
-    delete creep.memory.tombstoneTarget;
   }
-  for (const room of Object.values(Game.rooms)) {
-    const collectors = creeps.filter(creep =>
-      creep.room.name === room.name && !creep.spawning &&
-      creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
-    const drops = room.find(FIND_DROPPED_RESOURCES, {
-      filter: resource => resource.resourceType === RESOURCE_ENERGY &&
-        resource.amount > 0
+  const { dropAssignments, ruinAssignments, tombstoneAssignments } =
+    planSalvageAssignments({
+      rooms: Object.values(Game.rooms), creeps, Game, RESOURCE_ENERGY,
+      FIND_DROPPED_RESOURCES, FIND_RUINS, FIND_TOMBSTONES,
+      canCollectDrop: (collector, drop, room) => {
+        const localSource = getRoomSources(room).find(source =>
+          source.pos.getRangeTo(drop) <= 2);
+        if (!localSource) return true;
+        const hasSourceContainer = getRoomStructures(room).some(structure =>
+          structure.structureType === STRUCTURE_CONTAINER &&
+          localSource.pos.getRangeTo(structure) <= 2);
+        return !hasSourceContainer || collector.memory.role === 'harvester';
+      }
     });
-    const assignedDrops = new Set();
-    const assignedCollectors = new Set();
-    const pairs = [];
-    for (const drop of drops) {
-      for (const collector of collectors) {
-        const distance = collector.pos.getRangeTo(drop);
-        const nearbyRange = collector.memory.role === 'upgrader' ? 1 : 3;
-        if (collector.memory.role !== 'hauler' &&
-            distance > nearbyRange) continue;
-        pairs.push({
-          drop,
-          collector,
-          distance
-        });
-      }
-    }
-    pairs.sort((a, b) => a.distance - b.distance ||
-      a.collector.name.localeCompare(b.collector.name));
-    for (const pair of pairs) {
-      if (assignedDrops.has(pair.drop.id) ||
-          assignedCollectors.has(pair.collector.name)) continue;
-      dropAssignments[pair.collector.name] = pair.drop.id;
-      pair.collector.memory.dropTarget = pair.drop.id;
-      assignedDrops.add(pair.drop.id);
-      assignedCollectors.add(pair.collector.name);
-    }
-    let salvageScan = room.memory.salvageScan;
-    if (!salvageScan || Game.time - (salvageScan.updated || 0) >= 5) {
-      salvageScan = {
-        updated: Game.time,
-        ruinIds: room.find(FIND_RUINS, {
-          filter: ruin => ruin.store[RESOURCE_ENERGY] > 0
-        }).map(ruin => ruin.id),
-        tombstoneIds: room.find(FIND_TOMBSTONES, {
-          filter: tombstone => tombstone.store[RESOURCE_ENERGY] > 0
-        }).map(tombstone => tombstone.id)
-      };
-      room.memory.salvageScan = salvageScan;
-    }
-    const ruins = (salvageScan.ruinIds || [])
-      .map(id => Game.getObjectById(id))
-      .filter(ruin => ruin && ruin.store[RESOURCE_ENERGY] > 0);
-    const ruinPairs = [];
-    for (const ruin of ruins) {
-      for (const collector of collectors) {
-        if (assignedCollectors.has(collector.name)) continue;
-        const distance = collector.pos.getRangeTo(ruin);
-        const nearbyRange = collector.memory.role === 'upgrader' ? 1 : 3;
-        if (collector.memory.role !== 'hauler' &&
-            distance > nearbyRange) continue;
-        ruinPairs.push({ ruin, collector, distance });
-      }
-    }
-    ruinPairs.sort((a, b) => a.distance - b.distance ||
-      a.collector.name.localeCompare(b.collector.name));
-    const assignedRuins = new Set();
-    for (const pair of ruinPairs) {
-      if (assignedRuins.has(pair.ruin.id) ||
-          assignedCollectors.has(pair.collector.name)) continue;
-      ruinAssignments[pair.collector.name] = pair.ruin.id;
-      pair.collector.memory.ruinTarget = pair.ruin.id;
-      assignedRuins.add(pair.ruin.id);
-      assignedCollectors.add(pair.collector.name);
-    }
-    const tombstones = (salvageScan.tombstoneIds || [])
-      .map(id => Game.getObjectById(id))
-      .filter(tombstone => tombstone &&
-        tombstone.store[RESOURCE_ENERGY] > 0);
-    const tombstonePairs = [];
-    for (const tombstone of tombstones) {
-      for (const collector of collectors) {
-        if (assignedCollectors.has(collector.name)) continue;
-        const distance = collector.pos.getRangeTo(tombstone);
-        const nearbyRange = collector.memory.role === 'upgrader' ? 1 : 3;
-        if (collector.memory.role !== 'hauler' &&
-            distance > nearbyRange) continue;
-        tombstonePairs.push({ tombstone, collector, distance });
-      }
-    }
-    tombstonePairs.sort((a, b) => a.distance - b.distance ||
-      a.collector.name.localeCompare(b.collector.name));
-    const assignedTombstones = new Set();
-    for (const pair of tombstonePairs) {
-      if (assignedTombstones.has(pair.tombstone.id) ||
-          assignedCollectors.has(pair.collector.name)) continue;
-      tombstoneAssignments[pair.collector.name] = pair.tombstone.id;
-      pair.collector.memory.tombstoneTarget = pair.tombstone.id;
-      assignedTombstones.add(pair.tombstone.id);
-      assignedCollectors.add(pair.collector.name);
-    }
-  }
 
-  // Match refill carriers to spawn/extension capacity as a room-wide job.
-  // Reserving only while creeps execute lets an earlier, distant creep claim
-  // the target before a later, adjacent creep. This plan assigns the closest
-  // available carrier first and accounts for the capacity each load will use.
-  const plannedRefillTargets = {};
-  for (const room of Object.values(Game.rooms)) {
-    const demandPlan = roomDemandPlans[room.name];
-    if (!demandPlan) continue;
-    const carriers = creeps.filter(creep =>
-      creep.room.name === room.name &&
-      demandPlan.assignments[creep.name] === 'refill' &&
-      creep.store[RESOURCE_ENERGY] > 0);
-    const targets = room.find(FIND_MY_STRUCTURES, {
-      filter: structure =>
-        (structure.structureType === STRUCTURE_SPAWN ||
-          structure.structureType === STRUCTURE_EXTENSION) &&
-        structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0
-    });
-    const remaining = {};
-    for (const target of targets) {
-      remaining[target.id] = target.store.getFreeCapacity(RESOURCE_ENERGY);
-    }
-    const assigned = new Set();
-    // Once a carrier starts a refill trip, keep that reservation until the
-    // target fills or the carrier unloads. Re-solving every tick can make two
-    // approaching creeps exchange targets and reverse direction forever.
-    for (const carrier of carriers) {
-      const target = Game.getObjectById(carrier.memory.refillTarget);
-      const carrierSpawnNeedsEnergy = targets.some(candidate =>
-        candidate.structureType === STRUCTURE_SPAWN &&
-        remaining[candidate.id] > 0 &&
-        isRefillTargetFor(carrier, candidate));
-      const isRefilling = carrier.memory.task === 'refill' ||
-        carrier.memory.role === 'remote-hauler' &&
-          carrier.memory.task === 'remote-haul';
-      if (!isRefilling || !target ||
-          remaining[target.id] === undefined || remaining[target.id] <= 0 ||
-          !isRefillTargetFor(carrier, target) ||
-          carrierSpawnNeedsEnergy &&
-            target.structureType !== STRUCTURE_SPAWN) {
-        if (target && (!isRefillTargetFor(carrier, target) ||
-            carrierSpawnNeedsEnergy &&
-            target.structureType !== STRUCTURE_SPAWN)) {
-          delete carrier.memory.refillTarget;
-        }
-        continue;
-      }
-      plannedRefillTargets[carrier.name] = target.id;
-      remaining[target.id] -= Math.min(
-        carrier.store[RESOURCE_ENERGY], remaining[target.id]);
-      assigned.add(carrier.name);
-    }
-    const pairs = [];
-    for (const carrier of carriers) {
-      if (assigned.has(carrier.name)) continue;
-      for (const target of targets) {
-        if (!isRefillTargetFor(carrier, target)) continue;
-        pairs.push({
-          carrier,
-          target,
-          priority: target.structureType === STRUCTURE_SPAWN ? 0 : 1,
-          distance: carrier.pos.getRangeTo(target)
-        });
-      }
-    }
-    pairs.sort((a, b) => a.priority - b.priority ||
-      a.distance - b.distance ||
-      a.carrier.name.localeCompare(b.carrier.name));
-    for (const pair of pairs) {
-      if (assigned.has(pair.carrier.name) || remaining[pair.target.id] <= 0) {
-        continue;
-      }
-      plannedRefillTargets[pair.carrier.name] = pair.target.id;
-      remaining[pair.target.id] -= Math.min(
-        pair.carrier.store[RESOURCE_ENERGY], remaining[pair.target.id]);
-      assigned.add(pair.carrier.name);
-    }
-  }
+  const plannedRefillTargets = planRefillTargets({
+    rooms: Object.values(Game.rooms), creeps, roomDemandPlans, Game,
+    RESOURCE_ENERGY, FIND_MY_STRUCTURES, STRUCTURE_SPAWN,
+    STRUCTURE_EXTENSION, STRUCTURE_TOWER, isRefillTargetFor,
+    getRefillPriority
+  });
 
   // Let logistics reserve source energy before general workers withdraw it.
   // The controller buffer remains protected for the dedicated upgrader.
@@ -3305,7 +3162,8 @@ module.exports.loop = function () {
       ['refill', 'emergency-refill', 'remote-haul'], 'refillTarget',
       target => target && creep.store[RESOURCE_ENERGY] > 0 &&
         (target.structureType === STRUCTURE_SPAWN ||
-          target.structureType === STRUCTURE_EXTENSION) &&
+          target.structureType === STRUCTURE_EXTENSION ||
+          target.structureType === STRUCTURE_TOWER) &&
         target.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
     retainExclusiveTarget(creep,
       ['build', 'dig-road', 'remote-road', 'remote-haul'], 'buildTarget',
@@ -3346,62 +3204,11 @@ module.exports.loop = function () {
     Number(b.store.getUsedCapacity() > 0) -
       Number(a.store.getUsedCapacity() > 0) ||
     taskPriority(a) - taskPriority(b) || a.name.localeCompare(b.name));
-  const controllerStations = {};
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    const buffer = getRoomStructures(room)
-      .filter(structure => structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3)
-      .sort((a, b) => a.pos.getRangeTo(room.controller) -
-        b.pos.getRangeTo(room.controller))[0];
-    if (!buffer) continue;
-    const terrain = room.getTerrain();
-    const candidates = [];
-    for (let x = buffer.pos.x - 1; x <= buffer.pos.x + 1; x++) {
-      for (let y = buffer.pos.y - 1; y <= buffer.pos.y + 1; y++) {
-        if (x < 1 || x > 48 || y < 1 || y > 48 ||
-            x === buffer.pos.x && y === buffer.pos.y ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            room.controller.pos.getRangeTo(x, y) > 3) continue;
-        const blocked = room.lookForAt(LOOK_STRUCTURES, x, y)
-          .some(structure => OBSTACLE_OBJECT_TYPES.includes(
-            structure.structureType) &&
-            !(structure.structureType === STRUCTURE_RAMPART &&
-              (structure.my || structure.isPublic)));
-        if (!blocked) candidates.push({ x, y, roomName: room.name });
-      }
-    }
-    candidates.sort((a, b) =>
-      room.controller.pos.getRangeTo(a.x, a.y) -
-        room.controller.pos.getRangeTo(b.x, b.y) ||
-      a.x - b.x || a.y - b.y);
-    const used = new Set();
-    const upgraders = creeps.filter(creep =>
-      creep.room.name === room.name && creep.memory.role === 'upgrader')
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const upgrader of upgraders) {
-      const saved = upgrader.memory.controllerStation;
-      let station = saved && saved.bufferId === buffer.id &&
-        candidates.find(candidate => candidate.x === saved.x &&
-          candidate.y === saved.y && !used.has(`${saved.x}:${saved.y}`));
-      if (!station) {
-        station = candidates.find(candidate =>
-          !used.has(`${candidate.x}:${candidate.y}`));
-      }
-      if (!station) continue;
-      used.add(`${station.x}:${station.y}`);
-      upgrader.memory.controllerStation = {
-        x: station.x,
-        y: station.y,
-        roomName: room.name,
-        bufferId: buffer.id
-      };
-      controllerStations[upgrader.name] = {
-        position: new RoomPosition(station.x, station.y, room.name),
-        buffer
-      };
-    }
-  }
+  const controllerStations = planControllerStations({
+    rooms: Object.values(Game.rooms), creeps, getRoomStructures, RoomPosition,
+    STRUCTURE_CONTAINER, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
+    LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES
+  });
   for (const creep of executionCreeps) {
     const controller = creep.room.controller;
     const controllerStation = controllerStations[creep.name];
@@ -3521,7 +3328,8 @@ module.exports.loop = function () {
           source.pos.getRangeTo(target) <= 2);
       const laneTargetValid = commitment.lane === 'refill'
         ? target.my && (target.structureType === STRUCTURE_SPAWN ||
-          target.structureType === STRUCTURE_EXTENSION)
+          target.structureType === STRUCTURE_EXTENSION ||
+          target.structureType === STRUCTURE_TOWER)
         : commitment.lane === 'refill-buffer'
           ? isExtensionRefillBuffer(creep.room, target)
           : commitment.lane === 'buffer'
@@ -3603,15 +3411,21 @@ module.exports.loop = function () {
         delete creep.memory.refillTarget;
         return null;
       }
-      const spawnUrgent = getRoomStructures(creep.room).some(structure =>
-        structure.structureType === STRUCTURE_SPAWN && structure.my &&
-        isRefillTargetFor(creep, structure) &&
-        getUnreservedCapacity(structure) > 0);
+      const openRefillStructures = getRoomStructures(creep.room).filter(
+        structure => structure.my &&
+          (structure.structureType === STRUCTURE_SPAWN ||
+            structure.structureType === STRUCTURE_EXTENSION ||
+            structure.structureType === STRUCTURE_TOWER) &&
+          isRefillTargetFor(creep, structure) &&
+          getUnreservedCapacity(structure) > 0);
+      const highestPriority = openRefillStructures.reduce((priority, structure) =>
+        Math.min(priority, getRefillPriority(creep.room, structure)), Infinity);
       const valid = structure => structure &&
         (structure.structureType === STRUCTURE_SPAWN ||
-          structure.structureType === STRUCTURE_EXTENSION) &&
+          structure.structureType === STRUCTURE_EXTENSION ||
+          structure.structureType === STRUCTURE_TOWER) &&
         isRefillTargetFor(creep, structure) &&
-        (!spawnUrgent || structure.structureType === STRUCTURE_SPAWN) &&
+        getRefillPriority(creep.room, structure) === highestPriority &&
         getUnreservedCapacity(structure) > 0 &&
         (!extraFilter || extraFilter(structure));
       const planned = Game.getObjectById(plannedRefillTargets[creep.name]);
@@ -3626,15 +3440,15 @@ module.exports.loop = function () {
         return selectPersistentTarget('refillTarget', valid, () =>
           getRoomStructures(creep.room).filter(valid)
             .sort((a, b) =>
-              Number(b.structureType === STRUCTURE_SPAWN) -
-                Number(a.structureType === STRUCTURE_SPAWN) ||
+              getRefillPriority(creep.room, a) -
+                getRefillPriority(creep.room, b) ||
               creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0]);
       }
       return selectPersistentTarget('refillTarget', valid, () =>
         getRoomStructures(creep.room).filter(valid)
           .sort((a, b) =>
-            Number(b.structureType === STRUCTURE_SPAWN) -
-              Number(a.structureType === STRUCTURE_SPAWN) ||
+            getRefillPriority(creep.room, a) -
+              getRefillPriority(creep.room, b) ||
             creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0]);
     };
     const deliverRefill = target => {
