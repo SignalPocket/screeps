@@ -141,6 +141,15 @@ const builderRequest = spawnPolicy.prepareSpawnRequest({
 });
 assert.strictEqual(builderRequest.needsWorker, true);
 assert.strictEqual(builderRequest.body, null);
+spawnPolicyGame.time = 116;
+const expiredBuilderRequest = spawnPolicy.prepareSpawnRequest({
+  spawn: { room: builderRoom },
+  assignment: { role: 'builder' },
+  workers: [spawnPolicyCreep('harvester')],
+  workerLimit: 2,
+  hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
+});
+assert.deepStrictEqual(expiredBuilderRequest.body, ['work', 'carry', 'move']);
 
 const rosterStaffing = createSourceStaffing({
   Game: { time: 1 },

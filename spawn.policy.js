@@ -90,8 +90,10 @@ const createSpawnPolicy = ({
     const moveParts = candidateBody
       ? candidateBody.filter(part => part === MOVE).length : 0;
     const nonMoveParts = candidateBody ? candidateBody.length - moveParts : 0;
+    const builderFallbackAllowed = emergency || waited >= waitLimit;
     const body = candidateBody && mobileWorkRole &&
-      (workParts < 4 || moveParts * 2 < nonMoveParts)
+      (workParts < 4 || moveParts * 2 < nonMoveParts) &&
+      !builderFallbackAllowed
       ? null : candidateBody;
     return { needsWorker: true, body, waited, waitLimit, emergency };
   };
