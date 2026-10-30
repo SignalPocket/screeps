@@ -25,6 +25,7 @@ const { createCreepNaming } = require('./creep.naming');
 const { createColonyDashboard } = require('./colony.dashboard');
 const { createRefillManagement } = require('./refill.management');
 const { createSpawnPolicy } = require('./spawn.policy');
+const { createTaskReservations } = require('./task.reservations');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
@@ -389,6 +390,46 @@ assert.strictEqual(outpostMaintenance.selectRepairTarget(
   [damagedRoad, damagedContainer], maintenancePosition).id, 'container');
 damagedContainer.hits = 225000;
 assert.strictEqual(outpostMaintenance.isRepairTarget(damagedContainer), false);
+assert.strictEqual(outpostMaintenance.getBuilderTarget([], 0), 0);
+const repairQueue = Array.from({ length: 51 }, (_, index) => ({
+  id: `road-${index}`, structureType: 'road', hits: 1000, hitsMax: 5000
+}));
+assert.strictEqual(outpostMaintenance.getBuilderTarget(repairQueue, 0), 3);
+assert.strictEqual(outpostMaintenance.getBuilderTarget(repairQueue, 20), 4);
+
+const reservationObjects = {
+  build: { id: 'build', structureType: 'road' },
+  shared: { id: 'shared', structureType: 'extension' }
+};
+const taskReservations = createTaskReservations({
+  Game: { getObjectById: id => reservationObjects[id] || null },
+  isSharedTarget: candidate => candidate.structureType === 'extension'
+});
+const reservationBuckets = taskReservations.createBuckets(['build', 'repair']);
+assert.strictEqual(taskReservations.claim(reservationBuckets.build,
+  reservationObjects.build, 'A'), true);
+assert.strictEqual(taskReservations.claim(reservationBuckets.build,
+  reservationObjects.build, 'B'), false);
+taskReservations.release(reservationBuckets.build, reservationObjects.build,
+  'B');
+assert.strictEqual(reservationBuckets.build.build, 'A');
+taskReservations.release(reservationBuckets.build, reservationObjects.build,
+  'A');
+assert.strictEqual(taskReservations.claim(reservationBuckets.build,
+  reservationObjects.build, 'B'), true);
+assert.strictEqual(taskReservations.claim(reservationBuckets.build,
+  reservationObjects.shared, 'A'), true);
+assert.strictEqual(taskReservations.claim(reservationBuckets.build,
+  reservationObjects.shared, 'B'), true);
+const retainedCreep = {
+  name: 'A', memory: { task: 'build', buildTarget: 'build' }
+};
+assert.strictEqual(taskReservations.retain(retainedCreep, 'build',
+  'buildTarget', candidate => Boolean(candidate)).id, 'build');
+retainedCreep.memory.task = 'upgrade';
+assert.strictEqual(taskReservations.retain(retainedCreep, 'build',
+  'buildTarget', candidate => Boolean(candidate)), null);
+assert.strictEqual(retainedCreep.memory.buildTarget, undefined);
 
 const target = {
   id: 'buffer',

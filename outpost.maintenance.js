@@ -20,8 +20,17 @@ const createOutpostMaintenance = ({ STRUCTURE_CONTAINER, STRUCTURE_ROAD }) => {
       healthRatio(a) - healthRatio(b) ||
       position.getRangeTo(a) - position.getRangeTo(b) ||
       a.id.localeCompare(b.id))[0];
+  const getBuilderTarget = (structures, constructionSiteCount = 0) => {
+    const repairTargets = structures.filter(isRepairTarget).length;
+    if (constructionSiteCount === 0 && !needsMaintenance(structures)) return 0;
+    // Remote roads decay continuously and one traveller cannot keep a dense
+    // route network healthy while also building.
+    return Math.min(4, Math.max(1,
+      Math.ceil(constructionSiteCount / 4), Math.ceil(repairTargets / 25)));
+  };
 
-  return { needsMaintenance, isRepairTarget, selectRepairTarget };
+  return { needsMaintenance, isRepairTarget, selectRepairTarget,
+    getBuilderTarget };
 };
 
 module.exports = { createOutpostMaintenance };

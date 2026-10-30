@@ -5,6 +5,7 @@ const createRoomSituation = dependencies => {
     Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources,
     getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
     getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
+    isMaintainedRoad = () => true, isMaintainedContainer = () => true,
     roadsPaused, STRUCTURE_CONTAINER, STRUCTURE_ROAD, STRUCTURE_WALL,
     STRUCTURE_RAMPART, STRUCTURE_EXTENSION, STRUCTURE_SPAWN,
     RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
@@ -79,6 +80,10 @@ const createRoomSituation = dependencies => {
         (structure.my || structure.structureType === STRUCTURE_ROAD ||
           structure.structureType === STRUCTURE_CONTAINER) &&
         (!roadsPaused(room) || structure.structureType !== STRUCTURE_ROAD) &&
+        (structure.structureType !== STRUCTURE_ROAD ||
+          isMaintainedRoad(room, structure)) &&
+        (structure.structureType !== STRUCTURE_CONTAINER ||
+          isMaintainedContainer(room, structure)) &&
         structure.structureType !== STRUCTURE_WALL &&
         structure.structureType !== STRUCTURE_RAMPART);
     const repairCrisis = repairStructures.some(structure =>

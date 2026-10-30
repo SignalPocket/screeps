@@ -80,12 +80,20 @@ const derivePopulationPolicy = state => {
     : 0;
 
   const repairBacklog = Math.max(0, repair.remaining || 0);
-  const repairBuilderMinimum = repair.critical ? 1 : 0;
+  // Repairs need enough parallel WORK to reverse a crisis, not merely one
+  // token fixer. Keep the emergency floor at two when the economy can afford
+  // it, then scale the crew with remaining damage. The RCL-based ceiling keeps
+  // a repair surge from consuming the whole colony permanently.
+  const repairBuilderMinimum = repair.critical ? (starved ? 1 : 2) : 0;
+  const repairBuilderCapacity = starved
+    ? (repair.critical ? 2 : 1)
+    : Math.max(3, Math.min(6, rcl + 2));
   const repairBuilderDesired = repairBacklog > 0
-    ? clamp(Math.ceil(repairBacklog / 200000), 1, starved ? 1 : 3)
+    ? clamp(Math.ceil(repairBacklog / 125000), 1, repairBuilderCapacity)
     : 0;
-  const repairBuilderMaximum = repairBacklog > 100000 && !starved
-    ? Math.max(repairBuilderDesired, 3) : repairBuilderDesired;
+  const repairBuilderMaximum = repairBacklog > 100000
+    ? Math.max(repairBuilderDesired, repairBuilderCapacity)
+    : repairBuilderDesired;
 
   const upgraderMinimum = state.controllerOwned === false ? 0 : 1;
   const controllerWorkSpots = Math.max(1,

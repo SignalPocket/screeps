@@ -75,8 +75,15 @@ assert.strictEqual(imbalancedRemote.roles.rebalancer.desired, 3);
 const repairSurge = derivePopulationPolicy({ ...base,
   storedEnergy: 12000, bufferRatio: 0.8,
   repair: { critical: true, remaining: 600000 } });
-assert.strictEqual(repairSurge.roles.repairBuilder.desired, 3);
-assert.ok(repairSurge.roles.repairBuilder.max >= 3);
+assert.strictEqual(repairSurge.roles.repairBuilder.min, 2);
+assert.strictEqual(repairSurge.roles.repairBuilder.desired, 5);
+assert.ok(repairSurge.roles.repairBuilder.max >= 5);
+
+const starvedRepairCrisis = derivePopulationPolicy({ ...base,
+  energyRatio: 0.1, bufferRatio: 0.1, storedEnergy: 0,
+  repair: { critical: true, remaining: 600000 } });
+assert.strictEqual(starvedRepairCrisis.roles.repairBuilder.min, 1);
+assert.strictEqual(starvedRepairCrisis.roles.repairBuilder.desired, 2);
 
 const emergency = derivePopulationPolicy({ ...base, controllerTicks: 2500 });
 assert.strictEqual(emergency.mode, 'controller-emergency');
@@ -91,7 +98,7 @@ assert.strictEqual(stillFullController.roles.upgrader.desired, 4);
 
 for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
   imbalancedRemote, repairSurge, emergency, fullController,
-  stillFullController]) {
+  stillFullController, starvedRepairCrisis]) {
   for (const entry of Object.values(scenario.roles)) {
     assert.ok(entry.min <= entry.desired);
     assert.ok(entry.desired <= entry.max);
