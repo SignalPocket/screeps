@@ -1,7 +1,7 @@
 'use strict';
 
 const createRoadPlanner = ({
-  Game, scheduledRoomTick, getRoomSources, getRoomCreeps,
+  Game, RoomPosition, scheduledRoomTick, getRoomSources, getRoomCreeps,
   showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
   FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
   LOOK_STRUCTURES,
@@ -319,6 +319,37 @@ const createRoadPlanner = ({
       });
     }
   };
+  const drawInterRoomRoadLinks = homeRoom => {
+    const mapVisual = Game.map && Game.map.visual;
+    if (!homeRoom || !RoomPosition || !mapVisual ||
+        typeof mapVisual.line !== 'function') return 0;
+    const links = [
+      ['leftSurvey', 'remoteRoadPlan'],
+      ['southSurvey', 'southRemoteRoadPlan'],
+      ['southwestSurvey', 'southwestRemoteRoadPlan']
+    ];
+    let drawn = 0;
+    for (const [surveyKey, planKey] of links) {
+      const survey = homeRoom.memory[surveyKey];
+      const plan = homeRoom.memory[planKey];
+      const hasRoadPath = plan && Array.isArray(plan.paths) &&
+        plan.paths.some(path => Array.isArray(path.points) &&
+          path.points.length > 0);
+      if (!survey || !survey.active || !survey.targetRoom || !hasRoadPath) {
+        continue;
+      }
+      mapVisual.line(
+        new RoomPosition(25, 25, homeRoom.name),
+        new RoomPosition(25, 25, survey.targetRoom),
+        {
+          color: '#bf5af2', width: 1.5, opacity: 0.45,
+          lineStyle: 'dotted'
+        }
+      );
+      drawn++;
+    }
+    return drawn;
+  };
   const drawRoadPlan = (room, paths, traffic, roadBudget) => {
     drawTravelPaths(room, paths);
     const samples = Object.values(traffic.tiles)
@@ -447,6 +478,7 @@ const createRoadPlanner = ({
     updateTrafficHeatmap,
     drawRoadPlan,
     drawTravelPaths,
+    drawInterRoomRoadLinks,
     getRoadBudget,
     placeRoadSite
   };

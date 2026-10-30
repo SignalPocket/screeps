@@ -38,4 +38,19 @@ const selectSourceGroup = (groups, preferredSourceId, {
   return materiallyMoreUrgent || newlyCritical ? fullest : preferred;
 };
 
-module.exports = { buildSourceGroups, selectSourceGroup };
+const selectPassingSourceBuffer = ({
+  room, position, freeCapacity, buffers, getContainerPurpose,
+  getUnreservedEnergy
+}) => {
+  if (!position || freeCapacity <= 0) return null;
+  return (buffers || []).filter(buffer =>
+    String(getContainerPurpose(room, buffer.pos) || '').startsWith('source:') &&
+    position.getRangeTo(buffer) <= 1 &&
+    getUnreservedEnergy(buffer) > 0)
+    .sort((a, b) => getUnreservedEnergy(b) - getUnreservedEnergy(a))[0] ||
+    null;
+};
+
+module.exports = {
+  buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer
+};

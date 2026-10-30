@@ -18,9 +18,11 @@ const base = {
   sourceContainerCount: 2,
   averageSourceDistance: 20,
   energyRatio: 1,
+  energyCapacity: 1300,
   bufferRatio: 0.2,
   storedEnergy: 1000,
   storedSourceEnergy: 500,
+  sourceBufferCapacity: 4000,
   extensionCount: 10,
   energyConsumerCount: 11,
   construction: { remaining: 0 },
@@ -89,8 +91,15 @@ const repairSurge = derivePopulationPolicy({ ...base,
   storedEnergy: 12000, bufferRatio: 0.8,
   repair: { critical: true, remaining: 600000 } });
 assert.strictEqual(repairSurge.roles.repairBuilder.min, 2);
-assert.strictEqual(repairSurge.roles.repairBuilder.desired, 5);
+assert.strictEqual(repairSurge.roles.repairBuilder.desired, 3);
 assert.ok(repairSurge.roles.repairBuilder.max >= 5);
+
+const damagedOrDowngradedRepair = derivePopulationPolicy({ ...base,
+  energyCapacity: 550, storedEnergy: 12000, bufferRatio: 0.8,
+  repair: { critical: true, remaining: 600000 } });
+assert.strictEqual(damagedOrDowngradedRepair.roles.repairBuilder.desired, 5);
+assert.ok(damagedOrDowngradedRepair.roles.repairBuilder.desired >
+  repairSurge.roles.repairBuilder.desired);
 
 const starvedRepairCrisis = derivePopulationPolicy({ ...base,
   energyRatio: 0.1, bufferRatio: 0.1, storedEnergy: 0,

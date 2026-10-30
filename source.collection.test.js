@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('assert');
-const { buildSourceGroups, selectSourceGroup } =
+const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('./source.collection');
 
 const source1 = { id: 's1' };
@@ -42,5 +42,27 @@ groups[1].stored = 1900;
 assert.strictEqual(selectSourceGroup(groups, 's1').source.id, 's2');
 assert.strictEqual(selectSourceGroup(groups, null).source.id, 's2');
 assert.strictEqual(selectSourceGroup([], 's1'), null);
+
+const passingBuffers = [
+  { id: 'near-low', pos: { range: 1 }, available: 100 },
+  { id: 'near-high', pos: { range: 1 }, available: 450 },
+  { id: 'far-full', pos: { range: 2 }, available: 1000 },
+  { id: 'controller', pos: { range: 1 }, available: 1000 }
+];
+const passingSelection = options => selectPassingSourceBuffer({
+  room: {},
+  position: { getRangeTo: candidate => candidate.pos.range },
+  freeCapacity: 200,
+  buffers: passingBuffers,
+  getContainerPurpose: (room, position) =>
+    position === passingBuffers[3].pos ? 'controller' : 'source:test',
+  getUnreservedEnergy: candidate => candidate.available,
+  ...options
+});
+assert.strictEqual(passingSelection().id, 'near-high');
+assert.strictEqual(passingSelection({ freeCapacity: 0 }), null);
+assert.strictEqual(passingSelection({
+  getUnreservedEnergy: () => 0
+}), null);
 
 console.log('source collection scenarios passed');

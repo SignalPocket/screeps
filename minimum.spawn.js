@@ -2,13 +2,13 @@
 
 const createMinimumSpawnPlanner = dependencies => {
   const {
-    getRoomSources, getSource2TunnelSite, hasBuilderBody, workerCost
+    getRoomSources, getSource2TunnelSite, hasBuilderBody
   } = dependencies;
 
   const planMinimumSpawn = options => {
     const {
       room, workers, staffingPlan, replacementCluster, recoveryEnergy,
-      refillerMinimumEnergy
+      standardEnergy, refillerMinimumEnergy
     } = options;
     const jobs = staffingPlan.jobs;
     const gap = staffingPlan.minimumGap;
@@ -44,21 +44,21 @@ const createMinimumSpawnPlanner = dependencies => {
       return result(convertible ? null : {
         role: 'builder', builderScope: 'local', builderMission: 'build',
         forceSpawn: true,
-        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
+        minimumEnergy: standardEnergy
       });
     }
     if (gap.role === 'repairBuilder') {
       return result({
         role: 'builder', builderScope: 'local', builderMission: 'repair',
         forceSpawn: true,
-        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
+        minimumEnergy: standardEnergy
       });
     }
     if (gap.role === 'hauler') {
       return result({
         role: 'hauler', forceSpawn: true,
         minimumEnergy: workers.some(creep => creep.memory.role === 'hauler')
-          ? room.energyCapacityAvailable : recoveryEnergy
+          ? standardEnergy : recoveryEnergy
       });
     }
     if (gap.role === 'refiller') {
@@ -78,7 +78,7 @@ const createMinimumSpawnPlanner = dependencies => {
       return result({
         role: 'builder', builderScope: 'local', builderMission: 'tunnel',
         builderTarget: tunnelSite && tunnelSite.id, forceSpawn: true,
-        minimumEnergy: room.energyCapacityAvailable
+        minimumEnergy: standardEnergy
       });
     }
     return { handled: false, request: null, gap, haulers };

@@ -19,7 +19,8 @@ const predicates = {
     candidate.memory.builderScope === scope &&
     candidate.memory.builderMission === mission,
   isLocalBuilder: candidate => candidate.memory.role === 'builder' &&
-    candidate.memory.builderScope === 'local'
+    candidate.memory.builderScope === 'local',
+  getRoomSources: () => [source]
 };
 const buildPlan = createStaffingPlanner(predicates).buildRoomStaffingPlan;
 const planner = createMinimumSpawnPlanner({

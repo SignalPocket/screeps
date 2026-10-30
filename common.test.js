@@ -177,9 +177,23 @@ const spawnPolicy = createSpawnPolicy({
   WORK: parts.WORK,
   MOVE: parts.MOVE
 });
-assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(0, 10), 5);
-assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(5, 10), 8);
-assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(10, 10), 30);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(0, 10), 3);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(5, 10), 5);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(10, 10), 20);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  5, 10, 1300, 1300), 650);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  8, 10, 1300, 1300), 800);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  10, 10, 1300, 1300), 1300);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  10, 10, 400, 1300, true), 400);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  5, 10, 800, 800), 400);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  8, 10, 800, 800), 500);
+assert.strictEqual(spawnPolicy.getSpawnBodyEnergyBudget(
+  5, 10, 300, 300), 300);
 const spawnPolicyCreep = (role, idleNow = false) => ({
   spawning: false,
   memory: { role, idleNow },
@@ -432,7 +446,8 @@ const dashboardStaffing = createStaffingPlanner({
   hasWorkParts: creep => ['harvester', 'upgrader', 'builder']
     .includes(creep.memory.role),
   hasLocalReplacementLife: () => true,
-  hasRemoteReplacementLife: () => true
+  hasRemoteReplacementLife: () => true,
+  getRoomSources: () => [{ id: 'dashboard-source' }]
 }).buildRoomStaffingPlan;
 const dashboard = createColonyDashboard({
   Game: dashboardGame,
@@ -1555,6 +1570,7 @@ for (const object of [roadSpawn, roadSource, roadController]) {
 const roadRoom = {
   name: 'W8N8', memory: {
     extensionCluster: { x: 8, y: 12 },
+    leftSurvey: { active: true, targetRoom: 'W9N8' },
     remoteRoadPlan: { paths: [{ slot: 0, points: [
       { x: 47, y: 20, roomName: 'W8N8' },
       { x: 48, y: 20, roomName: 'W8N8' },
@@ -1566,8 +1582,13 @@ const roadRoom = {
   getPositionAt: (x, y) => ({ x, y }),
   findPath: () => [{ x: 6, y: 6 }, { x: 7, y: 7 }]
 };
+const roadMapLines = [];
 const roadPlanner = createRoadPlanner({
-  Game: { time: 700 }, scheduledRoomTick: () => false,
+  Game: { time: 700, map: { visual: {
+    line: (...args) => roadMapLines.push(args)
+  } } },
+  RoomPosition: function (x, y, roomName) { return { x, y, roomName }; },
+  scheduledRoomTick: () => false,
   getRoomSources: () => [roadSource], getRoomCreeps: () => [],
   showTrafficHeatmap: false, FIND_MY_SPAWNS: 'spawns',
   FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
@@ -1590,6 +1611,10 @@ assert.strictEqual(interRoomPaths.W8N8.length, 1);
 assert.strictEqual(interRoomPaths.W9N8.length, 1);
 assert.deepStrictEqual(interRoomPaths.W9N8[0].points,
   [{ x: 0, y: 20 }, { x: 1, y: 20 }]);
+assert.strictEqual(roadPlanner.drawInterRoomRoadLinks(roadRoom), 1);
+assert.strictEqual(roadMapLines[0][0].roomName, 'W8N8');
+assert.strictEqual(roadMapLines[0][1].roomName, 'W9N8');
+assert.strictEqual(roadMapLines[0][2].lineStyle, 'dotted');
 const convergedPaths = roadPlanner.getConvergedTravelPaths([
   { label: 'a', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }] },
   { label: 'b', points: [{ x: 2, y: 2 }, { x: 3, y: 3 }] }

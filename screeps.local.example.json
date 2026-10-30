@@ -1,0 +1,5 @@
+{
+  "server": "http://127.0.0.1:21025",
+  "database": "C:/Program Files (x86)/Steam/steamapps/common/Screeps/server/db.json",
+  "token": "paste-private-server-token-here"
+}

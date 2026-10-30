@@ -1,7 +1,9 @@
 'use strict';
 
 const assert = require('assert');
-const { analyzeRecords, updateRoomTrends, applyTrendAdjustments } =
+require('./health.operations.test');
+const { analyzeRecords, deriveRecoveryDirective, updateRoomTrends,
+  applyTrendAdjustments } =
   require('./room.trends');
 
 const records = [
@@ -12,6 +14,24 @@ const records = [
 const analysis = analyzeRecords(records);
 assert.strictEqual(analysis.repairBonus, 2);
 assert.strictEqual(analysis.haulerBonus, 3);
+const matureRepair = analyzeRecords([
+  { tick: 0, repair: 0, source: 0, work: 1, dropped: 0,
+    capacity: 1300 },
+  { tick: 250, repair: 3000, source: 0, work: 1, dropped: 0,
+    capacity: 1300 },
+  { tick: 500, repair: 6000, source: 0, work: 1, dropped: 0,
+    capacity: 1300 }
+]);
+const downgradedRepair = analyzeRecords([
+  { tick: 0, repair: 0, source: 0, work: 1, dropped: 0,
+    capacity: 550 },
+  { tick: 250, repair: 3000, source: 0, work: 1, dropped: 0,
+    capacity: 550 },
+  { tick: 500, repair: 6000, source: 0, work: 1, dropped: 0,
+    capacity: 550 }
+]);
+assert.strictEqual(matureRepair.repairBonus, 0);
+assert.strictEqual(downgradedRepair.repairBonus, 1);
 
 const memory = {};
 updateRoomTrends(memory, 105, {
@@ -43,7 +63,7 @@ const migratingMemory = { roomTrendHistory: oldDatabase };
 updateRoomTrends(migratingMemory, 200, {});
 assert.strictEqual(migratingMemory.roomTrendHistory.records.length, 1);
 assert.strictEqual(migratingMemory.roomTrendHistory.interval, 250);
-assert.strictEqual(migratingMemory.roomTrendHistory.version, 2);
+assert.strictEqual(migratingMemory.roomTrendHistory.version, 4);
 for (let index = 2; index <= 45; index++) {
   updateRoomTrends(memory, index * 250, {
     repair: index * 1000, build: 0, sourceRatio: 0.5,
@@ -52,7 +72,17 @@ for (let index = 2; index <= 45; index++) {
 }
 assert.strictEqual(memory.roomTrendHistory.records.length, 32);
 assert.strictEqual(memory.roomTrendHistory.interval, 250);
-assert.strictEqual(memory.roomTrendHistory.version, 2);
+assert.strictEqual(memory.roomTrendHistory.version, 4);
+assert.strictEqual(deriveRecoveryDirective([{
+  ready: 1, controllerTicks: 10000, taskFlips: 4, roleChanges: 0,
+  laneChanges: 0, foreignDispatch: 0, staleReturns: 0,
+  cargoMisroutes: 0, remoteBlocked: 0, remoteBacklog: 0, build: 0
+}], {}).key, 'assignments');
+assert.strictEqual(deriveRecoveryDirective([{
+  ready: 1, controllerTicks: 10000, taskFlips: 0, roleChanges: 0,
+  laneChanges: 0, foreignDispatch: 1, staleReturns: 0,
+  cargoMisroutes: 0, remoteBlocked: 1, remoteBacklog: 2000, build: 0
+}], {}).key, 'remote-ownership');
 
 const policy = {
   roles: {

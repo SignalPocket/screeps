@@ -1,5 +1,8 @@
 'use strict';
 
+const { summarizeRoomHealth } = typeof Game === 'undefined'
+  ? require('./health.reporting') : require('health.reporting');
+
 const createColonyDashboard = ({
   Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
   buildRoomStaffingPlan,
@@ -101,6 +104,7 @@ const createColonyDashboard = ({
     const roleTargets = {};
     const roleCoverage = {};
     const roleUsableCounts = {};
+    const emergencyRosters = [];
     const addRoleTarget = (role, minimum, desired, maximum = desired) => {
       const target = roleTargets[role] || { min: 0, desired: 0, max: 0 };
       target.min += Math.max(0, minimum || 0);
@@ -116,7 +120,18 @@ const createColonyDashboard = ({
     };
     for (const room of ownedRooms) {
       const policy = getRoomSituation(room).policy;
-      const jobs = buildRoomStaffingPlan(room, creeps, policy).jobs;
+      const staffingPlan = buildRoomStaffingPlan(room, creeps, policy);
+      const jobs = staffingPlan.jobs;
+      emergencyRosters.push({
+        roomName: room.name,
+        entries: staffingPlan.emergency.entries.map(entry => ({
+          key: entry.key,
+          label: entry.label,
+          target: entry.target,
+          count: entry.count,
+          coverageCount: entry.coverageCount
+        }))
+      });
       addJobTarget('LM', jobs.source);
       addJobTarget('LC', jobs.hauler);
       addJobTarget('RF', jobs.refiller);
@@ -193,6 +208,8 @@ const createColonyDashboard = ({
     const outpostBuildRemaining = workTargets.outpostBuildRemaining || 0;
     const localRepairEnergy = workTargets.localRepairEnergy || 0;
     const outpostRepairEnergy = workTargets.outpostRepairEnergy || 0;
+    const healthSummaries = ownedRooms.map(room =>
+      summarizeRoomHealth(room.name, room.memory.roomTrendHistory));
     const dashboard = {
       updated: Game.time,
       creeps: creeps.length,
@@ -209,6 +226,8 @@ const createColonyDashboard = ({
       roleTargets,
       roleStatuses,
       alerts,
+      emergencyRosters,
+      healthSummaries,
       bodyTypeCount: bodyGroups.length,
       localBuildTargets,
       outpostBuildTargets,
@@ -295,11 +314,11 @@ const createColonyDashboard = ({
     for (let index = 0; index < (dashboard.alerts || []).length; index += 2) {
       alertLines.push(dashboard.alerts.slice(index, index + 2).join(' | '));
     }
-    const groupStartY = 11.95 + offsetY + alertLines.length * 0.8;
+    const groupStartY = 13.55 + offsetY + alertLines.length * 0.8;
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
       room.visual.rect(0.5, 4.5 + offsetY, 27.5,
-        7.35 + (groupedRoles.length + alertLines.length) * 0.8, {
+        8.95 + (groupedRoles.length + alertLines.length) * 0.8, {
         fill: '#101820', opacity: 0.22, stroke: '#64d2ff',
         strokeWidth: 0.08
       });
@@ -354,13 +373,36 @@ const createColonyDashboard = ({
         { align: 'left', color: '#ff9f0a', font: 'bold 0.83 monospace',
           opacity: textOpacity }
       );
+      const roomHealth = (dashboard.healthSummaries || []).find(summary =>
+        summary.roomName === room.name);
+      const emergencyRoster = (dashboard.emergencyRosters || [])
+        .find(roster => roster.roomName === room.name);
+      room.visual.text('EMERGENCY', 1.2, 11.15 + offsetY, {
+        align: 'left', color: '#64d2ff', font: 'bold 0.68 monospace',
+        opacity: textOpacity
+      });
+      (emergencyRoster && emergencyRoster.entries || [])
+        .filter(entry => entry.target > 0)
+        .forEach((entry, column) => room.visual.text(
+          `${entry.label}${entry.coverageCount}/${entry.target}`,
+          6.15 + column * 4.05, 11.15 + offsetY, {
+            align: 'left',
+            color: entry.coverageCount < entry.target
+              ? staffingColors.belowMinimum : staffingColors.staffed,
+            font: 'bold 0.76 monospace', opacity: textOpacity
+          }));
+      room.visual.text(roomHealth ? roomHealth.dashboard :
+        `${room.name} health unavailable`, 1.2, 11.95 + offsetY, {
+          align: 'left', color: '#30d158', font: 'bold 0.68 monospace',
+          opacity: textOpacity
+        });
       room.visual.text('Jobs: count | min / desired / max (* = work-based)',
-        1.2, 11.15 + offsetY, {
+        1.2, 12.75 + offsetY, {
           align: 'left', color: '#d1d1d6', font: 'bold 0.72 monospace',
           opacity: textOpacity
         });
       alertLines.forEach((line, row) => room.visual.text(line, 1.2,
-        11.95 + offsetY + row * 0.8, {
+        13.55 + offsetY + row * 0.8, {
           align: 'left', color: '#ff8ad8', font: 'bold 0.72 monospace',
           opacity: textOpacity
         }));

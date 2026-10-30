@@ -1,5 +1,10 @@
 'use strict';
 
+const { scaleEnergyBudget, scaleReserve, scaleBacklog } =
+  typeof Game === 'undefined'
+    ? require('./room.scaling')
+    : require('room.scaling');
+
 // Colony population policy is deliberately independent from the Screeps API.
 // main.js converts the live room into this small snapshot; keeping the maths
 // here makes staffing decisions testable and prevents role code from inventing
@@ -26,16 +31,24 @@ const derivePopulationPolicy = state => {
   const energyRatio = clamp(state.energyRatio || 0, 0, 1);
   const bufferRatio = clamp(state.bufferRatio || 0, 0, 1);
   const storedEnergy = Math.max(0, state.storedEnergy || 0);
+  const energyCapacity = Math.max(300, state.energyCapacity || 0);
+  const sourceBufferCapacity = Math.max(0,
+    state.sourceBufferCapacity || 0);
   const extensionCount = Math.max(0, state.extensionCount || 0);
   const energyConsumers = Math.max(1, state.energyConsumerCount || 1);
   const construction = state.construction || {};
   const repair = state.repair || {};
   const controllerDanger = (state.controllerTicks || Infinity) < 3000;
   const bootstrap = rcl <= 1 || state.spawnCount === 0;
+  const starvationReserve = scaleEnergyBudget(energyCapacity, 0.5);
+  const droppedBacklog = scaleEnergyBudget(energyCapacity, 0.4, {
+    minimum: 100
+  });
   const starved = state.energyStarvedHold ||
-    energyRatio < 0.35 && bufferRatio < 0.25 && storedEnergy < 500;
+    energyRatio < 0.35 && bufferRatio < 0.25 &&
+      storedEnergy < starvationReserve;
   const logisticsBacklog = bufferRatio >= 0.65 ||
-    (state.droppedEnergy || 0) >= 500;
+    (state.droppedEnergy || 0) >= droppedBacklog;
 
   const sourceMinimum = Math.max(sources,
     state.efficientSourceWorkers || sources);
@@ -59,23 +72,29 @@ const derivePopulationPolicy = state => {
   const containerEconomy = (state.sourceContainerCount || 0) > 0;
   const haulerMinimum = containerEconomy ? Math.max(1,
     Math.ceil(routeLoad / 35)) : 0;
+  const haulBacklogUnit = Math.max(500,
+    Math.round(sourceBufferCapacity * 0.3));
   const haulerDesired = haulerMinimum + (logisticsBacklog ?
-    clamp(Math.ceil((state.storedSourceEnergy || 0) / 1200), 1, 3) : 0);
+    clamp(Math.ceil((state.storedSourceEnergy || 0) / haulBacklogUnit),
+      1, 3) : 0);
   const haulerMaximum = haulerDesired + (containerEconomy ? 1 : 0);
 
   const prioritySites = (construction.container || 0) +
     (construction.extension || 0) + (construction.spawn || 0) +
     (construction.tower || 0);
   const buildRemaining = Math.max(0, construction.remaining || 0);
+  const buildUnit = scaleBacklog(8000, energyCapacity);
+  const buildMaximumUnit = scaleBacklog(4000, energyCapacity);
   const hasConstruction = buildRemaining > 0 || prioritySites > 0;
   const builderMinimum = hasConstruction ? 1 : 0;
   let builderDesired = hasConstruction
-    ? clamp(Math.ceil(buildRemaining / 8000), 1, Math.max(1, rcl))
+    ? clamp(Math.ceil(buildRemaining / buildUnit), 1, Math.max(1, rcl))
     : 0;
   if (prioritySites && builderDesired < 2 && !starved) builderDesired = 2;
   if (starved && !prioritySites) builderDesired = builderMinimum;
   const builderMaximum = hasConstruction
-    ? Math.max(builderDesired, clamp(Math.ceil(buildRemaining / 4000), 1,
+    ? Math.max(builderDesired, clamp(
+      Math.ceil(buildRemaining / buildMaximumUnit), 1,
       Math.max(2, rcl + 1)))
     : 0;
 
@@ -92,10 +111,13 @@ const derivePopulationPolicy = state => {
   const repairBuilderCapacity = starved
     ? (repair.critical ? 2 : 1)
     : Math.max(3, Math.min(6, rcl + 2));
+  const repairUnit = scaleBacklog(125000, energyCapacity);
+  const repairSurgeThreshold = scaleBacklog(100000, energyCapacity);
   const repairBuilderDesired = repairBacklog > 0
-    ? clamp(Math.ceil(repairBacklog / 125000), 1, repairBuilderCapacity)
+    ? clamp(Math.ceil(repairBacklog / repairUnit), 1,
+      repairBuilderCapacity)
     : standingFixerMinimum;
-  const repairBuilderMaximum = repairBacklog > 100000
+  const repairBuilderMaximum = repairBacklog > repairSurgeThreshold
     ? Math.max(repairBuilderDesired, repairBuilderCapacity)
     : Math.max(standingFixerMinimum, repairBuilderDesired);
 
@@ -106,10 +128,13 @@ const derivePopulationPolicy = state => {
     Math.min(controllerWorkSpots, Math.max(1, rcl + 1)));
   const routineUpgraderCapacity = Math.min(2, upgraderStationCapacity);
   let upgraderDesired = upgraderMinimum;
+  const upgraderReserveUnit = scaleReserve(energyCapacity, 5, 1500);
   if (controllerDanger) upgraderDesired = Math.min(
     upgraderStationCapacity, Math.max(2, upgraderDesired));
-  else if (!starved && (bufferRatio >= 0.75 || storedEnergy >= 6000)) {
-    upgraderDesired = clamp(1 + Math.floor(storedEnergy / 6000), 2,
+  else if (!starved && (bufferRatio >= 0.75 ||
+      storedEnergy >= upgraderReserveUnit)) {
+    upgraderDesired = clamp(1 + Math.floor(
+      storedEnergy / upgraderReserveUnit), 2,
       routineUpgraderCapacity);
   }
   if (!starved && (state.controllerBufferRatio || 0) >= 0.9) {

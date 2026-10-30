@@ -1,5 +1,8 @@
 'use strict';
 
+const { scaleEnergyBudget, scaleBacklog } = typeof Game === 'undefined'
+  ? require('./room.scaling') : require('room.scaling');
+
 const clamp = (value, minimum, maximum) =>
   Math.max(minimum, Math.min(maximum, value));
 
@@ -19,6 +22,14 @@ const deriveRoomStatus = state => {
   const reserveRatio = storedEnergy / reserveTarget;
   const bufferRatio = clamp(state.bufferRatio || 0, 0, 1);
   const droppedEnergy = Math.max(0, state.droppedEnergy || 0);
+  const energyCapacity = Math.max(0, state.energyCapacity || 0);
+  const scalingCapacity = Math.max(300, energyCapacity);
+  const sourceBacklogThreshold = scaleEnergyBudget(scalingCapacity, 0.75, {
+    minimum: 500
+  });
+  const droppedBacklogThreshold = scaleEnergyBudget(scalingCapacity, 0.4, {
+    minimum: 100
+  });
   const controllerDanger = Number.isFinite(state.controllerTicks) &&
     state.controllerTicks < 3000;
   const repairCrisis = Boolean(state.repairCritical);
@@ -33,8 +44,8 @@ const deriveRoomStatus = state => {
     harvest = 'working';
   }
 
-  const logisticsPressure = storedSourceEnergy >= 1000 ||
-    bufferRatio >= 0.65 || droppedEnergy >= 500;
+  const logisticsPressure = storedSourceEnergy >= sourceBacklogThreshold ||
+    bufferRatio >= 0.65 || droppedEnergy >= droppedBacklogThreshold;
   const logistics = logisticsPressure && (!hasSpawn || spawnFill < 0.85)
     ? 'blocked'
     : logisticsPressure ? 'backlogged' : 'flowing';
@@ -83,7 +94,9 @@ const deriveRoomStatus = state => {
   if (spawnFill < 0.5 && key !== 'energy-starved') {
     reasons.push(`spawn network ${Math.round(spawnFill * 100)}%`);
   }
-  if (droppedEnergy >= 100) reasons.push(`${droppedEnergy} dropped`);
+  if (droppedEnergy >= Math.min(100, droppedBacklogThreshold)) {
+    reasons.push(`${droppedEnergy} dropped`);
+  }
   if (reasons.length === 0) reasons.push('energy flow within targets');
 
   let score = 100;
@@ -93,7 +106,8 @@ const deriveRoomStatus = state => {
   if (logistics === 'blocked') score -= 20;
   if (controllerDanger) score -= 35;
   if (repairCrisis) score -= 10;
-  if ((state.buildRemaining || 0) > 25000 && reserveRatio < 0.5) score -= 5;
+  if ((state.buildRemaining || 0) >
+      scaleBacklog(25000, scalingCapacity) && reserveRatio < 0.5) score -= 5;
 
   return {
     key,

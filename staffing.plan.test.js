@@ -12,7 +12,8 @@ const planner = createStaffingPlanner({
     creep.memory.builderScope === 'local',
   hasWorkParts: creep => creep.work > 0,
   hasLocalReplacementLife: viable,
-  hasRemoteReplacementLife: viable
+  hasRemoteReplacementLife: viable,
+  getRoomSources: () => [{ id: 's1' }]
 }).buildRoomStaffingPlan;
 const role = (min = 0, desired = min, max = desired) =>
   ({ min, desired, max });
@@ -38,7 +39,7 @@ const make = (roleName, extra = {}) => ({
   memory: { home: 'W1N1', role: roleName, ...extra.memory }
 });
 const creeps = [
-  make('harvester', { work: 3 }),
+  make('harvester', { work: 3, memory: { preferredSource: 's1' } }),
   make('refiller', { memory: { refillClusterId: 'spawn' } }),
   make('hauler'),
   make('upgrader', { work: 4 }),
@@ -56,6 +57,7 @@ assert.strictEqual(plan.jobs.remoteHauler.desired, 5);
 assert.notStrictEqual(plan.minimumGap && plan.minimumGap.role,
   'remoteHauler');
 assert.strictEqual(plan.minimumGap, null);
+assert.deepStrictEqual(plan.emergency.missing, []);
 
 const missingOutpostCoverage = planner({
   ...room,

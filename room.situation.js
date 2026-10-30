@@ -4,6 +4,10 @@ const { updateRoomTrends, applyTrendAdjustments } =
   typeof Game === 'undefined'
     ? require('./room.trends')
     : require('room.trends');
+const { getOperationalMetrics } = typeof Game === 'undefined'
+  ? require('./health.operations') : require('health.operations');
+const { scaleEnergyBudget } = typeof Game === 'undefined'
+  ? require('./room.scaling') : require('room.scaling');
 
 const createRoomSituation = dependencies => {
   const {
@@ -78,8 +82,10 @@ const createRoomSituation = dependencies => {
     const currentUpgraders = Object.values(Game.creeps).filter(creep =>
       creep.memory.home === room.name && creep.memory.role === 'upgrader' &&
       (creep.spawning || hasLocalReplacementLife(creep))).length;
+    const haulingSurgeUnit = Math.max(500,
+      Math.round(sourceBufferCapacity * 0.25));
     const haulingSurge = bufferRatio >= 0.75
-      ? Math.min(3, Math.ceil(storedSourceEnergy / 1000))
+      ? Math.min(3, Math.ceil(storedSourceEnergy / haulingSurgeUnit))
       : bufferRatio >= 0.5 ? 1 : 0;
     const droppedEnergy = room.find(FIND_DROPPED_RESOURCES, {
       filter: resource => resource.resourceType === RESOURCE_ENERGY
@@ -148,8 +154,10 @@ const createRoomSituation = dependencies => {
     const sourceSampleTicks = sourceStatsTotal('sampleTicks');
     const storedEnergy = structures.reduce((total, structure) =>
       total + (structure.store && structure.store[RESOURCE_ENERGY] || 0), 0);
+    const starvationReserve = scaleEnergyBudget(
+      room.energyCapacityAvailable, 0.5);
     const energyStarvedSignal = energyRatio < 0.35 && bufferRatio < 0.25 &&
-      storedEnergy < 500;
+      storedEnergy < starvationReserve;
     if (energyStarvedSignal) {
       room.memory.energyStarvedUntil = Game.time + 25;
     } else if ((room.memory.energyStarvedUntil || 0) <= Game.time) {
@@ -193,10 +201,12 @@ const createRoomSituation = dependencies => {
         ? sourceDistances.reduce((sum, value) => sum + value, 0) /
           sourceDistances.length : 15,
       energyRatio,
+      energyCapacity: room.energyCapacityAvailable,
       bufferRatio,
       storedEnergy,
       energyStarvedHold: (room.memory.energyStarvedUntil || 0) > Game.time,
       storedSourceEnergy,
+      sourceBufferCapacity,
       controllerBufferRatio,
       controllerBufferStored,
       controllerWorkSpots,
@@ -218,6 +228,7 @@ const createRoomSituation = dependencies => {
       averageRemoteDistance: activeRemotePlans.length > 1 ? 40 : 25,
       remoteRoomsWithConstruction
     });
+    const operational = getOperationalMetrics(room.memory);
     const trendHistory = updateRoomTrends(room.memory, Game.time, {
       repair: repairRemaining,
       build: buildRemaining,
@@ -229,6 +240,7 @@ const createRoomSituation = dependencies => {
       lowestSourceRatio: bufferRatios.length ? Math.min(...bufferRatios) : 0,
       extensionBufferRatio,
       readyRatio: energyRatio,
+      energyCapacity: room.energyCapacityAvailable,
       storedEnergy,
       dropped: droppedEnergy,
       population: Object.values(Game.creeps).filter(creep =>
@@ -237,7 +249,8 @@ const createRoomSituation = dependencies => {
       controllerTicks: room.controller && room.controller.ticksToDowngrade,
       controllerProgress: room.controller && room.controller.progressTotal > 0
         ? room.controller.progress / room.controller.progressTotal : 0,
-      activeOutposts: activeRemotePlans.length
+      activeOutposts: activeRemotePlans.length,
+      ...operational
     });
     applyTrendAdjustments(policy, trendHistory);
     const targets = Object.fromEntries(Object.entries(policy.roles)

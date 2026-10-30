@@ -1,9 +1,16 @@
 'use strict';
 
+const { scaleEnergyBudget } = typeof Game === 'undefined'
+  ? require('./room.scaling') : require('room.scaling');
+
 const createSpawnPolicy = ({
   Game, buildBody, CARRY, WORK, MOVE,
-  refillerMaxChargeWait = 25,
-  maxSpawnChargeWait = 30
+  refillerMaxChargeWait = 15,
+  maxSpawnChargeWait = 20,
+  minSpawnChargeWait = 3,
+  emergencyBodyEnergyRatio = 0.5,
+  recoveryBodyEnergyRatio = 0.65,
+  minimumRecoveryBodyEnergy = 300
 }) => {
   const dedicatedRoles = new Set([
     'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer'
@@ -20,7 +27,7 @@ const createSpawnPolicy = ({
   const getSpawnChargeWaitLimit = (current, target) => {
     if (target <= 0) return maxSpawnChargeWait;
     const staffingRatio = Math.max(0, Math.min(1, current / target));
-    return Math.max(5, Math.round(maxSpawnChargeWait *
+    return Math.max(minSpawnChargeWait, Math.round(maxSpawnChargeWait *
       staffingRatio * staffingRatio));
   };
 
@@ -28,6 +35,20 @@ const createSpawnPolicy = ({
     delete room.memory.spawnWaitSince;
     delete room.memory.spawnWaitRole;
     delete room.memory.spawnWaitLimit;
+  };
+
+  const getSpawnBodyEnergyBudget = (current, target, available, capacity,
+    emergency = false) => {
+    const scaledBudget = ratio => scaleEnergyBudget(capacity, ratio, {
+      minimum: minimumRecoveryBodyEnergy
+    });
+    if (emergency || target > 0 && current / target < 0.75) {
+      return Math.min(available, scaledBudget(emergencyBodyEnergyRatio));
+    }
+    if (target > 0 && current / target < 0.9) {
+      return Math.min(available, scaledBudget(recoveryBodyEnergyRatio));
+    }
+    return Math.min(available, capacity);
   };
 
   const prepareSpawnRequest = ({
@@ -81,9 +102,13 @@ const createSpawnPolicy = ({
         assignment.minimumEnergy) || refillerWaitExpired ||
       waited >= waitLimit ||
       (!fullBodyRoles.has(assignment.role) && waited >= 25);
+    const bodyEnergy = getSpawnBodyEnergyBudget(workers.length, workerLimit,
+      spawn.room.energyAvailable, spawn.room.energyCapacityAvailable,
+      emergency);
+    const bodyType = assignment.bodyType || assignment.role;
     const candidateBody = chargeComplete
-      ? buildBody(assignment.bodyType || assignment.role,
-        spawn.room.energyAvailable)
+      ? buildBody(bodyType, bodyEnergy) ||
+        buildBody(bodyType, spawn.room.energyAvailable)
       : null;
     const mobileWorkRole = assignment.role === 'builder';
     const workParts = candidateBody
@@ -96,10 +121,15 @@ const createSpawnPolicy = ({
       (workParts < 4 || moveParts * 2 < nonMoveParts) &&
       !builderFallbackAllowed
       ? null : candidateBody;
-    return { needsWorker: true, body, waited, waitLimit, emergency };
+    return {
+      needsWorker: true, body, waited, waitLimit, emergency, bodyEnergy
+    };
   };
 
-  return { getSpawnChargeWaitLimit, clearSpawnWait, prepareSpawnRequest };
+  return {
+    getSpawnChargeWaitLimit, getSpawnBodyEnergyBudget, clearSpawnWait,
+    prepareSpawnRequest
+  };
 };
 
 module.exports = { createSpawnPolicy };

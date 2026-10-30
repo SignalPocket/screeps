@@ -25,7 +25,8 @@ const normalizeTarget = target => {
 const createStaffingPlanner = dependencies => {
   const {
     isBuilder, isLocalBuilder, hasWorkParts,
-    hasLocalReplacementLife, hasRemoteReplacementLife
+    hasLocalReplacementLife, hasRemoteReplacementLife,
+    getRoomSources = () => []
   } = dependencies;
 
   const buildRoomStaffingPlan = (room, creeps, policy) => {
@@ -117,10 +118,55 @@ const createStaffingPlanner = dependencies => {
       max: null
     });
 
+    const sourceIds = new Set(getRoomSources(room).map(source => source.id));
+    const coveredSources = new Set(jobs.source.members.map(creep =>
+      creep.memory.minerSource || creep.memory.preferredSource ||
+      creep.memory.harvestSource || creep.memory.sourceReplacement ||
+      creep.memory.sourceReserve).filter(sourceId =>
+      sourceIds.has(sourceId)));
+    const workMembers = [...jobs.builder.members,
+      ...jobs.repairBuilder.members, ...jobs.tunnelBuilder.members];
+    const emergencyEntries = [
+      {
+        key: 'source', label: 'LM', target: sourceIds.size,
+        count: jobs.source.count, coverageCount: coveredSources.size
+      },
+      {
+        key: 'refiller', label: 'RF',
+        target: jobs.refiller.min > 0 ? 1 : 0,
+        count: jobs.refiller.count,
+        coverageCount: Math.min(1, jobs.refiller.coverageCount)
+      },
+      {
+        key: 'hauler', label: 'LC', target: jobs.hauler.min > 0 ? 1 : 0,
+        count: jobs.hauler.count,
+        coverageCount: Math.min(1, jobs.hauler.coverageCount)
+      },
+      {
+        key: 'upgrader', label: 'UP',
+        target: jobs.upgrader.min > 0 ? 1 : 0,
+        count: jobs.upgrader.count,
+        coverageCount: Math.min(1, jobs.upgrader.coverageCount)
+      },
+      {
+        key: 'worker', label: 'WK',
+        target: jobs.builder.min + jobs.repairBuilder.min +
+          jobs.tunnelBuilder.min > 0 ? 1 : 0,
+        count: new Set(workMembers.map(creep => creep.name)).size,
+        coverageCount: Math.min(1,
+          new Set(workMembers.map(creep => creep.name)).size)
+      }
+    ];
+    const emergency = {
+      entries: emergencyEntries,
+      missing: emergencyEntries.filter(entry =>
+        entry.coverageCount < entry.target)
+    };
+
     const minimumGap = selectMinimumStaffingGap(jobs,
       Object.fromEntries(Object.entries(jobs).map(([key, job]) =>
         [key, job.coverageCount])), MINIMUM_PRIORITY);
-    return { roomName: room.name, surveys, jobs, minimumGap };
+    return { roomName: room.name, surveys, jobs, emergency, minimumGap };
   };
 
   return { buildRoomStaffingPlan };

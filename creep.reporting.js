@@ -41,6 +41,7 @@ const shortTasks = {
   'stage-supply': 'Stage',
   'stock-refill': 'StockSp',
   'stock-refill-pass': 'StockSp+',
+  'collect-pass': 'Get+',
   'stage-refill': 'StageSp',
   'committed-collect': 'Get',
   'committed-refill': 'Fill',
