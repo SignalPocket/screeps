@@ -25,6 +25,35 @@ const harmfulTaskFlip = (middle, returned) => {
     pair.has('rebalance') && (pair.has('standby') || pair.has('idle'));
 };
 
+const getAssignedSource = creep => creep && creep.memory &&
+  (creep.memory.minerSource || creep.memory.preferredSource ||
+    creep.memory.harvestSource || creep.memory.sourceReplacement ||
+    creep.memory.sourceReserve);
+
+const isAssignedToSource = (creep, sourceId) => Boolean(creep &&
+  creep.memory && [creep.memory.minerSource,
+    creep.memory.preferredSource, creep.memory.harvestSource,
+    creep.memory.sourceReplacement, creep.memory.sourceReserve]
+    .includes(sourceId));
+
+const calculateSourceCoverageGap = (sources, creeps, options = {}) => {
+  const workPart = options.workPart || 'work';
+  const energyRegenTime = options.energyRegenTime || 300;
+  const harvestPower = options.harvestPower || 2;
+  const isViable = options.isViable || (() => true);
+  return (sources || []).reduce((total, source) => {
+    const requiredWork = Math.ceil((source.energyCapacity || 0) /
+      energyRegenTime / harvestPower);
+    const assignedWork = (creeps || []).filter(creep => creep.memory &&
+      (creep.memory.role === 'miner' ||
+        creep.memory.role === 'harvester') &&
+      isAssignedToSource(creep, source.id) &&
+      (creep.spawning || isViable(creep)))
+      .reduce((sum, creep) => sum + creep.getActiveBodyparts(workPart), 0);
+    return total + Math.max(0, requiredWork - assignedWork);
+  }, 0);
+};
+
 const updateOperationalHealth = (memory, tick, creeps, remote = {},
   options = {}) => {
   const interval = options.interval || DEFAULT_INTERVAL;
@@ -113,5 +142,6 @@ const getOperationalMetrics = memory => {
 
 module.exports = {
   DEFAULT_INTERVAL, FLIP_WINDOW, blankWindow, harmfulTaskFlip,
+  getAssignedSource, isAssignedToSource, calculateSourceCoverageGap,
   updateOperationalHealth, getOperationalMetrics
 };

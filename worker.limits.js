@@ -4,7 +4,7 @@ const createWorkerLimits = ({
   Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
   getRoomSituation, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
   OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD, STRUCTURE_RAMPART,
-  TERRAIN_MASK_WALL
+  TERRAIN_MASK_WALL, remoteGrowthAllowed = () => true
 }) => {
   const cache = {};
 
@@ -69,6 +69,7 @@ const createWorkerLimits = ({
       targets.repairBuilder + targets.upgrader + targets.hauler +
       targets.refiller + targets.rebalancer + targets.tunnelBuilder;
     const countedRemoteRooms = new Set();
+    const allowRemoteGrowth = remoteGrowthAllowed(room);
     let remoteWorkerMinimum = 0;
     let remoteWorkerDesired = 0;
     for (const plan of Object.values(room.memory)) {
@@ -86,8 +87,10 @@ const createWorkerLimits = ({
       remoteWorkerMinimum += remoteMiners + remoteHaulerMinimum +
         Math.min(1, remoteBuilders);
       remoteWorkerDesired += remoteMiners +
-        Math.max(remoteHaulerMinimum, plan.remoteHaulerTarget || 0) +
-        remoteBuilders;
+        (allowRemoteGrowth
+          ? Math.max(remoteHaulerMinimum, plan.remoteHaulerTarget || 0)
+          : remoteHaulerMinimum) +
+        (allowRemoteGrowth ? remoteBuilders : Math.min(1, remoteBuilders));
     }
     const minimumWorkerLimit = localWorkerMinimum + remoteWorkerMinimum;
     const desiredWorkerLimit = Math.max(minimumWorkerLimit,
@@ -105,6 +108,7 @@ const createWorkerLimits = ({
       sourceSpotTotal,
       minerLimit,
       localWorkerMinimum,
+      allowRemoteGrowth,
       remoteWorkerMinimum,
       minimumWorkerLimit,
       workerLimit: desiredWorkerLimit

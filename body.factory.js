@@ -24,12 +24,14 @@ const createBodyFactory = constants => {
   // sooner and can reach the desired roster before older creeps expire.
   // Minimum viable bodies are never reduced below their required parts.
   const bodyEnergyRatio = 0.9;
+  const routineBodyEnergyCap = 1300;
   const scaledBodyEnergy = (role, available) => {
     const minimum = role === 'claimer'
       ? BODYPART_COST[CLAIM] + BODYPART_COST[MOVE]
       : workerCost;
     if (available < minimum) return available;
-    const scaled = Math.floor(available * bodyEnergyRatio / 50) * 50;
+    const capped = Math.min(available, routineBodyEnergyCap);
+    const scaled = Math.floor(capped * bodyEnergyRatio / 50) * 50;
     return Math.min(available, Math.max(minimum, scaled));
   };
 
@@ -132,7 +134,8 @@ const createBodyFactory = constants => {
     return body.length ? body : null;
   };
 
-  return { workerBody, workerCost, bodyEnergyRatio, buildBody, getBodyCode };
+  return { workerBody, workerCost, bodyEnergyRatio, routineBodyEnergyCap,
+    buildBody, getBodyCode };
 };
 
 module.exports = { createBodyFactory };

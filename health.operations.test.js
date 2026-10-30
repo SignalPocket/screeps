@@ -1,7 +1,27 @@
 'use strict';
 
 const assert = require('assert');
-const { updateOperationalHealth } = require('./health.operations');
+const { calculateSourceCoverageGap, getAssignedSource,
+  updateOperationalHealth } = require('./health.operations');
+
+const source = { id: 'source-1', energyCapacity: 3000 };
+const miner = {
+  memory: { role: 'harvester', preferredSource: 'source-1' },
+  getActiveBodyparts: () => 4
+};
+const expiringMiner = {
+  memory: { role: 'miner', sourceReserve: 'source-1' },
+  getActiveBodyparts: () => 5
+};
+assert.strictEqual(getAssignedSource(expiringMiner), 'source-1');
+assert.strictEqual(calculateSourceCoverageGap([source], [miner], {
+  isViable: () => true
+}), 1);
+assert.strictEqual(calculateSourceCoverageGap([source],
+  [miner, expiringMiner], { isViable: candidate => candidate === miner }), 1);
+expiringMiner.spawning = true;
+assert.strictEqual(calculateSourceCoverageGap([source],
+  [miner, expiringMiner], { isViable: candidate => candidate === miner }), 0);
 
 const memory = {};
 const creep = {

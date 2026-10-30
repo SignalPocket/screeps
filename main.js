@@ -26,7 +26,8 @@ const { createCreepNaming } = require('creep.naming');
 const { createColonyDashboard } = require('colony.dashboard');
 const { collectColonyWorkMetrics } = require('colony.work-metrics');
 const { summarizeRoomHealth } = require('health.reporting');
-const { updateOperationalHealth } = require('health.operations');
+const { calculateSourceCoverageGap, updateOperationalHealth } =
+  require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
 const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('source.collection');
@@ -42,6 +43,7 @@ const { createOutpostPlanning } = require('outpost.planning');
 const { reconcileRemoteHaulerRosters } = require('remote.roster');
 const { createExpansionPlanner } = require('expansion.planner');
 const { createRemoteCorridorPlanner } = require('remote.corridors');
+const { createRcl5Infrastructure } = require('rcl5.infrastructure');
 const { createStaffingPlanner } = require('staffing.plan');
 const { createMinimumSpawnPlanner } = require('minimum.spawn');
 const { createBuilderRoster } = require('builder.roster');
@@ -202,13 +204,15 @@ module.exports.loop = function () {
     Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
     getRoomSituation, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
     OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD, STRUCTURE_RAMPART,
-    TERRAIN_MASK_WALL
+    TERRAIN_MASK_WALL,
+    remoteGrowthAllowed: room => getRoomStrategy(room).mode !== 'roads'
   });
   const getBodyRosterPlan = (room, workers) => {
     const situation = getRoomSituation(room);
     const jobs = buildRoomStaffingPlan(room, workers,
       situation.policy).jobs;
     const expansion = room.memory.expansionPlan;
+    const allowRemoteGrowth = getRoomStrategy(room).mode !== 'roads';
     const claimerTarget = expansion && expansion.status === 'claim-ready'
       ? 1 : 0;
     const targets = deriveBodyTargets({
@@ -217,7 +221,8 @@ module.exports.loop = function () {
       refillerMin: jobs.refiller.min,
       refillerDesired: jobs.refiller.desired,
       remoteCarrierMin: jobs.remoteHauler.min,
-      remoteCarrierDesired: jobs.remoteHauler.desired,
+      remoteCarrierDesired: allowRemoteGrowth
+        ? jobs.remoteHauler.desired : jobs.remoteHauler.min,
       haulerMin: jobs.hauler.min,
       haulerDesired: jobs.hauler.desired,
       rebalancerMin: jobs.rebalancer.min,
@@ -231,7 +236,8 @@ module.exports.loop = function () {
       tunnelMin: jobs.tunnelBuilder.min,
       tunnelDesired: jobs.tunnelBuilder.desired,
       remoteBuilderMin: jobs.remoteBuilder.min,
-      remoteBuilderDesired: jobs.remoteBuilder.desired,
+      remoteBuilderDesired: allowRemoteGrowth
+        ? jobs.remoteBuilder.desired : jobs.remoteBuilder.min,
       remoteMinerMin: jobs.remoteMiner.min,
       remoteMinerDesired: jobs.remoteMiner.desired,
       claimerMin: claimerTarget,
@@ -290,6 +296,14 @@ module.exports.loop = function () {
     TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, LOOK_CREEPS, RESOURCE_ENERGY, OK
   });
+  const { getSourceLink, placeLinkSite, placeTowerSite, runLinks } =
+    createRcl5Infrastructure({
+      Game, getRoomSources, CONTROLLER_STRUCTURES,
+      STRUCTURE_LINK, STRUCTURE_TOWER, STRUCTURE_ROAD, STRUCTURE_RAMPART,
+      FIND_MY_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS,
+      TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
+      LOOK_CONSTRUCTION_SITES, RESOURCE_ENERGY, OK
+    });
   const { isRepairTarget: isOutpostRepairTarget,
     selectRepairTarget: selectOutpostRepairTarget,
     getBuilderTarget: getOutpostBuilderTarget } =
@@ -331,6 +345,7 @@ module.exports.loop = function () {
   const getSpawnAssignment = (room, workers, bodyRosterPlan) => {
     // Keep the core room productive before assigning optional remote labor.
     const situationTargets = getRoomSituation(room).targets;
+    const allowRemoteGrowth = getRoomStrategy(room).mode !== 'roads';
     const localMiningLimits = getWorkerLimits(room);
     const recoveryEnergy = scaleEnergyBudget(
       room.energyCapacityAvailable, 0.5);
@@ -756,11 +771,11 @@ module.exports.loop = function () {
     }
     // Once the home carrier floor is secure, balance ready remote hauling
     // lanes before secondary local role conversions can pause spawning.
-    const remoteHaulerPlans = [
+    const remoteHaulerPlans = (allowRemoteGrowth ? [
       { survey: room.memory.leftSurvey, team: 'left' },
       { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
       { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
+    ] : []).filter(entry => entry.survey && entry.survey.active &&
       entry.survey.targetRoom)
       .map(entry => {
         const target = entry.survey.remoteHaulerTarget ||
@@ -1187,11 +1202,11 @@ module.exports.loop = function () {
       delete creep.memory.rebalancerSurplusSince;
     }
     for (const creep of surplus) {
-      // A one-tick policy fluctuation must not cancel work in flight. Finish
-      // the current delivery/target, then require a stable surplus window
-      // before returning this body to general hauling.
-      if (creep.store[RESOURCE_ENERGY] > 0 ||
-          creep.memory.rebalanceTarget) {
+      // A one-tick policy fluctuation must not cancel a loaded delivery. An
+      // empty surplus BAL may still have a target selected every tick, so the
+      // target itself cannot reset the 25-tick aging window or it will never
+      // return to general hauling.
+      if (creep.store[RESOURCE_ENERGY] > 0) {
         delete creep.memory.rebalancerSurplusSince;
         continue;
       }
@@ -1784,6 +1799,9 @@ module.exports.loop = function () {
       placeSourceContainerSite(room);
       placeExtensionSite(room);
       placeStorageSite(room);
+      placeTowerSite(room);
+      placeLinkSite(room);
+      runLinks(room);
       placeBorderRelaySite(room, interRoomTravelPaths);
       const priorityStructureQueued = room.find(FIND_MY_CONSTRUCTION_SITES, {
         filter: site => site.structureType === STRUCTURE_CONTAINER ||
@@ -1814,10 +1832,16 @@ module.exports.loop = function () {
   const isControllerBuffer = target => target && target.room &&
     target.structureType === STRUCTURE_CONTAINER &&
     getContainerPurpose(target.room, target.pos) === 'controller';
+  const isControllerLink = target => target && target.room &&
+    target.structureType === STRUCTURE_LINK && target.room.controller &&
+    target.pos.getRangeTo(target.room.controller) <= 3;
   const canWithdrawFrom = (creep, target) => {
     if (!target || !target.store) return false;
     if (target.structureType === STRUCTURE_STORAGE) {
       return Boolean(target.my);
+    }
+    if (target.structureType === STRUCTURE_LINK) {
+      return creep.memory.role === 'upgrader' && isControllerLink(target);
     }
     if (target.structureType !== STRUCTURE_CONTAINER) return false;
     // The extension buffer is reserved spawn fuel. Logistics specialists may
@@ -1826,7 +1850,6 @@ module.exports.loop = function () {
     if (isExtensionRefillBuffer(creep.room, target) &&
         creep.memory.role !== 'refiller' &&
         creep.memory.role !== 'hauler' &&
-        creep.memory.role !== 'rebalancer' &&
         creep.memory.role !== 'remote-hauler') {
       return false;
     }
@@ -3840,7 +3863,6 @@ module.exports.loop = function () {
     };
     const fillPassingExtensionBuffer = () => {
       const compatibleCarrier = creep.memory.role === 'hauler' ||
-        creep.memory.role === 'rebalancer' ||
         creep.memory.role === 'remote-hauler' &&
           creep.memory.remoteHaulReturning &&
           creep.room.name === (creep.memory.remoteHome || creep.memory.home);
@@ -4176,6 +4198,7 @@ module.exports.loop = function () {
           const pickupCandidates = getRoomStructures(creep.room)
             .filter(structure =>
               structure.structureType === STRUCTURE_CONTAINER &&
+              !isExtensionRefillBuffer(creep.room, structure) &&
               !stillNeedsEnergy(structure) &&
               getUnreservedEnergy(structure) > 0)
             .sort((a, b) => {
@@ -4194,7 +4217,8 @@ module.exports.loop = function () {
             pickupCandidates.push(storage);
           }
           let source = Game.getObjectById(creep.memory.rebalancePickupTarget);
-          if (!source || getUnreservedEnergy(source) <= 0 || source.id === target.id) {
+          if (!source || isExtensionRefillBuffer(creep.room, source) ||
+              getUnreservedEnergy(source) <= 0 || source.id === target.id) {
             delete creep.memory.rebalancePickupTarget;
             source = pickupCandidates.find(candidate => candidate.id !== target.id);
             if (source) creep.memory.rebalancePickupTarget = source.id;
@@ -5212,14 +5236,18 @@ module.exports.loop = function () {
                 !isRetiringContainer(creep.room, structure) &&
                 source.pos.getRangeTo(structure) <= 2
             });
-            const availableContainers = containers.filter(structure =>
+            const sourceLink = getSourceLink(creep.room, source);
+            const deposits = sourceLink ? [sourceLink, ...containers] : containers;
+            const availableContainers = deposits.filter(structure =>
               structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
             const container = availableContainers.length
               ? availableContainers.sort((a, b) =>
+                Number(b.structureType === STRUCTURE_LINK) -
+                  Number(a.structureType === STRUCTURE_LINK) ||
                 b.store.getFreeCapacity(RESOURCE_ENERGY) -
                   a.store.getFreeCapacity(RESOURCE_ENERGY) ||
                 creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0]
-              : creep.pos.findClosestByRange(containers);
+              : creep.pos.findClosestByRange(deposits);
             const buildOverflowContainer = () => {
               delete creep.memory.containerSiteError;
               const sourceIndex = getRoomSources(creep.room)
@@ -5766,7 +5794,8 @@ module.exports.loop = function () {
             getUnreservedEnergy(controllerStation.buffer) > 0
             ? controllerStation.buffer
             : controller && getRoomStructures(creep.room).find(structure =>
-              structure.structureType === STRUCTURE_CONTAINER &&
+              (structure.structureType === STRUCTURE_CONTAINER ||
+                structure.structureType === STRUCTURE_LINK) &&
               structure.pos.getRangeTo(controller) <= 3 &&
               getUnreservedEnergy(structure) > 0);
           const plan = creep.room.memory.controllerContainerPlan;
@@ -6169,21 +6198,13 @@ module.exports.loop = function () {
       return total + Math.max(0,
         (survey.remoteHaulerTarget || 0) - assigned);
     }, 0);
-    const sourceCoverageGap = getRoomSources(room).reduce((total, source) => {
-      const requiredWork = Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER);
-      const assignedWork = roomCreeps.filter(creep =>
-        (creep.memory.role === 'miner' ||
-          creep.memory.role === 'harvester') &&
-        (creep.memory.minerSource === source.id ||
-          creep.memory.preferredSource === source.id ||
-          creep.memory.harvestSource === source.id ||
-          creep.memory.sourceReplacement === source.id ||
-          creep.memory.sourceReserve === source.id) &&
-        (creep.spawning || hasLocalReplacementLife(creep)))
-        .reduce((sum, creep) => sum + creep.getActiveBodyparts(WORK), 0);
-      return total + Math.max(0, requiredWork - assignedWork);
-    }, 0);
+    const sourceCoverageGap = calculateSourceCoverageGap(
+      getRoomSources(room), roomCreeps, {
+        workPart: WORK,
+        energyRegenTime: ENERGY_REGEN_TIME,
+        harvestPower: HARVEST_POWER,
+        isViable: hasLocalReplacementLife
+      });
     updateOperationalHealth(room.memory, Game.time, roomCreeps, {
       backlog: summaries.reduce((total, summary) =>
         total + (summary.storedEnergy || 0), 0),

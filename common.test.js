@@ -1,6 +1,7 @@
 'use strict';
 
 require('./colony.dashboard.test');
+require('./rcl5.infrastructure.test');
 
 const assert = require('assert');
 const { createBodyFactory } = require('./body.factory');
@@ -600,6 +601,7 @@ assert.deepStrictEqual(maintenanceMemory.rooms.W1N1.roadPlan,
 
 assert.strictEqual(bodies.workerCost, 200);
 assert.strictEqual(bodies.bodyEnergyRatio, 0.9);
+assert.strictEqual(bodies.routineBodyEnergyCap, 1300);
 assert.deepStrictEqual(bodies.buildBody('harvester', 300),
   ['work', 'carry', 'move']);
 assert.deepStrictEqual(bodies.buildBody('remote-hauler', 400),
@@ -622,6 +624,7 @@ const fullBuilderBody = bodies.buildBody('builder', 1300);
 assert.strictEqual(fullBuilderBody.filter(part => part === 'work').length, 5);
 assert.strictEqual(fullBuilderBody.filter(part => part === 'carry').length, 5);
 assert.strictEqual(fullBuilderBody.filter(part => part === 'move').length, 5);
+assert.deepStrictEqual(bodies.buildBody('builder', 1800), fullBuilderBody);
 assert.strictEqual(bodies.getBodyCode(['work', 'carry', 'move']), 'M-C-W');
 
 const outpostMaintenance = createOutpostMaintenance({
@@ -1291,6 +1294,10 @@ const roomStrategy = createRoomStrategy({
 });
 assert.strictEqual(roomStrategy.getRoomStrategy(strategyRoom).mode,
   'development');
+strategyRoom.controller.level = 5;
+assert.strictEqual(roomStrategy.getRoomStrategy(strategyRoom).mode, 'roads');
+strategyRoom.controller.level = 4;
+roomStrategy.getRoomStrategy(strategyRoom);
 assert.strictEqual(strategyRoom.memory.strategy.updated, 125);
 assert.strictEqual(strategyRoom.memory.stagePlan.key, 'reserves');
 assert.strictEqual(Object.keys(ROOM_STAGE_PLANS).length, 9);
@@ -1502,6 +1509,21 @@ assert.strictEqual(workerLimits.remoteWorkerMinimum, 4);
 assert.strictEqual(workerLimits.minimumWorkerLimit, 12);
 assert.strictEqual(workerLimits.workerLimit, 13);
 assert.strictEqual(limitRoom.memory.congestionCount, 1);
+const roadGatedLimits = createWorkerLimits({
+  Game: { time: 401 },
+  getRoomSources: () => [limitSource],
+  getRoomCreeps: () => [],
+  getSourceWorkerTargets: () => ({ 'limit-source': 2 }),
+  getRoomSituation: () => ({ targets: limitTargets,
+    policy: { roles: limitRoles } }),
+  remoteGrowthAllowed: () => false,
+  LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
+  OBSTACLE_OBJECT_TYPES: ['spawn'], STRUCTURE_ROAD: 'road',
+  STRUCTURE_RAMPART: 'rampart', TERRAIN_MASK_WALL: 1
+}).getWorkerLimits({ ...limitRoom, memory: { ...limitRoom.memory,
+  workerLimitsPlan: undefined } });
+assert.strictEqual(roadGatedLimits.allowRemoteGrowth, false);
+assert.strictEqual(roadGatedLimits.workerLimit, 12);
 
 const remoteContainer = {
   id: 'remote-container',
