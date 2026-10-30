@@ -1641,6 +1641,34 @@ const plannedExtensionRoom = {
 assert.strictEqual(infrastructurePlanner.getContainerPurpose(
   plannedExtensionRoom, { x: 30, y: 31 }), 'extensions');
 
+const purposeRange = (x, y) => ({ x, y, getRangeTo: target => {
+  const position = target.pos || target;
+  return Math.max(Math.abs(x - position.x), Math.abs(y - position.y));
+} });
+const purposeContainers = [
+  { id: 'source-buffer', structureType: 'container',
+    pos: purposeRange(11, 10) },
+  { id: 'controller-buffer', structureType: 'container',
+    pos: purposeRange(30, 30) },
+  { id: 'unknown-buffer', structureType: 'container',
+    pos: purposeRange(40, 40) }
+];
+const purposeRoom = {
+  memory: {},
+  controller: { pos: purposeRange(30, 32) },
+  find: (type, options) => purposeContainers
+    .filter(options && options.filter || (() => true))
+};
+const purposeRegistry = infrastructurePlanner.refreshContainerPurposes(
+  purposeRoom);
+assert.strictEqual(purposeRegistry.updated, 800);
+assert.deepStrictEqual(purposeRegistry.byId['source-buffer'], {
+  id: 'source-buffer', kind: 'source', sourceId: 'infra-source', x: 11, y: 10
+});
+assert.strictEqual(purposeRegistry.byId['controller-buffer'].kind,
+  'controller');
+assert.strictEqual(purposeRegistry.byId['unknown-buffer'].kind, 'unknown');
+
 const overflowSites = [];
 const saturatedCluster = { x: 10, y: 10, version: 'low-traffic-v1' };
 const overflowSpawn = {

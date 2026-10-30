@@ -20,7 +20,8 @@ const remoteCommonFields = [
 const remoteScoutFields = ['remoteSlot', 'leftScoutSlot'];
 const remoteHaulerFields = [
   'remoteHaulerSlot', 'remoteDispatchRoom', 'remotePickupTarget',
-  'remoteHaulReturning', 'remoteCargoOrigin', 'remoteRosterSurplus'
+  'remoteHaulReturning', 'remoteCargoOrigin', 'remoteCargoRemaining',
+  'remoteRosterSurplus'
 ];
 const remoteBuilderFields = ['remoteBuilderSlot'];
 

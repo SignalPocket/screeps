@@ -24,6 +24,7 @@ const { createOutpostMaintenance } = require('outpost.maintenance');
 const { createMemoryMaintenance } = require('memory.maintenance');
 const { createCreepNaming } = require('creep.naming');
 const { createColonyDashboard } = require('colony.dashboard');
+const { collectColonyWorkMetrics } = require('colony.work-metrics');
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
 const { createTaskReservations } = require('task.reservations');
@@ -166,6 +167,8 @@ module.exports.loop = function () {
       isHeatmapRoadPosition(room, structure),
     isMaintainedContainer: (room, structure) =>
       Boolean(getContainerPurpose(room, structure.pos)),
+    getContainerPurpose: (room, position) =>
+      getContainerPurpose(room, position),
     roadsPaused, STRUCTURE_CONTAINER, STRUCTURE_ROAD, STRUCTURE_WALL,
     STRUCTURE_RAMPART, STRUCTURE_EXTENSION, STRUCTURE_SPAWN,
     RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
@@ -271,7 +274,7 @@ module.exports.loop = function () {
     LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
   });
   const { isExtensionClusterTile, placeExtensionSite, placeStorageSite,
-    getContainerPurpose,
+    getContainerPurpose, refreshContainerPurposes,
     isExtensionRefillBuffer, placeSourceContainerSite,
     manageExtensionContainer, manageControllerContainer,
     isRetiringContainer } = createInfrastructurePlanner({
@@ -1631,6 +1634,13 @@ module.exports.loop = function () {
   }
 
   const ownedRooms = new Set(Object.values(Game.spawns).map(spawn => spawn.room.name));
+  for (const roomName of ownedRooms) {
+    const room = Game.rooms[roomName];
+    if (room && (!room.memory.containerPurposes ||
+        scheduledRoomTick(room, 25, 5))) {
+      refreshContainerPurposes(room);
+    }
+  }
   // Traffic exists anywhere our creeps travel, not only in rooms containing
   // one of our spawns. Record and draw heatmaps in every currently visible
   // room with our creeps; construction authority remains in the owned loop.
@@ -1724,8 +1734,8 @@ module.exports.loop = function () {
       hauler.store.getCapacity(RESOURCE_ENERGY);
   }
   const isControllerBuffer = target => target && target.room &&
-    target.room.controller && target.structureType === STRUCTURE_CONTAINER &&
-    target.pos.getRangeTo(target.room.controller) <= 3;
+    target.structureType === STRUCTURE_CONTAINER &&
+    getContainerPurpose(target.room, target.pos) === 'controller';
   const canWithdrawFrom = (creep, target) => {
     if (!target || !target.store) return false;
     if (target.structureType === STRUCTURE_STORAGE) {
@@ -2394,7 +2404,7 @@ module.exports.loop = function () {
       structure.store.getFreeCapacity(RESOURCE_ENERGY), 0);
     const controllerBuffers = roomStructures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3
+        getContainerPurpose(room, structure.pos) === 'controller'
     );
     const bufferFree = controllerBuffers.reduce((total, structure) =>
       total + structure.store.getFreeCapacity(RESOURCE_ENERGY), 0);
@@ -2410,7 +2420,8 @@ module.exports.loop = function () {
     const sources = getRoomSources(room);
     const sourceBuffers = roomStructures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER &&
-        sources.some(source => source.pos.getRangeTo(structure) <= 2)
+        String(getContainerPurpose(room, structure.pos) || '')
+          .startsWith('source:')
     );
     const sourceStored = sourceBuffers.reduce((total, structure) => total +
       structure.store[RESOURCE_ENERGY], 0);
@@ -2778,7 +2789,7 @@ module.exports.loop = function () {
     }
     const projectedSourceGroups = sources.map((source, index) => {
       const buffers = sourceBuffers.filter(buffer =>
-        source.pos.getRangeTo(buffer) <= 2);
+        getContainerPurpose(room, buffer.pos) === `source:${source.id}`);
       return {
         source,
         index,
@@ -2789,38 +2800,52 @@ module.exports.loop = function () {
       };
     }).filter(group => group.capacity > 0 && group.stored > 0);
     const stageSources = sources.filter(source => sourceBuffers.some(buffer =>
-      source.pos.getRangeTo(buffer) <= 2));
+      getContainerPurpose(room, buffer.pos) === `source:${source.id}`));
     let stageSourceIndex = 0;
     // Delivery demand can exceed the energy that is currently available at
     // the source buffers. Dispatch only enough empty cargo space to collect
     // that energy; otherwise every idle carrier converges on the same source
     // area and competes for a load that does not exist yet.
     let collectibleEnergy = sourceStored + storageWithdrawalDemand;
+    let remainingSourceBacklog = sourceBacklog;
     for (const creep of emptyHaulers) {
       const ownsOpenRefill = dedicatedRefillerNames.has(creep.name) &&
         refillDemandFor(creep) > 0;
       if ((collectionDemand > 0 || ownsOpenRefill) && collectibleEnergy > 0) {
         assignments[creep.name] = 'collect';
         const cargoCapacity = creep.store.getCapacity(RESOURCE_ENERGY);
-        if (storage && storageWithdrawalDemand > 0) {
+        const rankedSourceGroups = projectedSourceGroups.slice()
+          .sort((a, b) => b.stored / b.capacity - a.stored / a.capacity ||
+            b.index - a.index);
+        const fullestGroup = rankedSourceGroups[0];
+        let group = projectedSourceGroups.find(candidate =>
+          candidate.source.id === creep.memory.collectionSourceTarget &&
+          candidate.stored > 0);
+        if (!group) group = fullestGroup;
+        if (group && fullestGroup && group !== fullestGroup) {
+          const currentRatio = group.stored / group.capacity;
+          const fullestRatio = fullestGroup.stored / fullestGroup.capacity;
+          // Preserve a trip already in progress unless another source buffer
+          // is materially more urgent. This prevents target oscillation while
+          // still letting a nearly full S2 break an old S1 preference.
+          if (fullestRatio >= 0.9 && currentRatio < 0.9 ||
+              fullestRatio - currentRatio >= 0.15) {
+            group = fullestGroup;
+          }
+        }
+        const drainSourceBacklog = group && remainingSourceBacklog > 0;
+        if (storage && storageWithdrawalDemand > 0 &&
+            !drainSourceBacklog) {
           collectionSources[creep.name] = storage.id;
           delete creep.memory.collectionSourceTarget;
           storageWithdrawalDemand = Math.max(0,
             storageWithdrawalDemand - cargoCapacity);
-        } else {
-          let group = projectedSourceGroups.find(candidate =>
-            candidate.source.id === creep.memory.collectionSourceTarget &&
-            candidate.stored > 0);
-          if (!group) {
-            group = projectedSourceGroups.slice().sort((a, b) =>
-              b.stored / b.capacity - a.stored / a.capacity ||
-              b.index - a.index)[0];
-          }
-          if (group) {
-            collectionSources[creep.name] = group.source.id;
-            creep.memory.collectionSourceTarget = group.source.id;
-            group.stored = Math.max(0, group.stored - cargoCapacity);
-          }
+        } else if (group) {
+          collectionSources[creep.name] = group.source.id;
+          creep.memory.collectionSourceTarget = group.source.id;
+          group.stored = Math.max(0, group.stored - cargoCapacity);
+          remainingSourceBacklog = Math.max(0,
+            remainingSourceBacklog - cargoCapacity);
         }
         collectionDemand = Math.max(0, collectionDemand - cargoCapacity);
         collectibleEnergy = Math.max(0, collectibleEnergy - cargoCapacity);
@@ -3128,12 +3153,22 @@ module.exports.loop = function () {
     if (lane !== 'collect' && Array.isArray(creep.memory.energySources)) {
       sourceId = creep.memory.energySources[creep.memory.energySources.length - 1];
     }
+    const plannedCollectionSource = lane === 'collect' && sourceId
+      ? Game.getObjectById(sourceId) : null;
+    const currentCollectionSource = lane === 'collect' &&
+      creep.memory.workJob && creep.memory.workJob.lane === 'collect'
+      ? Game.getObjectById(creep.memory.workJob.sourceId) : null;
+    const rerouteCollection = plannedCollectionSource &&
+      currentCollectionSource && plannedCollectionSource.pos &&
+      currentCollectionSource.pos &&
+      plannedCollectionSource.pos.getRangeTo(currentCollectionSource) > 2;
     workProposals[creep.name] = {
       lane, sourceId, targetId,
       amount: lane === 'collect'
         ? creep.store.getFreeCapacity(RESOURCE_ENERGY)
         : creep.store[RESOURCE_ENERGY],
-      priority: lanePriority(creep.room, demandPlan, lane)
+      priority: lanePriority(creep.room, demandPlan, lane),
+      cancelCurrent: Boolean(rerouteCollection)
     };
   }
   const ownedWorkJobs = workDispatch.reconcile(creeps, workProposals);
@@ -3241,7 +3276,8 @@ module.exports.loop = function () {
       Number(a.store.getUsedCapacity() > 0) ||
     taskPriority(a) - taskPriority(b) || a.name.localeCompare(b.name));
   const controllerStations = planControllerStations({
-    rooms: Object.values(Game.rooms), creeps, getRoomStructures, RoomPosition,
+    rooms: Object.values(Game.rooms), creeps, getRoomStructures,
+    getContainerPurpose, RoomPosition,
     STRUCTURE_CONTAINER, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
     LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES
   });
@@ -3319,15 +3355,22 @@ module.exports.loop = function () {
         };
         if (!stats.buckets) stats.buckets = {};
         const bucket = Math.floor(Game.time / 100) * 100;
-        stats.deliveredTotal += amount;
+        const trackedRemoteCargo = Number.isFinite(
+          creep.memory.remoteCargoRemaining)
+          ? creep.memory.remoteCargoRemaining : amount;
+        const remoteAmount = Math.min(amount, trackedRemoteCargo);
+        stats.deliveredTotal += remoteAmount;
         stats.lastDelivery = Game.time;
-        stats.buckets[bucket] = (stats.buckets[bucket] || 0) + amount;
+        stats.buckets[bucket] = (stats.buckets[bucket] || 0) + remoteAmount;
         for (const key of Object.keys(stats.buckets)) {
           if (Number(key) < Game.time - 1500) delete stats.buckets[key];
         }
         homeMemory.outpostEconomy[origin] = stats;
-        if (amount >= creep.store[RESOURCE_ENERGY]) {
+        creep.memory.remoteCargoRemaining = Math.max(0,
+          trackedRemoteCargo - remoteAmount);
+        if (creep.memory.remoteCargoRemaining <= 0) {
           delete creep.memory.remoteCargoOrigin;
+          delete creep.memory.remoteCargoRemaining;
         }
       }
       creep.memory.taskTarget = target.id || target.name || target.structureType;
@@ -4326,6 +4369,7 @@ module.exports.loop = function () {
             delete creep.memory.remotePickupSource;
             delete creep.memory.remoteDeliveryTarget;
             delete creep.memory.remoteCargoOrigin;
+            delete creep.memory.remoteCargoRemaining;
           }
           if (creep.store[RESOURCE_ENERGY] === 0 &&
               !creep.memory.remoteHaulReturning &&
@@ -4379,6 +4423,34 @@ module.exports.loop = function () {
           // Haulers are logistics-only. Their WORK part is an emergency body
           // component, not permission to build, repair, or upgrade.
           const pitchInLocally = () => false;
+          const topUpFromPassingSourceBuffer = () => {
+            if (creep.room.name !== homeRoomName ||
+                creep.store[RESOURCE_ENERGY] <= 0 ||
+                creep.store.getFreeCapacity(RESOURCE_ENERGY) <= 0) {
+              return false;
+            }
+            const container = getRoomStructures(creep.room)
+              .filter(structure =>
+                structure.structureType === STRUCTURE_CONTAINER &&
+                String(getContainerPurpose(creep.room, structure.pos) || '')
+                  .startsWith('source:') &&
+                creep.pos.getRangeTo(structure) <= 1 &&
+                getUnreservedEnergy(structure) > 0)
+              .sort((a, b) => getUnreservedEnergy(b) -
+                getUnreservedEnergy(a))[0];
+            if (!container) return false;
+            const amount = reserveEnergyFrom(container,
+              creep.store.getFreeCapacity(RESOURCE_ENERGY));
+            if (amount <= 0) return false;
+            const result = creep.withdraw(container, RESOURCE_ENERGY, amount);
+            if (result !== OK) {
+              releaseAmount(reservedEnergy, container, amount);
+              return false;
+            }
+            creep.memory.remotePickupSource = container.id;
+            creep.memory.taskTarget = `${container.id} pass-by top-up`;
+            return true;
+          };
           const waitNearDeliveryBuffer = label => {
             const buffer = getRoomStructures(creep.room)
               .filter(structure =>
@@ -4402,7 +4474,17 @@ module.exports.loop = function () {
               demandLane === 'storage' ||
               demandLane === 'refill' || demandLane === 'refill-stage' ||
               demandLane === 'buffer-stage');
-          if (!readiness.ready || handlesLocalDemand) {
+          // Readiness decides whether a new trip may leave home. It must not
+          // recall an already-outbound hauler from an intermediate room, or a
+          // fluctuating container threshold makes it hop across the border.
+          const readinessBlocksDeparture = !readiness.ready &&
+            creep.room.name === homeRoomName &&
+            creep.store[RESOURCE_ENERGY] === 0;
+          if (creep.room.energyAvailable >= workerCost &&
+              topUpFromPassingSourceBuffer()) {
+            return true;
+          }
+          if (readinessBlocksDeparture || handlesLocalDemand) {
             if (creep.store[RESOURCE_ENERGY] === 0) {
               delete creep.memory.remoteHaulReturning;
             } else {
@@ -4587,6 +4669,8 @@ module.exports.loop = function () {
             }
             creep.memory.remotePickupSource = container.id;
             creep.memory.remoteCargoOrigin = targetRoomName;
+            creep.memory.remoteCargoRemaining =
+              (creep.memory.remoteCargoRemaining || 0) + amount;
             delete creep.memory.remoteDispatchRoom;
             delete creep.memory.remoteDispatchSlot;
             if (creep.memory.remoteDeliveryTarget === container.id) {
@@ -5928,63 +6012,12 @@ module.exports.loop = function () {
     creep.say(speech);
   }
 
-  const ownedRoomNames = new Set(Object.values(Game.rooms)
-    .filter(room => room.controller && room.controller.my)
-    .map(room => room.name));
-  const ownedWorkTargets = Object.values(roomDemandPlans)
-    .reduce((totals, plan) => ({
-      buildTargets: totals.buildTargets +
-        (plan.demand.buildTargets || 0),
-      fixTargets: totals.fixTargets + (plan.demand.fixTargets || 0),
-      buildRemaining: totals.buildRemaining +
-        (plan.demand.buildRemaining || 0),
-      repairEnergy: totals.repairEnergy +
-        (plan.demand.repairEnergy || 0)
-    }), { buildTargets: 0, fixTargets: 0, buildRemaining: 0,
-      repairEnergy: 0 });
-  const outpostWorkTargets = Object.values(Game.rooms)
-    .filter(room => !ownedRoomNames.has(room.name))
-    .reduce((totals, room) => {
-      const sites = getRoomSites(room);
-      const repairs = getRoomStructures(room).filter(isOutpostRepairTarget);
-      return {
-        buildTargets: totals.buildTargets + sites.length,
-        fixTargets: totals.fixTargets + repairs.length,
-        buildRemaining: totals.buildRemaining + sites.reduce((sum, site) =>
-          sum + Math.max(0, site.progressTotal - site.progress), 0),
-        repairEnergy: totals.repairEnergy + repairs.reduce((sum, structure) =>
-          sum + Math.ceil(Math.max(0, structure.hitsMax - structure.hits) /
-            REPAIR_POWER), 0)
-      };
-    }, { buildTargets: 0, fixTargets: 0, buildRemaining: 0,
-      repairEnergy: 0 });
-  const buildAssigned = creeps.filter(creep =>
-    creep.memory.workJob && creep.memory.workJob.lane === 'build' ||
-    isOutpostBuilder(creep) || isExpansionBuilder(creep) ||
-    ['remote-road', 'remote-container', 'expansion-build']
-      .includes(creep.memory.task)).length;
-  const repairAssigned = creeps.filter(creep =>
-    creep.memory.workJob && creep.memory.workJob.lane === 'repair' ||
-    isBuilder(creep, 'local', 'repair')).length;
-  const buildActive = creeps.filter(creep =>
-    ['build', 'dig-road', 'remote-road', 'remote-container',
-      'expansion-build'].includes(creep.memory.task)).length;
-  const repairActive = creeps.filter(creep =>
-    creep.memory.task === 'repair').length;
-  updateDashboard(creeps, {
-    localBuildTargets: ownedWorkTargets.buildTargets,
-    outpostBuildTargets: outpostWorkTargets.buildTargets,
-    localFixTargets: ownedWorkTargets.fixTargets,
-    outpostFixTargets: outpostWorkTargets.fixTargets,
-    localBuildRemaining: ownedWorkTargets.buildRemaining,
-    outpostBuildRemaining: outpostWorkTargets.buildRemaining,
-    localRepairEnergy: ownedWorkTargets.repairEnergy,
-    outpostRepairEnergy: outpostWorkTargets.repairEnergy,
-    buildAssigned,
-    buildActive,
-    repairAssigned,
-    repairActive
+  const workMetrics = collectColonyWorkMetrics({
+    Game, creeps, roomDemandPlans, getRoomSites, getRoomStructures,
+    isOutpostRepairTarget, isOutpostBuilder, isExpansionBuilder, isBuilder,
+    REPAIR_POWER
   });
+  updateDashboard(creeps, workMetrics);
   drawDashboard();
 
   // Detailed task/target assignments are available on the slower diagnostic

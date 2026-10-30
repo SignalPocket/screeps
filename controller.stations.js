@@ -4,6 +4,7 @@
 // Invalid saved stations are reconciled every tick instead of lingering in
 // creep memory after the buffer or walkable tile disappears.
 const planControllerStations = ({ rooms, creeps, getRoomStructures,
+  getContainerPurpose = null,
   RoomPosition, STRUCTURE_CONTAINER, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
   LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES }) => {
   const stations = {};
@@ -14,7 +15,9 @@ const planControllerStations = ({ rooms, creeps, getRoomStructures,
       .sort((a, b) => a.name.localeCompare(b.name));
     const buffer = getRoomStructures(room)
       .filter(structure => structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3)
+        (getContainerPurpose
+          ? getContainerPurpose(room, structure.pos) === 'controller'
+          : structure.pos.getRangeTo(room.controller) <= 3))
       .sort((a, b) => a.pos.getRangeTo(room.controller) -
         b.pos.getRangeTo(room.controller))[0];
     if (!buffer) {

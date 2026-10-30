@@ -11,6 +11,7 @@ const createRoomSituation = dependencies => {
     getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
     getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
     isMaintainedRoad = () => true, isMaintainedContainer = () => true,
+    getContainerPurpose = null,
     roadsPaused, STRUCTURE_CONTAINER, STRUCTURE_ROAD, STRUCTURE_WALL,
     STRUCTURE_RAMPART, STRUCTURE_EXTENSION, STRUCTURE_SPAWN,
     RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
@@ -27,7 +28,10 @@ const createRoomSituation = dependencies => {
     const slowInventory = getSlowWorkInventory(room);
     const containers = structures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER &&
-        sources.some(source => source.pos.getRangeTo(structure) <= 2));
+        (getContainerPurpose
+          ? String(getContainerPurpose(room, structure.pos) || '')
+            .startsWith('source:')
+          : sources.some(source => source.pos.getRangeTo(structure) <= 2)));
     const bufferRatios = containers.map(container => {
       const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
       return container.store[RESOURCE_ENERGY] / capacity;
@@ -41,7 +45,9 @@ const createRoomSituation = dependencies => {
       ? storedSourceEnergy / sourceBufferCapacity : 0;
     const controllerContainers = structures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER && room.controller &&
-      structure.pos.getRangeTo(room.controller) <= 3);
+      (getContainerPurpose
+        ? getContainerPurpose(room, structure.pos) === 'controller'
+        : structure.pos.getRangeTo(room.controller) <= 3));
     const controllerBufferStored = controllerContainers.reduce(
       (total, container) => total + container.store[RESOURCE_ENERGY], 0);
     const controllerBufferCapacity = controllerContainers.reduce(

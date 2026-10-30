@@ -267,6 +267,7 @@ const createColonyDashboard = ({
   const drawDashboard = () => {
     const dashboard = Memory.colonyDashboard;
     if (!dashboard) return;
+    const offsetY = 4;
     const waitText = dashboard.waits && dashboard.waits.length
       ? `Wait ${dashboard.waits.join(' | ')}` : 'Wait none';
     const roleTargets = dashboard.roleTargets || {};
@@ -311,26 +312,26 @@ const createColonyDashboard = ({
     for (let index = 0; index < (dashboard.alerts || []).length; index += 2) {
       alertLines.push(dashboard.alerts.slice(index, index + 2).join(' | '));
     }
-    const groupStartY = 11.95 + alertLines.length * 0.8;
+    const groupStartY = 11.95 + offsetY + alertLines.length * 0.8;
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
-      room.visual.rect(0.5, 4.5, 27.5,
+      room.visual.rect(0.5, 4.5 + offsetY, 27.5,
         7.35 + (groupedRoles.length + alertLines.length) * 0.8, {
         fill: '#101820', opacity: 0.22, stroke: '#64d2ff',
         strokeWidth: 0.08
       });
-      room.visual.text('COLONY', 1.2, 5.3, {
+      room.visual.text('COLONY', 1.2, 5.3 + offsetY, {
         align: 'left', color: '#64d2ff', font: 'bold 1 monospace',
         opacity: textOpacity
       });
       room.visual.text(
         `Creeps ${dashboard.creeps} | spawning ${dashboard.spawning} | ` +
           `need ${dashboard.needed}`,
-        1.2, 6.2,
+        1.2, 6.2 + offsetY,
         { align: 'left', color: '#ffffff', font: 'bold 0.85 monospace',
           opacity: textOpacity }
       );
-      room.visual.text(waitText, 1.2, 7.05, {
+      room.visual.text(waitText, 1.2, 7.05 + offsetY, {
         align: 'left', color: dashboard.waits && dashboard.waits.length
           ? '#ff9f0a' : '#30d158', font: 'bold 0.85 monospace',
         opacity: textOpacity
@@ -338,7 +339,7 @@ const createColonyDashboard = ({
       room.visual.text(
         `Energy ${compact(dashboard.totalEnergy)} | ready ` +
           `${dashboard.readyEnergy}/${dashboard.readyCapacity}`,
-        1.2, 7.9,
+        1.2, 7.9 + offsetY,
         { align: 'left', color: '#ffd60a', font: 'bold 0.85 monospace',
           opacity: textOpacity }
       );
@@ -346,7 +347,7 @@ const createColonyDashboard = ({
         `Reserve ${compact(dashboard.reserveEnergy)} | carry ` +
           `${compact(dashboard.carriedEnergy)} | loose ` +
           `${compact(dashboard.looseEnergy)}`,
-        1.2, 8.75,
+        1.2, 8.75 + offsetY,
         { align: 'left', color: '#d1d1d6', font: 'bold 0.81 monospace',
           opacity: textOpacity }
       );
@@ -356,7 +357,7 @@ const createColonyDashboard = ({
           `${compact(dashboard.buildRemaining || 0)} | assigned ` +
           `${dashboard.buildAssigned || 0} active ` +
           `${dashboard.buildActive || 0}`,
-        1.2, 9.55,
+        1.2, 9.55 + offsetY,
         { align: 'left', color: '#ff8ad8', font: 'bold 0.83 monospace',
           opacity: textOpacity }
       );
@@ -366,17 +367,17 @@ const createColonyDashboard = ({
           `${compact(dashboard.repairEnergy || 0)} | assigned ` +
           `${dashboard.repairAssigned || 0} active ` +
           `${dashboard.repairActive || 0}`,
-        1.2, 10.35,
+        1.2, 10.35 + offsetY,
         { align: 'left', color: '#ff9f0a', font: 'bold 0.83 monospace',
           opacity: textOpacity }
       );
       room.visual.text('Jobs: count | min / desired / max (* = work-based)',
-        1.2, 11.15, {
+        1.2, 11.15 + offsetY, {
           align: 'left', color: '#d1d1d6', font: 'bold 0.72 monospace',
           opacity: textOpacity
         });
       alertLines.forEach((line, row) => room.visual.text(line, 1.2,
-        11.95 + row * 0.8, {
+        11.95 + offsetY + row * 0.8, {
           align: 'left', color: '#ff8ad8', font: 'bold 0.72 monospace',
           opacity: textOpacity
         }));

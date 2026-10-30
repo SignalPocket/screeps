@@ -32,6 +32,19 @@ const bootstrap = derivePopulationPolicy({ ...base, rcl: 1,
 assert.strictEqual(bootstrap.mode, 'bootstrap');
 assert.strictEqual(bootstrap.roles.refiller.desired, 0);
 assert.strictEqual(bootstrap.roles.hauler.desired, 0);
+assert.deepStrictEqual(bootstrap.roles.repairBuilder,
+  { min: 0, desired: 0, max: 0,
+    reason: 'repair backlog and critical damage' });
+
+const routineRepair = derivePopulationPolicy({ ...base,
+  repair: { remaining: 1 } });
+assert.deepStrictEqual(routineRepair.roles.repairBuilder,
+  { min: 1, desired: 1, max: 1,
+    reason: 'repair backlog and critical damage' });
+
+const unowned = derivePopulationPolicy({ ...base, controllerOwned: false });
+assert.strictEqual(unowned.roles.repairBuilder.min, 0);
+assert.strictEqual(unowned.roles.repairBuilder.desired, 0);
 
 const lowEnergy = derivePopulationPolicy({ ...base, energyRatio: 0.2,
   bufferRatio: 0.1, storedEnergy: 0,

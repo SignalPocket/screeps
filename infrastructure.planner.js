@@ -269,6 +269,29 @@ const createInfrastructurePlanner = ({
     if (isExtensionBufferPosition(room, position)) return 'extensions';
     return null;
   };
+  const describeContainer = (room, container) => {
+    const purpose = getContainerPurpose(room, container.pos);
+    const sourceId = purpose && purpose.startsWith('source:')
+      ? purpose.slice('source:'.length) : null;
+    return {
+      id: container.id,
+      kind: sourceId ? 'source' : purpose || 'unknown',
+      sourceId: sourceId || undefined,
+      x: container.pos.x,
+      y: container.pos.y
+    };
+  };
+  const refreshContainerPurposes = room => {
+    const containers = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_CONTAINER
+    });
+    const byId = Object.fromEntries(containers.map(container => {
+      const descriptor = describeContainer(room, container);
+      return [container.id, descriptor];
+    }));
+    room.memory.containerPurposes = { updated: Game.time, byId };
+    return room.memory.containerPurposes;
+  };
   const isExtensionRefillBuffer = (room, structure) => {
     if (!structure || structure.structureType !== STRUCTURE_CONTAINER) {
       return false;
@@ -584,6 +607,8 @@ const createInfrastructurePlanner = ({
     placeExtensionSite,
     placeStorageSite,
     getContainerPurpose,
+    describeContainer,
+    refreshContainerPurposes,
     isExtensionRefillBuffer,
     placeSourceContainerSite,
     manageExtensionContainer,
