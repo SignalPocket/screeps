@@ -163,6 +163,56 @@ const createRoadPlanner = ({
     room.memory.travelPathPlan = { signature, updated: Game.time, paths };
     return paths;
   };
+  const getControllerFanPaths = room => {
+    if (!room.controller || !room.controller.my) return [];
+    const plan = room.memory.controllerContainerPlan;
+    let anchor = plan && Number.isInteger(plan.desiredX) &&
+      Number.isInteger(plan.desiredY)
+      ? { x: plan.desiredX, y: plan.desiredY }
+      : null;
+    if (!anchor) {
+      const container = room.find(FIND_STRUCTURES, {
+        filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
+          structure.pos.getRangeTo(room.controller) <= 3
+      })[0];
+      if (container) anchor = { x: container.pos.x, y: container.pos.y };
+    }
+    if (!anchor) return [];
+    const brigadePlan = room.memory.controllerBrigadePlan;
+    const brigadeStops = new Set(brigadePlan &&
+      Array.isArray(brigadePlan.segments)
+      ? brigadePlan.segments.flatMap(segment =>
+        [segment.pickup, segment.delivery]).filter(Boolean)
+        .map(point => `${point.x}:${point.y}`)
+      : []);
+    const terrain = room.getTerrain();
+    const directions = [
+      [-1, -1], [0, -1], [1, -1], [1, 0],
+      [1, 1], [0, 1], [-1, 1], [-1, 0]
+    ];
+    const paths = [];
+    for (const [dx, dy] of directions) {
+      const points = [anchor];
+      for (let step = 1; step <= 2; step++) {
+        const x = anchor.x + dx * step;
+        const y = anchor.y + dy * step;
+        const key = `${x}:${y}`;
+        if (x < 1 || x > 48 || y < 1 || y > 48 ||
+            terrain.get(x, y) === TERRAIN_MASK_WALL ||
+            room.controller.pos.x === x && room.controller.pos.y === y ||
+            room.controller.pos.getRangeTo(x, y) > 4 ||
+            brigadeStops.has(key)) break;
+        points.push({ x, y });
+      }
+      if (points.length > 1) {
+        paths.push({
+          label: 'controller-fan', kinds: ['controller', 'fan'],
+          controllerFan: true, points
+        });
+      }
+    }
+    return paths;
+  };
   const getInterRoomTravelPaths = homeRoom => {
     const byRoom = {};
     const plans = [
@@ -245,15 +295,16 @@ const createRoadPlanner = ({
     const traffic = room.memory.traffic;
     if (!Number.isInteger(traffic.started)) traffic.started = Game.time;
     if (!Number.isInteger(traffic.lastDecay)) traffic.lastDecay = Game.time;
-    // Sample every other tick and weight the observation by two. This retains
-    // the same approximate heat while halving position-memory writes.
-    if (scheduledRoomTick(room, 2)) {
+    // Traffic is a long-lived planning signal, not a movement control. Sample
+    // one tick in five and weight observations accordingly to retain roughly
+    // the same heat while cutting position-memory writes substantially.
+    if (scheduledRoomTick(room, 5)) {
       for (const creep of getRoomCreeps(room)) {
         const previous = creep.memory.trafficPosition;
         if (previous && previous.roomName === room.name &&
             (previous.x !== creep.pos.x || previous.y !== creep.pos.y)) {
           const key = `${creep.pos.x}:${creep.pos.y}`;
-          traffic.tiles[key] = (traffic.tiles[key] || 0) + 2;
+          traffic.tiles[key] = (traffic.tiles[key] || 0) + 5;
         }
         creep.memory.trafficPosition = {
           x: creep.pos.x,
@@ -414,7 +465,8 @@ const createRoadPlanner = ({
     for (const path of paths) {
       for (const point of path.points) {
         const key = `${point.x}:${point.y}`;
-        corridorUses[key] = (corridorUses[key] || 0) + 1;
+        corridorUses[key] = (corridorUses[key] || 0) +
+          (path.controllerFan ? 4 : 1);
       }
     }
     const terrain = room.getTerrain();
@@ -428,12 +480,17 @@ const createRoadPlanner = ({
     if (batchLimit <= 0) return false;
 
     const candidates = [];
+    const brigadeStopKeys = new Set((room.memory.controllerBrigadePlan &&
+      room.memory.controllerBrigadePlan.segments || [])
+      .flatMap(segment => [segment.pickup, segment.delivery])
+      .filter(Boolean).map(point => `${point.x}:${point.y}`));
     for (const key of candidateKeys) {
       const visits = traffic.tiles[key] || 0;
       const corridorCount = corridorUses[key] || 0;
       const [x, y] = key.split(':').map(Number);
       if (x <= 0 || x >= 49 || y <= 0 || y >= 49 ||
           builtRoadTiles.has(key) || queuedRoadTiles.has(key) ||
+          brigadeStopKeys.has(key) ||
           terrain.get(x, y) === TERRAIN_MASK_WALL ||
           room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
           room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
@@ -470,6 +527,7 @@ const createRoadPlanner = ({
   return {
     getImportantRoadPaths,
     getImportantTravelPaths,
+    getControllerFanPaths,
     getInterRoomTravelPaths,
     getConvergedTravelPaths,
     isSingleLaneRoadPosition,

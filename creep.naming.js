@@ -42,6 +42,10 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
   };
 
   const getBirthName = (spawn, assignment) => {
+    if (assignment.role === 'controller-relay' &&
+        Number.isInteger(assignment.controllerRelaySlot)) {
+      return `BRIG${assignment.controllerRelaySlot + 1}`;
+    }
     const targetRoom = assignment.remoteRoom || assignment.expansionTarget ||
       spawn.room.name;
     const parts = [getRoomOrdinal(targetRoom),

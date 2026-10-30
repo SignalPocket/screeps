@@ -20,15 +20,26 @@ const createMovementService = options => {
     }
     const preferredRoadTiles = new Set(Object.entries(preferredUses)
       .filter(([, uses]) => uses >= 2).map(([key]) => key));
+    const brigadePlan = room.memory.controllerBrigadePlan;
+    const brigadeRightOfWay = new Set([
+      ...(brigadePlan && Array.isArray(brigadePlan.segments)
+        ? brigadePlan.segments.flatMap(segment =>
+          [segment.pickup, segment.delivery]).filter(Boolean) : []),
+      ...(brigadePlan && Array.isArray(brigadePlan.rightOfWay)
+        ? brigadePlan.rightOfWay : [])
+    ].map(point => `${point.x}:${point.y}`));
+    const roads = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_ROAD
+    }).map(road => ({
+      x: road.pos.x,
+      y: road.pos.y,
+      preferred: preferredRoadTiles.has(`${road.pos.x}:${road.pos.y}`)
+    }));
     const cached = {
-      roads: room.find(FIND_STRUCTURES, {
-        filter: structure => structure.structureType === STRUCTURE_ROAD
-      }).map(road => ({
-        x: road.pos.x,
-        y: road.pos.y,
-        preferred: preferredRoadTiles.has(`${road.pos.x}:${road.pos.y}`)
-      })),
+      roads,
+      roadTiles: new Set(roads.map(road => `${road.x}:${road.y}`)),
       preferredRoadTiles,
+      brigadeRightOfWay,
       creeps: room.find(FIND_MY_CREEPS).map(other => ({
         name: other.name,
         x: other.pos.x,
@@ -66,15 +77,15 @@ const createMovementService = options => {
       movementReservations[roomName][`${step.x}:${step.y}`] = creep.name;
     }
   };
-  const moveCreep = (creep, target, range = 1) => {
+  const moveCreep = (creep, target, range = 1, movementOptions = {}) => {
     const position = target.pos || target;
     if (!position) return ERR_INVALID_TARGET;
     const targetRoomName = position.roomName || creep.room.name;
     const effectiveRange = targetRoomName === creep.room.name ? range : 0;
     if (targetRoomName === creep.room.name &&
         creep.pos.getRangeTo(position) <= effectiveRange) return OK;
-    if (creep.memory.navCostVersion !== 'planned-roads-v5') {
-      creep.memory.navCostVersion = 'planned-roads-v5';
+    if (creep.memory.navCostVersion !== 'planned-roads-v6') {
+      creep.memory.navCostVersion = 'planned-roads-v6';
       delete creep.memory._move;
       delete creep.memory.navGoal;
     }
@@ -94,6 +105,7 @@ const createMovementService = options => {
       ? (creep.memory.navStuck || 0) + 1 : 0;
     const recalculate = oscillating || creep.memory.navStuck >= 2;
     const carryingCargo = creep.store.getUsedCapacity() > 0;
+    const direct = movementOptions.direct === true;
     const routeReuse = carryingCargo ? 50 : 25;
     if (recalculate) delete creep.memory._move;
     const result = creep.moveTo(target, {
@@ -103,8 +115,8 @@ const createMovementService = options => {
       // Roads should win over a modest shortcut, while still allowing a
       // clearly shorter off-road route. This avoids both road avoidance and
       // long ornamental detours.
-      plainCost: 3,
-      swampCost: 12,
+      plainCost: direct && movementOptions.preferRoads ? 2 : direct ? 1 : 3,
+      swampCost: direct && movementOptions.preferRoads ? 10 : direct ? 5 : 12,
       maxOps: 2000,
       costCallback: (roomName, costs) => {
         if (!Game.rooms[roomName]) return costs;
@@ -114,13 +126,36 @@ const createMovementService = options => {
           costs.set(x, y, 2);
         }
         for (const road of roomCache ? roomCache.roads : []) {
-          costs.set(road.x, road.y, road.preferred ? 1 : 2);
+          costs.set(road.x, road.y,
+            direct && movementOptions.preferRoads ? 1
+              : road.preferred ? 1 : 2);
+        }
+        if (movementOptions.roadOnly) {
+          for (let x = 1; x <= 48; x++) {
+            for (let y = 1; y <= 48; y++) {
+              if (!roomCache || !roomCache.roadTiles.has(`${x}:${y}`)) {
+                costs.set(x, y, 255);
+              }
+            }
+          }
+        }
+        if (creep.memory.role !== 'controller-relay') {
+          for (const key of roomCache ? roomCache.brigadeRightOfWay : []) {
+            const [x, y] = key.split(':').map(Number);
+            costs.set(x, y, 255);
+          }
         }
         const reservations = movementReservations[roomName] || {};
         for (const key of Object.keys(reservations)) {
           if (reservations[key] === creep.name) continue;
           const [x, y] = key.split(':').map(Number);
           const currentCost = costs.get(x, y);
+          const owner = Game.creeps && Game.creeps[reservations[key]];
+          if (owner && owner.memory.role === 'controller-relay' &&
+              creep.memory.role !== 'controller-relay') {
+            costs.set(x, y, 255);
+            continue;
+          }
           if (currentCost < 255) {
             costs.set(x, y, Math.max(currentCost,
               carryingCargo ? 12 : 30));

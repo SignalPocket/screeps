@@ -20,7 +20,8 @@ const getBodyTypeForAssignment = assignment => {
   if (assignment.role === 'claimer') return BODY_TYPES.CLAIMER;
   if (assignment.role === 'remote-scout') return BODY_TYPES.FIELD;
   if (assignment.role === 'remote-hauler' ||
-      assignment.role === 'refiller') return BODY_TYPES.HAULER;
+      assignment.role === 'refiller' ||
+      assignment.role === 'controller-relay') return BODY_TYPES.HAULER;
   if (assignment.role === 'hauler' ||
       assignment.role === 'rebalancer') return BODY_TYPES.HAULER;
   if (assignment.role === 'miner' ||

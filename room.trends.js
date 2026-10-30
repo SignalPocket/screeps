@@ -118,20 +118,33 @@ const analyzeRecords = (records, previous = {}) => {
     };
   }
   const latest = recent[recent.length - 1];
-  const oldest = recent[0];
   const energyCapacity = latest.capacity || 1300;
-  const repairTrend = latest.repair - oldest.repair;
-  const repairBaseline = Math.max(5000, energyCapacity * 8);
-  const repairRiseThreshold = Math.max(2500, energyCapacity * 4,
-    oldest.repair * 0.2);
+  // Compare checkpoint windows instead of only their endpoints. Repair work
+  // is noisy because several fixers can finish targets just before a sample;
+  // window averages retain a sustained rise without treating one spike as a
+  // reason to grow the roster.
+  const midpoint = Math.max(1, Math.floor(recent.length / 2));
+  const earlierRepairs = recent.slice(0, midpoint)
+    .map(record => record.repair || 0);
+  const laterRepairs = recent.slice(midpoint)
+    .map(record => record.repair || 0);
+  const earlierRepair = average(earlierRepairs);
+  const laterRepair = average(laterRepairs);
+  const repairTrend = laterRepair - earlierRepair;
+  const risingSteps = recent.slice(1).filter((record, index) =>
+    (record.repair || 0) > (recent[index].repair || 0)).length;
+  const repairBaseline = Math.max(2500, energyCapacity * 2);
+  const repairRiseThreshold = Math.max(1000, energyCapacity * 1.5,
+    earlierRepair * 0.15);
   const repairRising = latest.repair >= repairBaseline &&
-    repairTrend >= repairRiseThreshold;
+    repairTrend >= repairRiseThreshold &&
+    risingSteps >= Math.ceil((recent.length - 1) * 0.6);
   let repairBonus = previous.repairBonus || 0;
   if (repairRising) {
     repairBonus = clamp(Math.ceil(repairTrend /
-      Math.max(25000, energyCapacity * 60)), 1, 2);
-  } else if (latest.repair < oldest.repair ||
-      latest.repair < Math.max(2500, energyCapacity * 4)) {
+      Math.max(10000, energyCapacity * 20)), 1, 2);
+  } else if (laterRepair < earlierRepair ||
+      latest.repair < repairBaseline) {
     repairBonus = Math.max(0, repairBonus - 1);
   }
 

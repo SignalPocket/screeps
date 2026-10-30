@@ -30,8 +30,17 @@ const downgradedRepair = analyzeRecords([
   { tick: 500, repair: 6000, source: 0, work: 1, dropped: 0,
     capacity: 550 }
 ]);
-assert.strictEqual(matureRepair.repairBonus, 0);
+assert.strictEqual(matureRepair.repairBonus, 1);
 assert.strictEqual(downgradedRepair.repairBonus, 1);
+const singleRepairSpike = analyzeRecords([
+  { tick: 0, repair: 0, source: 0, work: 1, dropped: 0,
+    capacity: 1300 },
+  { tick: 250, repair: 0, source: 0, work: 1, dropped: 0,
+    capacity: 1300 },
+  { tick: 500, repair: 6000, source: 0, work: 1, dropped: 0,
+    capacity: 1300 }
+]);
+assert.strictEqual(singleRepairSpike.repairBonus, 0);
 
 const memory = {};
 updateRoomTrends(memory, 105, {

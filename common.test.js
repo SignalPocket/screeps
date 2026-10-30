@@ -22,6 +22,7 @@ const { createRemoteHauling, isRoomBorder } = require('./remote.hauling');
 const { createEnergyPhase } = require('./energy.phase');
 const { createRoadPlanner } = require('./road.planner');
 const { createInfrastructurePlanner } = require('./infrastructure.planner');
+const { createLandmarkFlags } = require('./landmark.flags');
 const { createOutpostMaintenance } = require('./outpost.maintenance');
 const { createMemoryMaintenance } = require('./memory.maintenance');
 const { createCreepNaming } = require('./creep.naming');
@@ -608,6 +609,8 @@ assert.deepStrictEqual(bodies.buildBody('remote-hauler', 400),
   ['work', 'carry', 'carry', 'move', 'move']);
 assert.deepStrictEqual(bodies.buildBody('hauler', 400),
   ['work', 'carry', 'carry', 'move', 'move']);
+assert.deepStrictEqual(bodies.buildBody('controller-relay', 1300),
+  ['carry', 'carry', 'move']);
 assert.deepStrictEqual(bodies.buildBody('carrier', 400),
   bodies.buildBody('hauler', 400));
 assert.deepStrictEqual(bodies.buildBody('remote-scout', 1000),
@@ -997,8 +1000,15 @@ const rangePosition = (x, y) => ({
 const stationBuffer = {
   id: 'controller-buffer', structureType: 'container', pos: rangePosition(10, 10)
 };
+const stationBufferTwo = {
+  id: 'controller-buffer-two', structureType: 'container',
+  pos: rangePosition(14, 10)
+};
 const stationRoom = {
   name: 'W1N1', controller: { my: true, pos: rangePosition(12, 10) },
+  memory: { controllerBrigadePlan: { segments: [{
+    pickup: { x: 9, y: 10 }, delivery: { x: 11, y: 10 }
+  }], rightOfWay: [{ x: 10, y: 11 }] } },
   getTerrain: () => ({ get: () => 0 }),
   lookForAt: () => []
 };
@@ -1016,7 +1026,8 @@ class TestRoomPosition {
 }
 const controllerStationPlan = planControllerStations({
   rooms: [stationRoom], creeps: stationCreeps,
-  getRoomStructures: () => [stationBuffer], RoomPosition: TestRoomPosition,
+  getRoomStructures: () => [stationBuffer, stationBufferTwo],
+  RoomPosition: TestRoomPosition,
   STRUCTURE_CONTAINER: 'container', STRUCTURE_RAMPART: 'rampart',
   TERRAIN_MASK_WALL: 1, LOOK_STRUCTURES: 'structures',
   OBSTACLE_OBJECT_TYPES: ['spawn']
@@ -1024,6 +1035,15 @@ const controllerStationPlan = planControllerStations({
 assert.strictEqual(Object.keys(controllerStationPlan).length, 2);
 assert.notDeepStrictEqual(stationCreeps[0].memory.controllerStation,
   stationCreeps[1].memory.controllerStation);
+assert.deepStrictEqual(new Set(stationCreeps.map(creep =>
+  creep.memory.controllerStation.bufferId)),
+new Set([stationBuffer.id, stationBufferTwo.id]));
+assert.ok(stationCreeps.every(creep =>
+  creep.memory.controllerStation.x !== 11 ||
+  creep.memory.controllerStation.y !== 10));
+assert.ok(stationCreeps.every(creep =>
+  creep.memory.controllerStation.x !== 10 ||
+  creep.memory.controllerStation.y !== 11));
 stationRoom.controller = { my: true, pos: rangePosition(12, 10) };
 planControllerStations({
   rooms: [stationRoom], creeps: stationCreeps,
@@ -1123,9 +1143,49 @@ roomIndex.getRoomSources(room);
 assert.strictEqual(findCalls.sources, 1);
 assert.strictEqual(roomIndex.getSlowWorkInventory(room).sites[0].id, 'site');
 
+const landmarkFlag = (x, y) => ({
+  pos: { x, y, roomName: 'W1N1' }, color: 1, secondaryColor: 1,
+  setPosition() {}, setColor() {}
+});
+const landmarkGame = { time: 12, flags: {
+  LM_W1N1_EXT_PRIMARY: landmarkFlag(4, 40),
+  LM_W1N1_EXT_OVERFLOW: landmarkFlag(23, 38),
+  LM_W1N1_STORAGE: landmarkFlag(26, 27),
+  LM_W1N1_RC_PRIMARY: landmarkFlag(37, 10),
+  LM_W1N1_RC_SECONDARY: landmarkFlag(37, 14),
+  LM_W1N1_BRIG_BRANCH: landmarkFlag(38, 15)
+} };
+const landmarkContainers = [
+  { id: 'rc-one', structureType: 'container', pos: { x: 37, y: 10 } },
+  { id: 'rc-two', structureType: 'container', pos: { x: 37, y: 14 } }
+];
+const landmarkRoom = {
+  name: 'W1N1', memory: {}, storage: null,
+  find: type => type === 'structures' ? landmarkContainers : [],
+  createFlag: () => 'created'
+};
+const landmarks = createLandmarkFlags({
+  Game: landmarkGame, FIND_SOURCES: 'sources', FIND_STRUCTURES: 'structures',
+  STRUCTURE_CONTAINER: 'container', COLOR_BLUE: 1, COLOR_CYAN: 2,
+  COLOR_GREEN: 3, COLOR_YELLOW: 4, COLOR_ORANGE: 5,
+  COLOR_PURPLE: 6, COLOR_WHITE: 7
+});
+landmarks.recover(landmarkRoom);
+assert.deepStrictEqual(
+  { x: landmarkRoom.memory.extensionCluster.x,
+    y: landmarkRoom.memory.extensionCluster.y },
+  { x: 4, y: 40 });
+assert.strictEqual(landmarkRoom.memory.controllerContainerPairPlan.ready,
+  true);
+assert.deepStrictEqual(
+  landmarkRoom.memory.controllerContainerPlan.containerIds,
+  ['rc-one', 'rc-two']);
+
 let moveOptions;
 const movementGame = { time: 20, rooms: { W1N1: {
-  memory: { travelPathPlan: { paths: [
+  memory: { controllerBrigadePlan: { segments: [{
+    pickup: { x: 6, y: 6 }, delivery: { x: 7, y: 7 }
+  }], rightOfWay: [{ x: 4, y: 4 }] }, travelPathPlan: { paths: [
     { points: [{ x: 2, y: 2 }, { x: 4, y: 4 }] },
     { points: [{ x: 2, y: 2 }, { x: 4, y: 4 }] }
   ] } },
@@ -1168,8 +1228,27 @@ const movementCosts = {
 moveOptions.costCallback('W1N1', movementCosts);
 assert.strictEqual(movementCosts.get(2, 2), 1);
 assert.strictEqual(movementCosts.get(3, 3), 2);
-assert.strictEqual(movementCosts.get(4, 4), 2);
-assert.strictEqual(movingCreep.memory.navCostVersion, 'planned-roads-v5');
+assert.strictEqual(movementCosts.get(4, 4), 255);
+assert.strictEqual(movementCosts.get(6, 6), 255);
+assert.strictEqual(movingCreep.memory.navCostVersion, 'planned-roads-v6');
+assert.strictEqual(movement.moveCreep(movingCreep,
+  { pos: { x: 6, y: 5, roomName: 'W1N1' } }, 0, { direct: true }), 0);
+assert.strictEqual(moveOptions.plainCost, 1);
+assert.strictEqual(moveOptions.swampCost, 5);
+movingCreep.memory.role = 'controller-relay';
+assert.strictEqual(movement.moveCreep(movingCreep,
+  { pos: { x: 3, y: 3, roomName: 'W1N1' } }, 0,
+  { direct: true, preferRoads: true, roadOnly: true }), 0);
+assert.strictEqual(moveOptions.plainCost, 2);
+assert.strictEqual(moveOptions.swampCost, 10);
+const roadOnlyCosts = {
+  values: {},
+  set(x, y, value) { this.values[`${x}:${y}`] = value; },
+  get(x, y) { return this.values[`${x}:${y}`] || 0; }
+};
+moveOptions.costCallback('W1N1', roadOnlyCosts);
+assert.strictEqual(roadOnlyCosts.get(2, 2), 1);
+assert.strictEqual(roadOnlyCosts.get(2, 3), 255);
 
 const lifecycle = createCreepLifecycle({
   Game: { map: { findRoute: () => [{ room: 'W1N2' }, { room: 'W1N3' }] } },
@@ -1608,13 +1687,18 @@ console.log = savedLog;
 
 const roadSpawn = { id: 'road-spawn', pos: { x: 5, y: 5 } };
 const roadSource = { id: 'road-source', pos: { x: 15, y: 15 } };
-const roadController = { id: 'road-controller', pos: { x: 25, y: 25 } };
+const roadController = { id: 'road-controller', my: true,
+  pos: { x: 25, y: 25 } };
 for (const object of [roadSpawn, roadSource, roadController]) {
   object.pos.getRangeTo = target => rangeTo(object.pos, target);
 }
 const roadRoom = {
   name: 'W8N8', memory: {
     extensionCluster: { x: 8, y: 12 },
+    controllerContainerPlan: { desiredX: 23, desiredY: 23 },
+    controllerBrigadePlan: { segments: [{
+      pickup: { x: 22, y: 22 }, delivery: { x: 23, y: 22 }
+    }] },
     leftSurvey: { active: true, targetRoom: 'W9N8' },
     remoteRoadPlan: { paths: [{ slot: 0, points: [
       { x: 47, y: 20, roomName: 'W8N8' },
@@ -1624,6 +1708,8 @@ const roadRoom = {
     ] }] }
   }, controller: roadController,
   find: type => type === 'spawns' ? [roadSpawn] : [],
+  getTerrain: () => ({ get: () => 0 }),
+  lookForAt: () => [],
   getPositionAt: (x, y) => ({ x, y }),
   findPath: () => [{ x: 6, y: 6 }, { x: 7, y: 7 }]
 };
@@ -1651,6 +1737,11 @@ assert.ok(roadRoom.memory.travelPathPlan.signature
 assert.ok(travelPaths.every(path => path.points.length === 2));
 assert.ok(travelPaths.some(path =>
   path.kinds.includes('extensions') && path.kinds.includes('controller')));
+const controllerFanPaths = roadPlanner.getControllerFanPaths(roadRoom);
+assert.ok(controllerFanPaths.length >= 4);
+assert.ok(controllerFanPaths.every(path => path.controllerFan));
+assert.ok(controllerFanPaths.every(path => !path.points.some(point =>
+  point.x === 22 && point.y === 22 || point.x === 23 && point.y === 22)));
 const interRoomPaths = roadPlanner.getInterRoomTravelPaths(roadRoom);
 assert.strictEqual(interRoomPaths.W8N8.length, 1);
 assert.strictEqual(interRoomPaths.W9N8.length, 1);

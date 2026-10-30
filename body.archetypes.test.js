@@ -16,6 +16,8 @@ const creep = (bodyType, ttl = 1000) => ({
 
 assert.strictEqual(getBodyTypeForAssignment({ role: 'remote-hauler' }),
   BODY_TYPES.HAULER);
+assert.strictEqual(getBodyTypeForAssignment({ role: 'controller-relay' }),
+  BODY_TYPES.HAULER);
 assert.strictEqual(getBodyTypeForAssignment({ bodyType: 'carrier' }),
   BODY_TYPES.HAULER);
 assert.strictEqual(getBodyTypeForAssignment({ role: 'builder' }),

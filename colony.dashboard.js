@@ -76,7 +76,7 @@ const createColonyDashboard = ({
   };
   const textOpacity = 0.62;
   const updateDashboard = (creeps, workTargets = {}) => {
-    if (Game.time % 5 !== 0) return Memory.colonyDashboard;
+    if (Game.time % 10 !== 0) return Memory.colonyDashboard;
     const ownedRooms = Object.values(Game.rooms).filter(room =>
       room.controller && room.controller.my);
     let populationNeed = 0;

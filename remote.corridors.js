@@ -1,5 +1,7 @@
 'use strict';
 
+const ROUTE_REFRESH_INTERVAL = 1000;
+
 function createRemoteCorridorPlanner({
   Game, PathFinder, scheduledRoomTick, getRoomSources, isRetiringContainer,
   FIND_STRUCTURES, FIND_SOURCES, FIND_MY_SPAWNS, FIND_MY_CONSTRUCTION_SITES,
@@ -182,7 +184,7 @@ function createRemoteCorridorPlanner({
       maxOps: 15000,
       blockNonRoadSites: false,
       deduplicate: false,
-      retryIncompleteAfter: 25,
+      retryIncompleteAfter: ROUTE_REFRESH_INTERVAL,
       getDestination: room => room.find(FIND_MY_SPAWNS)[0],
       getAllowedRooms: (room, remoteRoom) => {
         const exits = Game.map.describeExits(room.name) || {};
@@ -204,7 +206,10 @@ function createRemoteCorridorPlanner({
     for (const room of rooms) {
       if (!room.controller || !room.controller.my) continue;
       for (const config of routeConfigs) {
-        if (!scheduledRoomTick(room, 50, config.phase)) continue;
+        // Route geometry and corridor construction are background planning.
+        // Existing cached paths remain active between these sparse reviews.
+        if (!scheduledRoomTick(room, ROUTE_REFRESH_INTERVAL,
+          config.phase)) continue;
         const survey = room.memory[config.surveyKey];
         const remoteRoom = survey && survey.active &&
           Game.rooms[survey.targetRoom];

@@ -10,6 +10,7 @@ const shortRoles = {
   upgrader: 'UP',
   'remote-scout': 'OP',
   'remote-hauler': 'OC',
+  'controller-relay': 'PR',
   claimer: 'CL',
   worker: 'W',
   retire: 'RET'
@@ -36,6 +37,7 @@ const shortTasks = {
   'remote-container': 'Cont',
   'remote-haul': 'RHaul',
   'remote-road': 'RBuild',
+  'controller-relay': 'Power',
   claim: 'Claim',
   'expansion-build': 'Expand',
   'stage-supply': 'Stage',

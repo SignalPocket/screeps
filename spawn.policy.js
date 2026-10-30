@@ -13,11 +13,12 @@ const createSpawnPolicy = ({
   minimumRecoveryBodyEnergy = 300
 }) => {
   const dedicatedRoles = new Set([
-    'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer'
+    'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer',
+    'controller-relay'
   ]);
   const replacementRoles = new Set([
     'upgrader', 'builder', 'remote-scout', 'remote-hauler', 'refiller',
-    'rebalancer', 'claimer'
+    'rebalancer', 'claimer', 'controller-relay'
   ]);
   const fullBodyRoles = new Set([
     'miner', 'harvester', 'hauler', 'refiller', 'rebalancer', 'upgrader',
@@ -113,7 +114,8 @@ const createSpawnPolicy = ({
       staffingTarget,
       spawn.room.energyAvailable, spawn.room.energyCapacityAvailable,
       emergency);
-    const bodyType = assignment.bodyType || assignment.role;
+    const bodyType = assignment.spawnBodyRole || assignment.bodyType ||
+      assignment.role;
     const candidateBody = chargeComplete
       ? buildBody(bodyType, bodyEnergy) ||
         buildBody(bodyType, spawn.room.energyAvailable)

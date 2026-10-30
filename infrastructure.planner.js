@@ -250,7 +250,9 @@ const createInfrastructurePlanner = ({
   const getExtensionClusters = room => [
     { key: 'primary', anchor: room.memory.extensionCluster },
     { key: 'overflow', anchor: room.memory.extensionOverflowCluster }
-  ].filter(entry => entry.anchor && Number.isInteger(entry.anchor.x) &&
+  ].filter(entry => entry.key !== (room.memory.controllerContainerPairPlan &&
+    room.memory.controllerContainerPairPlan.sacrificeClusterKey) &&
+    entry.anchor && Number.isInteger(entry.anchor.x) &&
     Number.isInteger(entry.anchor.y));
   const isExtensionBufferPosition = (room, position) => {
     const plans = [room.memory.extensionContainerPlan,
@@ -654,135 +656,298 @@ const createInfrastructurePlanner = ({
     if (!room.controller || !room.controller.my || room.controller.level < 2) {
       return false;
     }
-    const controllerContainer = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3
-    })[0];
-    const controllerSite = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_CONTAINER &&
-        site.pos.getRangeTo(room.controller) <= 3
-    })[0];
-    if (controllerContainer || controllerSite) {
-      room.memory.controllerContainerPlan = {
-        ready: Boolean(controllerContainer),
-        siteId: controllerSite && controllerSite.id,
-        containerId: controllerContainer && controllerContainer.id
-      };
-      return true;
-    }
-
     const containers = room.find(FIND_STRUCTURES, {
       filter: structure => structure.structureType === STRUCTURE_CONTAINER
     });
-    const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
-      [room.controller.level] || 0;
-    let plan = room.memory.controllerContainerPlan;
-    if (!plan || (!plan.retireContainerId && !plan.retired)) {
-      if (containers.length < containerLimit) {
-        plan = { retired: true, ready: false };
-      } else {
-        const essential = new Set(containers
-          .filter(container => getContainerPurpose(room, container.pos))
-          .map(container => container.id));
-        const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-        const excess = containers
-          .filter(container => !essential.has(container.id))
-          .sort((a, b) =>
-            (trafficTiles[`${a.pos.x}:${a.pos.y}`] || 0) -
-              (trafficTiles[`${b.pos.x}:${b.pos.y}`] || 0) ||
-            a.id.localeCompare(b.id));
-        if (!excess.length) return false;
-        plan = {
-          ready: false,
-          retired: false,
-          retireContainerId: excess[0].id,
-          retireX: excess[0].pos.x,
-          retireY: excess[0].pos.y
-        };
-        console.log(`[${Game.time}] ${room.name} draining excess container ` +
-          `${excess[0].id} at ${excess[0].pos.x},${excess[0].pos.y} ` +
-          `for controller container replacement`);
-      }
-      room.memory.controllerContainerPlan = plan;
-    }
-
-    const retiring = Game.getObjectById(plan.retireContainerId);
-    if (retiring) {
-      if (getContainerPurpose(room, retiring.pos)) {
-        delete plan.retireContainerId;
-        delete plan.drainCreep;
-        plan.retired = false;
-        console.log(`[${Game.time}] ${room.name} kept important container at ` +
-          `${retiring.pos.x},${retiring.pos.y}`);
-        return false;
-      }
-      if (retiring.store[RESOURCE_ENERGY] > 0) {
-        const currentDrainer = Game.creeps[plan.drainCreep];
-        const drainers = Object.values(Game.creeps)
-          .filter(creep => creep.memory.home === room.name &&
-            creep.memory.role === 'hauler' && !creep.spawning)
-          .sort((a, b) =>
-            b.store.getCapacity(RESOURCE_ENERGY) -
-              a.store.getCapacity(RESOURCE_ENERGY) ||
-            a.pos.getRangeTo(retiring) - b.pos.getRangeTo(retiring));
-        const emptyDrainer = drainers.find(creep =>
-          creep.store[RESOURCE_ENERGY] === 0);
-        if (emptyDrainer && currentDrainer !== emptyDrainer) {
-          plan.drainCreep = emptyDrainer.name;
-        } else if (!currentDrainer ||
-            currentDrainer.memory.role !== 'hauler') {
-          plan.drainCreep = drainers[0] && drainers[0].name;
-        }
-        return false;
-      }
-      const result = retiring.destroy();
-      if (result !== OK) return false;
-      plan.retired = true;
-      delete plan.retireContainerId;
-      delete plan.drainCreep;
-      console.log(`[${Game.time}] ${room.name} removed drained excess container ` +
-        `at ${plan.retireX},${plan.retireY}`);
-      return true;
-    }
-    if (!plan.retired) return false;
-
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
+    const controllerContainers = containers.filter(structure =>
+      structure.pos.getRangeTo(room.controller) <= 3);
+    const controllerSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
+      filter: site => site.structureType === STRUCTURE_CONTAINER &&
+        site.pos.getRangeTo(room.controller) <= 3
+    });
     const terrain = room.getTerrain();
+    const origin = room.storage || room.find(FIND_MY_SPAWNS)[0];
+    const usableStandingTile = (x, y) => {
+      if (x < 1 || x > 48 || y < 1 || y > 48 ||
+          terrain.get(x, y) === TERRAIN_MASK_WALL ||
+          room.controller.pos.getRangeTo(x, y) > 3) return false;
+      return !room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
+        structure.structureType !== STRUCTURE_ROAD &&
+        structure.structureType !== STRUCTURE_RAMPART &&
+        structure.structureType !== STRUCTURE_CONTAINER);
+    };
     const candidates = [];
     for (let x = room.controller.pos.x - 3;
       x <= room.controller.pos.x + 3; x++) {
       for (let y = room.controller.pos.y - 3;
         y <= room.controller.pos.y + 3; y++) {
-        const range = room.controller.pos.getRangeTo(x, y);
-        if (x < 0 || x > 49 || y < 0 || y > 49 || range < 1 || range > 3 ||
+        const controllerRange = room.controller.pos.getRangeTo(x, y);
+        if (x < 1 || x > 48 || y < 1 || y > 48 ||
+            controllerRange < 1 || controllerRange > 3 ||
             terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0 ||
+            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
+              .some(site => site.structureType !== STRUCTURE_CONTAINER) ||
             room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
               structure.structureType !== STRUCTURE_ROAD &&
-              structure.structureType !== STRUCTURE_RAMPART)) continue;
+              structure.structureType !== STRUCTURE_RAMPART &&
+              structure.structureType !== STRUCTURE_CONTAINER)) continue;
+        let standingTiles = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            if ((dx || dy) && usableStandingTile(x + dx, y + dy)) {
+              standingTiles++;
+            }
+          }
+        }
+        if (standingTiles < 3) continue;
+        const supplyDistance = origin
+          ? room.findPath(origin.pos, new RoomPosition(x, y, room.name), {
+            ignoreCreeps: true, maxOps: 2000
+          }).length || origin.pos.getRangeTo(x, y) * 3
+          : 0;
         candidates.push({
-          x,
-          y,
-          score: (spawn ? room.findPath(spawn.pos,
-            new RoomPosition(x, y, room.name), {
-              ignoreCreeps: true,
-              maxOps: 2000
-            }).length || spawn.pos.getRangeTo(x, y) * 3 : 0) +
-            (terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 10 : 0)
+          x, y, standingTiles, controllerRange, supplyDistance,
+          swamp: terrain.get(x, y) === TERRAIN_MASK_SWAMP
         });
       }
     }
-    candidates.sort((a, b) => a.score - b.score);
-    for (const candidate of candidates) {
-      const result = room.createConstructionSite(
-        candidate.x, candidate.y, STRUCTURE_CONTAINER);
-      if (result === OK) {
-        plan.siteX = candidate.x;
-        plan.siteY = candidate.y;
-        console.log(`[${Game.time}] ${room.name} controller container site ` +
-          `placed at ${candidate.x},${candidate.y}`);
+    candidates.sort((a, b) =>
+      b.standingTiles - a.standingTiles ||
+      Math.abs(a.controllerRange - 2) - Math.abs(b.controllerRange - 2) ||
+      Number(a.swamp) - Number(b.swamp) ||
+      a.supplyDistance - b.supplyDistance || a.x - b.x || a.y - b.y);
+    const wantsPair = room.memory.controllerBrigadePlan &&
+      Array.isArray(room.memory.controllerBrigadePlan.segments) &&
+      room.memory.controllerBrigadePlan.segments.length >= 8;
+    const primary = wantsPair && (Game.getObjectById(
+      room.memory.controllerContainerPlan &&
+        room.memory.controllerContainerPlan.containerId) ||
+      controllerContainers.slice().sort((a, b) =>
+        b.store.getUsedCapacity(RESOURCE_ENERGY) -
+          a.store.getUsedCapacity(RESOURCE_ENERGY) ||
+        a.id.localeCompare(b.id))[0]);
+    if (primary) {
+      const existingPairPlan = room.memory.controllerContainerPairPlan;
+      const secondCandidates = candidates.map(candidate => {
+        let stationaryLineCreeps = Infinity;
+        let branch;
+        const branchOptions = [];
+        for (let dx = -1; dx <= 1; dx++) {
+          for (let dy = -1; dy <= 1; dy++) {
+            if (!dx && !dy) continue;
+            const branchX = candidate.x + dx;
+            const branchY = candidate.y + dy;
+            if (!usableStandingTile(branchX, branchY)) continue;
+            const lowerBound = room.storage.pos.getRangeTo(branchX, branchY) +
+              Math.max(0, primary.pos.getRangeTo(branchX, branchY) - 1);
+            if (lowerBound <= 17) branchOptions.push({
+              x: branchX, y: branchY, lowerBound
+            });
+          }
+        }
+        branchOptions.sort((a, b) => b.lowerBound - a.lowerBound ||
+          b.x - a.x || b.y - a.y);
+        for (const option of branchOptions) {
+          const branchPosition = new RoomPosition(option.x, option.y,
+            room.name);
+          const pathOptions = {
+            ignoreCreeps: true, plainCost: 1, swampCost: 1,
+            maxOps: 4000, maxRooms: 1
+          };
+          const required = room.findPath(room.storage.pos, branchPosition,
+            { ...pathOptions, range: 0 }).length +
+            room.findPath(branchPosition, primary.pos,
+              { ...pathOptions, range: 1 }).length;
+          if (required <= 17) {
+            stationaryLineCreeps = required;
+            branch = { x: option.x, y: option.y };
+            break;
+          }
+        }
+        return { ...candidate, stationaryLineCreeps, branch };
+      }).filter(candidate =>
+        primary.pos.getRangeTo(candidate.x, candidate.y) >= 4 &&
+        candidate.stationaryLineCreeps <= 17)
+        .sort((a, b) => b.standingTiles - a.standingTiles ||
+          b.stationaryLineCreeps - a.stationaryLineCreeps ||
+          b.x - a.x || b.y - a.y ||
+          Math.abs(a.controllerRange - 2) -
+            Math.abs(b.controllerRange - 2) ||
+          Number(a.swamp) - Number(b.swamp) ||
+          a.supplyDistance - b.supplyDistance);
+      const second = existingPairPlan && existingPairPlan.version === 2 &&
+        secondCandidates.find(candidate =>
+          candidate.x === existingPairPlan.secondaryX &&
+          candidate.y === existingPairPlan.secondaryY) ||
+        secondCandidates[0];
+      if (!second) return false;
+      let pairPlan = existingPairPlan;
+      if (!pairPlan || pairPlan.version !== 2 ||
+          pairPlan.primaryId !== primary.id ||
+          pairPlan.secondaryX !== second.x ||
+          pairPlan.secondaryY !== second.y) {
+        pairPlan = {
+          ...existingPairPlan,
+          version: 2,
+          mode: 'stationary-branch',
+          sacrificeClusterKey: 'overflow',
+          primaryId: primary.id,
+          primaryX: primary.pos.x,
+          primaryY: primary.pos.y,
+          secondaryX: second.x,
+          secondaryY: second.y,
+          separation: primary.pos.getRangeTo(second.x, second.y),
+          standingTiles: second.standingTiles,
+          stationaryLineCreeps: second.stationaryLineCreeps,
+          branchX: second.branch.x,
+          branchY: second.branch.y,
+          selected: Game.time
+        };
+        room.memory.controllerContainerPairPlan = pairPlan;
+      }
+      const readySecondary = controllerContainers.find(container =>
+        container.pos.x === second.x && container.pos.y === second.y);
+      if (readySecondary) {
+        pairPlan.ready = true;
+        pairPlan.secondaryId = readySecondary.id;
+        delete pairPlan.siteId;
+        room.memory.controllerContainerPlan = {
+          version: 3,
+          ready: true,
+          containerId: primary.id,
+          containerIds: [primary.id, readySecondary.id],
+          desiredX: primary.pos.x,
+          desiredY: primary.pos.y,
+          destinations: [
+            { id: primary.id, x: primary.pos.x, y: primary.pos.y },
+            { id: readySecondary.id, x: second.x, y: second.y }
+          ]
+        };
         return true;
       }
+      const readySecondarySite = controllerSites.find(site =>
+        site.pos.x === second.x && site.pos.y === second.y);
+      if (readySecondarySite) {
+        pairPlan.siteId = readySecondarySite.id;
+        return true;
+      }
+      const obsoleteSecondarySite = existingPairPlan &&
+        controllerSites.find(site => site.id === existingPairPlan.siteId);
+      let removedObsoleteSite = false;
+      if (obsoleteSecondarySite && obsoleteSecondarySite.remove() === OK) {
+        removedObsoleteSite = true;
+        console.log(`[${Game.time}] ${room.name} moved unfinished second ` +
+          `controller container site to fit the stationary 16-creep line`);
+      }
+      const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
+        [room.controller.level] || 0;
+      const activeControllerSiteCount = controllerSites.length -
+        Number(removedObsoleteSite);
+      if (containers.length + activeControllerSiteCount >= containerLimit) {
+        const overflow = room.memory.extensionOverflowCluster;
+        const retired = overflow && containers.filter(container =>
+          container.id !== primary.id &&
+          container.pos.getRangeTo(overflow.x, overflow.y) <= 3 &&
+          !getRoomSources(room).some(source =>
+            source.pos.getRangeTo(container) <= 2) &&
+          container.pos.getRangeTo(room.controller) > 3)
+          .sort((a, b) => a.pos.getRangeTo(overflow.x, overflow.y) -
+            b.pos.getRangeTo(overflow.x, overflow.y) ||
+            a.id.localeCompare(b.id))[0];
+        if (!retired) return false;
+        const releasedEnergy = retired.store[RESOURCE_ENERGY] || 0;
+        if (retired.destroy() !== OK) return false;
+        pairPlan.retiredExtensionId = retired.id;
+        pairPlan.retiredExtensionX = retired.pos.x;
+        pairPlan.retiredExtensionY = retired.pos.y;
+        pairPlan.retiredAt = Game.time;
+        pairPlan.releasedEnergy = releasedEnergy;
+        console.log(`[${Game.time}] ${room.name} removed overflow-clump ` +
+          `container ${retired.id} at ${retired.pos.x},${retired.pos.y}; ` +
+          `${releasedEnergy} energy released for recovery`);
+      }
+      const pairResult = room.createConstructionSite(second.x, second.y,
+        STRUCTURE_CONTAINER);
+      if (pairResult !== OK) return false;
+      const site = room.lookForAt(LOOK_CONSTRUCTION_SITES,
+        second.x, second.y).find(candidate =>
+        candidate.structureType === STRUCTURE_CONTAINER);
+      if (site) pairPlan.siteId = site.id;
+      pairPlan.placed = Game.time;
+      console.log(`[${Game.time}] ${room.name} second controller ` +
+        `container site at ${second.x},${second.y}; separation ` +
+        `${pairPlan.separation}, standing tiles ${second.standingTiles}`);
+      return true;
+    }
+    const best = candidates[0];
+    if (!best) return false;
+    const atBest = object => object && object.pos.x === best.x &&
+      object.pos.y === best.y;
+    const readyContainer = controllerContainers.find(atBest);
+    const readySite = controllerSites.find(atBest);
+    if (readyContainer) {
+      room.memory.controllerContainerPlan = {
+        version: 2, ready: true, containerId: readyContainer.id,
+        desiredX: best.x, desiredY: best.y,
+        standingTiles: best.standingTiles
+      };
+      return true;
+    }
+
+    let plan = room.memory.controllerContainerPlan;
+    if (!plan || plan.version !== 2 || plan.desiredX !== best.x ||
+        plan.desiredY !== best.y) {
+      plan = {
+        version: 2, ready: false, relocation: true,
+        desiredX: best.x, desiredY: best.y,
+        standingTiles: best.standingTiles
+      };
+      room.memory.controllerContainerPlan = plan;
+    }
+    if (readySite) {
+      plan.siteId = readySite.id;
+      return true;
+    }
+
+    const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
+      [room.controller.level] || 0;
+    const retiring = Game.getObjectById(plan.retireContainerId);
+    if (retiring) {
+      const releasedEnergy = retiring.store[RESOURCE_ENERGY] || 0;
+      const result = retiring.destroy();
+      if (result !== OK) return false;
+      plan.retired = true;
+      delete plan.retireContainerId;
+      delete plan.drainCreep;
+      console.log(`[${Game.time}] ${room.name} removed controller ` +
+        `container at ${retiring.pos.x},${retiring.pos.y} for better access; ` +
+        `${releasedEnergy} energy released for local recovery`);
+      return true;
+    }
+
+    if (containers.length >= containerLimit && !plan.retired) {
+      const oldControllerContainer = controllerContainers
+        .sort((a, b) => a.pos.getRangeTo(best.x, best.y) -
+          b.pos.getRangeTo(best.x, best.y))[0];
+      if (!oldControllerContainer) return false;
+      plan.retireContainerId = oldControllerContainer.id;
+      plan.retireX = oldControllerContainer.pos.x;
+      plan.retireY = oldControllerContainer.pos.y;
+      console.log(`[${Game.time}] ${room.name} draining controller container ` +
+        `${oldControllerContainer.id} at ${plan.retireX},${plan.retireY}; ` +
+        `best tile is ${best.x},${best.y} with ` +
+        `${best.standingTiles} standing tiles`);
+      return false;
+    }
+
+    const result = room.createConstructionSite(best.x, best.y,
+      STRUCTURE_CONTAINER);
+    if (result === OK) {
+      plan.siteX = best.x;
+      plan.siteY = best.y;
+      console.log(`[${Game.time}] ${room.name} controller container site ` +
+        `placed at optimal tile ${best.x},${best.y}`);
+      return true;
     }
     return false;
   };

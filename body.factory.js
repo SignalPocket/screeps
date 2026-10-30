@@ -62,6 +62,13 @@ const createBodyFactory = constants => {
     };
     role = bodyTypeAliases[role] || role;
     energy = scaledBodyEnergy(role, energy);
+    // The experimental controller brigade uses deliberately small road
+    // shuttles. Two CARRY parts keep each hop useful while one MOVE lets the
+    // creep crawl into position and then travel normally on roads.
+    if (role === 'controller-relay') {
+      const cost = 2 * BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
+      return energy >= cost ? [CARRY, CARRY, MOVE] : null;
+    }
     if (role === 'claimer') {
       if (energy >= BODYPART_COST[CLAIM] + BODYPART_COST[WORK] +
           BODYPART_COST[CARRY] + BODYPART_COST[MOVE]) {
