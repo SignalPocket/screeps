@@ -1,5 +1,7 @@
 'use strict';
 
+require('./colony.dashboard.test');
+
 const assert = require('assert');
 const { createBodyFactory } = require('./body.factory');
 const { createResourceReservations } = require('./resource.reservations');
@@ -15,7 +17,7 @@ const { createOutpostStatus } = require('./outpost.status');
 const { createRoomSituation } = require('./room.situation');
 const { createWorkerLimits } = require('./worker.limits');
 const { ROOM_STAGE_PLANS, getRoomStagePlan } = require('./room.stages');
-const { createRemoteHauling } = require('./remote.hauling');
+const { createRemoteHauling, isRoomBorder } = require('./remote.hauling');
 const { createEnergyPhase } = require('./energy.phase');
 const { createRoadPlanner } = require('./road.planner');
 const { createInfrastructurePlanner } = require('./infrastructure.planner');
@@ -499,7 +501,10 @@ const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
 });
 assert.strictEqual(dashboardSnapshot.creeps, 3);
 assert.strictEqual(dashboardSnapshot.spawning, 1);
-assert.strictEqual(dashboardSnapshot.needed, 1);
+assert.strictEqual(dashboardSnapshot.needed, 4);
+assert.strictEqual(dashboardSnapshot.minimumNeed, 2);
+assert.strictEqual(dashboardSnapshot.desiredNeed, 2);
+assert.strictEqual(dashboardSnapshot.populationNeed, 1);
 assert.deepStrictEqual(dashboardSnapshot.waits, ['LC 4/15t']);
 assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
 assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1, UP: 1 });
@@ -538,13 +543,13 @@ assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'Repair L1/O2 | energy 500 | assigned 1 active 1'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LM1|2/3/3' && call[4].color === '#ff5f78'));
+  call[1] === 'LM 1/3 min 2' && call[4].color === '#ff5f78'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LC1|1/2/2' && call[4].color === '#ffd60a'));
+  call[1] === 'LC 1/2 min 1' && call[4].color === '#ffd60a'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'UP1|1/1/1' && call[4].color === '#30d158'));
+  call[1] === 'UP 1/1' && call[4].color === '#30d158'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'BU-L0|1/1/1' && call[4].color === '#ff5f78'));
+  call[1] === 'BU-L 0/1' && call[4].color === '#ff5f78'));
 
 const maintenanceMemory = {
   creeps: {
@@ -594,28 +599,29 @@ assert.deepStrictEqual(maintenanceMemory.rooms.W1N1.roadPlan,
   { signature: 'keep-me' });
 
 assert.strictEqual(bodies.workerCost, 200);
+assert.strictEqual(bodies.bodyEnergyRatio, 0.9);
 assert.deepStrictEqual(bodies.buildBody('harvester', 300),
-  ['work', 'work', 'carry', 'move']);
+  ['work', 'carry', 'move']);
 assert.deepStrictEqual(bodies.buildBody('remote-hauler', 400),
-  ['work', 'carry', 'carry', 'carry', 'move', 'move', 'move']);
+  ['work', 'carry', 'carry', 'move', 'move']);
 assert.deepStrictEqual(bodies.buildBody('hauler', 400),
-  ['work', 'carry', 'carry', 'carry', 'move', 'move', 'move']);
+  ['work', 'carry', 'carry', 'move', 'move']);
 assert.deepStrictEqual(bodies.buildBody('carrier', 400),
   bodies.buildBody('hauler', 400));
 assert.deepStrictEqual(bodies.buildBody('remote-scout', 1000),
-  ['work', 'work', 'work', 'carry', 'move', 'move']);
+  ['work', 'work', 'carry', 'move', 'move']);
 assert.strictEqual(bodies.buildBody('refiller', 800)
-  .filter(part => part === 'carry').length, 7);
+  .filter(part => part === 'carry').length, 6);
 assert.deepStrictEqual(bodies.buildBody('refiller', 200),
   ['work', 'carry', 'move']);
 assert.strictEqual(bodies.buildBody('refiller', 100), null);
 assert.strictEqual(bodies.buildBody('refiller', 99), null);
 assert.ok(bodies.buildBody('upgrader', 800)
-  .filter(part => part === 'work').length >= 6);
+  .filter(part => part === 'work').length >= 5);
 const fullBuilderBody = bodies.buildBody('builder', 1300);
-assert.strictEqual(fullBuilderBody.filter(part => part === 'work').length, 6);
-assert.strictEqual(fullBuilderBody.filter(part => part === 'carry').length, 6);
-assert.strictEqual(fullBuilderBody.filter(part => part === 'move').length, 6);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'work').length, 5);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'carry').length, 5);
+assert.strictEqual(fullBuilderBody.filter(part => part === 'move').length, 5);
 assert.strictEqual(bodies.getBodyCode(['work', 'carry', 'move']), 'M-C-W');
 
 const outpostMaintenance = createOutpostMaintenance({
@@ -887,6 +893,23 @@ rosterResult = reconcileRemoteHaulerRosters({
   rooms: [rosterRoom],
   creeps: [rosterExact, rosterEmpty, rosterLoaded, rosterSurplus],
   Game: { time: 701 }, RESOURCE_ENERGY: 'energy'
+});
+assert.strictEqual(rosterResult.W1N1.changed, false);
+const rosterDuplicate = rosterHauler('duplicate', 'W2N1', 0, 0, 1200);
+rosterResult = reconcileRemoteHaulerRosters({
+  rooms: [rosterRoom],
+  creeps: [rosterExact, rosterEmpty, rosterLoaded, rosterSurplus,
+    rosterDuplicate],
+  Game: { time: 702 }, RESOURCE_ENERGY: 'energy'
+});
+assert.strictEqual(rosterResult.W1N1.changed, true);
+assert.strictEqual([rosterExact, rosterDuplicate].filter(creep =>
+  creep.memory.remoteRosterSurplus).length, 1);
+rosterResult = reconcileRemoteHaulerRosters({
+  rooms: [rosterRoom],
+  creeps: [rosterExact, rosterEmpty, rosterLoaded, rosterSurplus,
+    rosterDuplicate],
+  Game: { time: 703 }, RESOURCE_ENERGY: 'energy'
 });
 assert.strictEqual(rosterResult.W1N1.changed, false);
 
@@ -1477,7 +1500,7 @@ const workerLimits = createWorkerLimits({
 assert.strictEqual(workerLimits.sourceSpotTotal, 8);
 assert.strictEqual(workerLimits.remoteWorkerMinimum, 4);
 assert.strictEqual(workerLimits.minimumWorkerLimit, 12);
-assert.strictEqual(workerLimits.workerLimit, 14);
+assert.strictEqual(workerLimits.workerLimit, 13);
 assert.strictEqual(limitRoom.memory.congestionCount, 1);
 
 const remoteContainer = {
@@ -1642,7 +1665,7 @@ const infrastructurePlanner = createInfrastructurePlanner({
   getRoomSources: () => [infrastructureSource],
   isSingleLaneRoadPosition: () => false,
   CONTROLLER_STRUCTURES: {
-    extension: { 4: 20 }, container: {}, storage: { 4: 1 }
+    extension: { 4: 20 }, container: { 4: 5 }, storage: { 4: 1 }
   },
   STRUCTURE_EXTENSION: 'extension', STRUCTURE_CONTAINER: 'container',
   STRUCTURE_STORAGE: 'storage',
@@ -1679,6 +1702,17 @@ const plannedExtensionRoom = {
 };
 assert.strictEqual(infrastructurePlanner.getContainerPurpose(
   plannedExtensionRoom, { x: 30, y: 31 }), 'extensions');
+const relayPurposeRoom = {
+  memory: { borderRelayPlans: {
+    W1N2: { remoteRoom: 'W1N2', x: 25, y: 48 }
+  } },
+  controller: { pos: { getRangeTo: () => 10 } }
+};
+assert.strictEqual(infrastructurePlanner.getContainerPurpose(
+  relayPurposeRoom, { x: 25, y: 48 }), 'relay:W1N2');
+assert.strictEqual(isRoomBorder({ x: 25, y: 49 }), true);
+assert.strictEqual(isRoomBorder({ x: 25, y: 48 }), true);
+assert.strictEqual(isRoomBorder({ x: 25, y: 47 }), false);
 
 const purposeRange = (x, y) => ({ x, y, getRangeTo: target => {
   const position = target.pos || target;
@@ -1707,6 +1741,56 @@ assert.deepStrictEqual(purposeRegistry.byId['source-buffer'], {
 assert.strictEqual(purposeRegistry.byId['controller-buffer'].kind,
   'controller');
 assert.strictEqual(purposeRegistry.byId['unknown-buffer'].kind, 'unknown');
+
+const relayPlacements = [];
+const relayStructures = [
+  { id: 'relay-source', structureType: 'container',
+    pos: purposeRange(11, 10) },
+  { id: 'relay-controller', structureType: 'container',
+    pos: purposeRange(30, 30) }
+];
+const relayRoom = {
+  name: 'W1N1',
+  memory: {
+    southSurvey: { active: true, targetRoom: 'W1N2' }
+  },
+  controller: { my: true, level: 4, pos: purposeRange(30, 32) },
+  find: (type, options) => {
+    const values = type === 'structures' ? relayStructures : [];
+    return values.filter(options && options.filter || (() => true));
+  },
+  lookForAt: () => [],
+  createConstructionSite: (x, y, type) => {
+    relayPlacements.push({ x, y, type });
+    return 0;
+  }
+};
+assert.strictEqual(infrastructurePlanner.placeBorderRelaySite(relayRoom, {
+  W1N1: [{ label: 'south-0-W1N1', points: [
+    { x: 25, y: 49 }, { x: 25, y: 48 }, { x: 25, y: 47 }
+  ] }]
+}), true);
+assert.deepStrictEqual(relayPlacements, [
+  { x: 25, y: 48, type: 'container' }
+]);
+assert.strictEqual(relayRoom.memory.borderRelayPlans.W1N2.x, 25);
+assert.strictEqual(relayRoom.memory.borderRelayPlans.W1N2.y, 48);
+
+const blockedRelayRoom = {
+  ...relayRoom,
+  memory: { southSurvey: { active: true, targetRoom: 'W1N2' } },
+  find: (type, options) => {
+    const values = type === 'structures' ? [relayStructures[0]] : [];
+    return values.filter(options && options.filter || (() => true));
+  },
+  createConstructionSite: () => {
+    throw new Error('relay must wait for important containers');
+  }
+};
+assert.strictEqual(infrastructurePlanner.placeBorderRelaySite(
+  blockedRelayRoom, {}), false);
+assert.deepStrictEqual(blockedRelayRoom.memory.borderRelayBlockedBy,
+  ['controller']);
 
 const overflowSites = [];
 const saturatedCluster = { x: 10, y: 10, version: 'low-traffic-v1' };

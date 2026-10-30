@@ -3,6 +3,49 @@
 const { summarizeRoomHealth } = typeof Game === 'undefined'
   ? require('./health.reporting') : require('health.reporting');
 
+const calculateStaffingDemand = jobs => Object.values(jobs || {})
+  .reduce((demand, job) => {
+    const minimumGap = Math.max(0,
+      (job.min || 0) - (job.coverageCount || 0));
+    const desiredGap = Math.max(0,
+      (job.desired || 0) - (job.count || 0));
+    // A creep that fills a red minimum also fills one desired slot. Count the
+    // larger gap once, then split it into red and additional yellow demand.
+    const totalGap = Math.max(minimumGap, desiredGap);
+    demand.minimum += minimumGap;
+    demand.desired += Math.max(0, totalGap - minimumGap);
+    demand.total += totalGap;
+    return demand;
+  }, { minimum: 0, desired: 0, total: 0 });
+
+const getStaffingStatus = (count, target = {}) => {
+  const minimum = target.min || 0;
+  const desired = target.desired || 0;
+  if (minimum === 0 && desired === 0 && target.max == null && count > 0) {
+    return 'unplanned';
+  }
+  if (count < minimum) return 'belowMinimum';
+  if (count < desired) return 'belowDesired';
+  if (Number.isFinite(target.max) && count > target.max) {
+    return 'aboveMaximum';
+  }
+  if (count > desired) return 'aboveDesired';
+  return 'staffed';
+};
+
+const formatRoleEntry = ({ role, count, usable, coverage, target, status }) => {
+  const ready = usable == null ? count : usable;
+  const coverageNote = status === 'belowMinimum' &&
+    coverage != null && coverage !== ready
+    ? ` cover ${coverage}/${target.min}` : '';
+  const minimumNote = !coverageNote && target.min !== target.desired
+    ? ` min ${target.min}` : '';
+  const aliveNote = usable != null && count !== usable
+    ? ` live ${count}` : '';
+  return `${role} ${ready}/${target.desired}` + coverageNote + minimumNote +
+    aliveNote;
+};
+
 const createColonyDashboard = ({
   Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
   buildRoomStaffingPlan,
@@ -32,27 +75,15 @@ const createColonyDashboard = ({
     unplanned: '#bf5af2'
   };
   const textOpacity = 0.62;
-  const getStaffingStatus = (count, target = {}) => {
-    const minimum = target.min || 0;
-    const desired = target.desired || 0;
-    if (minimum === 0 && desired === 0 && target.max == null && count > 0) {
-      return 'unplanned';
-    }
-    if (count < minimum) return 'belowMinimum';
-    if (count < desired) return 'belowDesired';
-    if (Number.isFinite(target.max) && count > target.max) {
-      return 'aboveMaximum';
-    }
-    if (count > desired) return 'aboveDesired';
-    return 'staffed';
-  };
-
   const updateDashboard = (creeps, workTargets = {}) => {
     if (Game.time % 5 !== 0) return Memory.colonyDashboard;
     const ownedRooms = Object.values(Game.rooms).filter(room =>
       room.controller && room.controller.my);
     let populationNeed = 0;
     let replacementNeed = 0;
+    let minimumNeed = 0;
+    let desiredNeed = 0;
+    let staffingNeed = 0;
     const spawnWaits = [];
     for (const room of ownedRooms) {
       const current = creeps.filter(creep =>
@@ -92,7 +123,6 @@ const createColonyDashboard = ({
       looseEnergy;
     const spawning = Object.values(Game.spawns).filter(spawn =>
       spawn.spawning).length;
-    const needed = populationNeed + replacementNeed;
     const roleCounts = creeps.reduce((counts, creep) => {
       const role = creep.memory.role === 'builder'
         ? creep.memory.builderScope === 'outpost' ? 'BU-O'
@@ -122,6 +152,10 @@ const createColonyDashboard = ({
       const policy = getRoomSituation(room).policy;
       const staffingPlan = buildRoomStaffingPlan(room, creeps, policy);
       const jobs = staffingPlan.jobs;
+      const roomDemand = calculateStaffingDemand(jobs);
+      minimumNeed += roomDemand.minimum;
+      desiredNeed += roomDemand.desired;
+      staffingNeed += roomDemand.total;
       emergencyRosters.push({
         roomName: room.name,
         entries: staffingPlan.emergency.entries.map(entry => ({
@@ -143,6 +177,10 @@ const createColonyDashboard = ({
       addJobTarget('OP', jobs.remoteMiner);
       addJobTarget('OC', jobs.remoteHauler);
     }
+    const populationSpawnNeed = populationNeed + replacementNeed;
+    // Population and job gaps generally describe the same missing creeps, so
+    // use the larger total instead of adding them and double-counting bodies.
+    const needed = Math.max(populationSpawnNeed, staffingNeed);
     const roleStatuses = Object.fromEntries([...new Set([
       ...Object.keys(roleCounts), ...Object.keys(roleTargets)
     ])].map(role => {
@@ -165,10 +203,11 @@ const createColonyDashboard = ({
     const slotOwners = {};
     for (const creep of creeps) {
       let slotKey;
-      if (creep.memory.role === 'remote-scout' &&
-          Number.isInteger(creep.memory.remoteSlot)) {
-        slotKey = `OP ${creep.memory.remoteRoom}/S${creep.memory.remoteSlot + 1}`;
-      } else if (creep.memory.role === 'remote-hauler' &&
+      // Remote source slots may intentionally hold multiple smaller miners.
+      // Hauler slots are exclusive, but aging surplus carriers are no longer
+      // owners and must not keep a repaired roster looking duplicated.
+      if (creep.memory.role === 'remote-hauler' &&
+          !creep.memory.remoteRosterSurplus &&
           Number.isInteger(creep.memory.remoteHaulerSlot)) {
         slotKey = `OC ${creep.memory.remoteRoom}/H` +
           `${creep.memory.remoteHaulerSlot + 1}`;
@@ -215,6 +254,10 @@ const createColonyDashboard = ({
       creeps: creeps.length,
       spawning,
       needed,
+      populationNeed: populationSpawnNeed,
+      minimumNeed,
+      desiredNeed,
+      staffingNeed,
       waits: spawnWaits,
       totalEnergy,
       readyEnergy,
@@ -223,6 +266,8 @@ const createColonyDashboard = ({
       carriedEnergy,
       looseEnergy,
       roleCounts,
+      roleUsableCounts,
+      roleCoverage,
       roleTargets,
       roleStatuses,
       alerts,
@@ -251,7 +296,9 @@ const createColonyDashboard = ({
     Memory.colonyDashboard = dashboard;
     if (Game.time % 25 === 0) {
       console.log(`[${Game.time}] Colony | Creeps ${creeps.length} ` +
-        `(spawning ${spawning}, need ${needed}` +
+        `(spawning ${spawning}, need ${needed}: ` +
+        `red ${minimumNeed}, yellow ${desiredNeed}, ` +
+        `population ${populationSpawnNeed}` +
         `${spawnWaits.length ? `, wait ${spawnWaits.join(',')}` : ''}) | ` +
         `Energy ${compact(totalEnergy)} total ` +
         `(ready ${readyEnergy}/${readyCapacity}, ` +
@@ -287,6 +334,10 @@ const createColonyDashboard = ({
       })
       .map(role => {
         const count = dashboard.roleCounts[role] || 0;
+        const usable = dashboard.roleUsableCounts &&
+          dashboard.roleUsableCounts[role];
+        const coverage = dashboard.roleCoverage &&
+          dashboard.roleCoverage[role];
         const target = roleTargets[role] || {
           min: 0, desired: 0, max: null
         };
@@ -294,8 +345,8 @@ const createColonyDashboard = ({
           dashboard.roleStatuses[role] || getStaffingStatus(count, target);
         return {
           role,
-          text: `${role}${count}|${target.min}/${target.desired}/` +
-            `${Number.isFinite(target.max) ? target.max : '*'}`,
+          text: formatRoleEntry({ role, count, usable, coverage, target,
+            status }),
           color: staffingColors[status]
         };
       });
@@ -317,7 +368,7 @@ const createColonyDashboard = ({
     const groupStartY = 13.55 + offsetY + alertLines.length * 0.8;
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
-      room.visual.rect(0.5, 4.5 + offsetY, 27.5,
+      room.visual.rect(0.5, 4.5 + offsetY, 48,
         8.95 + (groupedRoles.length + alertLines.length) * 0.8, {
         fill: '#101820', opacity: 0.22, stroke: '#64d2ff',
         strokeWidth: 0.08
@@ -327,8 +378,10 @@ const createColonyDashboard = ({
         opacity: textOpacity
       });
       room.visual.text(
-        `Creeps ${dashboard.creeps} | spawning ${dashboard.spawning} | ` +
-          `need ${dashboard.needed}`,
+        `Creeps ${dashboard.creeps} | spawn ${dashboard.spawning} | ` +
+          `need ${dashboard.needed} ` +
+          `(R${dashboard.minimumNeed || 0} Y${dashboard.desiredNeed || 0} ` +
+          `P${dashboard.populationNeed || 0})`,
         1.2, 6.2 + offsetY,
         { align: 'left', color: '#ffffff', font: 'bold 0.85 monospace',
           opacity: textOpacity }
@@ -396,7 +449,8 @@ const createColonyDashboard = ({
           align: 'left', color: '#30d158', font: 'bold 0.68 monospace',
           opacity: textOpacity
         });
-      room.visual.text('Jobs: count | min / desired / max (* = work-based)',
+      room.visual.text(
+        'Jobs: ready / wanted · min = safety floor · live = total bodies',
         1.2, 12.75 + offsetY, {
           align: 'left', color: '#d1d1d6', font: 'bold 0.72 monospace',
           opacity: textOpacity
@@ -412,10 +466,10 @@ const createColonyDashboard = ({
           font: 'bold 0.68 monospace', opacity: textOpacity
         });
         group.entries.forEach((entry, column) =>
-        room.visual.text(entry.text, 6.15 + column * 5.1,
+        room.visual.text(entry.text, 6.15 + column * 10.35,
           groupStartY + row * 0.8, {
             align: 'left', color: entry.color,
-            font: 'bold 0.81 monospace',
+            font: 'bold 0.76 monospace',
             opacity: textOpacity
           }));
       });
@@ -425,4 +479,7 @@ const createColonyDashboard = ({
   return { updateDashboard, drawDashboard };
 };
 
-module.exports = { createColonyDashboard };
+module.exports = {
+  calculateStaffingDemand, getStaffingStatus, formatRoleEntry,
+  createColonyDashboard
+};

@@ -247,15 +247,31 @@ const createInfrastructurePlanner = ({
       `${candidate.x},${candidate.y} after ${builtExtensions} extensions`);
     return true;
   };
+  const getExtensionClusters = room => [
+    { key: 'primary', anchor: room.memory.extensionCluster },
+    { key: 'overflow', anchor: room.memory.extensionOverflowCluster }
+  ].filter(entry => entry.anchor && Number.isInteger(entry.anchor.x) &&
+    Number.isInteger(entry.anchor.y));
   const isExtensionBufferPosition = (room, position) => {
-    const plan = room.memory.extensionContainerPlan;
-    if (plan && position.x === plan.x && position.y === plan.y) return true;
-    const cluster = room.memory.extensionCluster;
-    if (!cluster || Math.max(Math.abs(position.x - cluster.x),
-      Math.abs(position.y - cluster.y)) > 3) return false;
+    const plans = [room.memory.extensionContainerPlan,
+      ...Object.values(room.memory.extensionContainerPlans || {})]
+      .filter(Boolean);
+    if (plans.some(plan => position.x === plan.x && position.y === plan.y)) {
+      return true;
+    }
+    const nearCluster = getExtensionClusters(room).some(({ anchor }) =>
+      Math.max(Math.abs(position.x - anchor.x),
+        Math.abs(position.y - anchor.y)) <= 3);
+    if (!nearCluster) return false;
     return !getRoomSources(room).some(source =>
       source.pos.getRangeTo(position) <= 2) &&
       (!room.controller || room.controller.pos.getRangeTo(position) > 3);
+  };
+  const getBorderRelayPurpose = (room, position) => {
+    const plans = room.memory.borderRelayPlans || {};
+    const entry = Object.values(plans).find(plan => plan &&
+      plan.x === position.x && plan.y === position.y);
+    return entry ? `relay:${entry.remoteRoom}` : null;
   };
   const getContainerPurpose = (room, position) => {
     const source = getRoomSources(room).find(candidate =>
@@ -267,7 +283,129 @@ const createInfrastructurePlanner = ({
       return 'controller';
     }
     if (isExtensionBufferPosition(room, position)) return 'extensions';
+    const relayPurpose = getBorderRelayPurpose(room, position);
+    if (relayPurpose) return relayPurpose;
     return null;
+  };
+
+  const getImportantContainerGaps = room => {
+    const structures = room.find(FIND_STRUCTURES);
+    const sites = room.find(FIND_MY_CONSTRUCTION_SITES);
+    const containers = structures.filter(structure =>
+      structure.structureType === STRUCTURE_CONTAINER);
+    const containerSites = sites.filter(site =>
+      site.structureType === STRUCTURE_CONTAINER);
+    const gaps = [];
+    for (const source of getRoomSources(room)) {
+      if (!containers.some(container => source.pos.getRangeTo(container) <= 2) &&
+          !containerSites.some(site => source.pos.getRangeTo(site) <= 2)) {
+        gaps.push(`source:${source.id}`);
+      }
+    }
+    if (room.controller && room.controller.my &&
+        !containers.some(container =>
+          container.pos.getRangeTo(room.controller) <= 3) &&
+        !containerSites.some(site => site.pos.getRangeTo(room.controller) <= 3)) {
+      gaps.push('controller');
+    }
+    for (const { key, anchor } of getExtensionClusters(room)) {
+      const hasExtensions = structures.some(structure => structure.my &&
+        structure.structureType === STRUCTURE_EXTENSION &&
+        Math.max(Math.abs(structure.pos.x - anchor.x),
+          Math.abs(structure.pos.y - anchor.y)) <= 3);
+      if (!hasExtensions) continue;
+      const validBuffer = target =>
+        Math.max(Math.abs(target.pos.x - anchor.x),
+          Math.abs(target.pos.y - anchor.y)) <= 3 &&
+        !getRoomSources(room).some(source =>
+          source.pos.getRangeTo(target) <= 2) &&
+        (!room.controller || target.pos.getRangeTo(room.controller) > 3);
+      if (!containers.some(validBuffer) && !containerSites.some(validBuffer)) {
+        gaps.push(`extensions:${key}`);
+      }
+    }
+    return gaps;
+  };
+
+  const placeBorderRelaySite = (room, interRoomTravelPaths = {}) => {
+    if (!room.controller || !room.controller.my || room.controller.level < 2) {
+      return false;
+    }
+    const importantGaps = getImportantContainerGaps(room);
+    room.memory.borderRelayBlockedBy = importantGaps;
+    if (importantGaps.length > 0) return false;
+    const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
+      [room.controller.level] || 0;
+    const containers = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_CONTAINER
+    });
+    const containerSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
+      filter: site => site.structureType === STRUCTURE_CONTAINER
+    });
+    if (containers.length + containerSites.length >= containerLimit) {
+      room.memory.borderRelayFreeSlots = 0;
+      return false;
+    }
+    room.memory.borderRelayFreeSlots = containerLimit - containers.length -
+      containerSites.length;
+    const routes = [
+      { key: 'left', survey: room.memory.leftSurvey },
+      { key: 'south', survey: room.memory.southSurvey },
+      { key: 'southwest', survey: room.memory.southwestSurvey }
+    ].filter(entry => entry.survey && entry.survey.active &&
+      entry.survey.targetRoom);
+    if (!room.memory.borderRelayPlans) room.memory.borderRelayPlans = {};
+    const plans = room.memory.borderRelayPlans;
+    for (const route of routes) {
+      const remoteRoom = route.survey.targetRoom;
+      const current = plans[remoteRoom];
+      if (current) {
+        const built = containers.some(container =>
+          container.pos.x === current.x && container.pos.y === current.y);
+        const pending = containerSites.some(site =>
+          site.pos.x === current.x && site.pos.y === current.y);
+        if (built || pending) continue;
+        delete plans[remoteRoom];
+      }
+      const usage = new Map();
+      for (const path of interRoomTravelPaths[room.name] || []) {
+        if (!String(path.label || '').startsWith(`${route.key}-`)) continue;
+        for (const point of path.points || []) {
+          const edge = Math.min(point.x, point.y, 49 - point.x, 49 - point.y);
+          if (edge < 1 || edge > 3) continue;
+          const key = `${point.x}:${point.y}`;
+          const entry = usage.get(key) || { x: point.x, y: point.y,
+            uses: 0, edge };
+          entry.uses++;
+          usage.set(key, entry);
+        }
+      }
+      const candidates = [...usage.values()].filter(candidate => {
+        const structures = room.lookForAt(LOOK_STRUCTURES,
+          candidate.x, candidate.y);
+        const sites = room.lookForAt(LOOK_CONSTRUCTION_SITES,
+          candidate.x, candidate.y);
+        return structures.every(structure =>
+          structure.structureType === STRUCTURE_ROAD ||
+          structure.structureType === STRUCTURE_RAMPART) && sites.length === 0;
+      }).sort((a, b) => b.uses - a.uses || a.edge - b.edge ||
+        a.x - b.x || a.y - b.y);
+      const candidate = candidates[0];
+      if (!candidate) continue;
+      if (room.createConstructionSite(candidate.x, candidate.y,
+        STRUCTURE_CONTAINER) !== OK) continue;
+      plans[remoteRoom] = {
+        remoteRoom,
+        route: route.key,
+        x: candidate.x,
+        y: candidate.y,
+        placed: Game.time
+      };
+      console.log(`[${Game.time}] ${room.name} border relay for ` +
+        `${remoteRoom} at ${candidate.x},${candidate.y}`);
+      return true;
+    }
+    return false;
   };
   const describeContainer = (room, container) => {
     const purpose = getContainerPurpose(room, container.pos);
@@ -362,7 +500,6 @@ const createInfrastructurePlanner = ({
         room.controller.level < 2 || !room.memory.extensionCluster) {
       return false;
     }
-    const cluster = room.memory.extensionCluster;
     const structures = room.find(FIND_STRUCTURES);
     const sites = room.find(FIND_MY_CONSTRUCTION_SITES);
     const containers = structures.filter(structure =>
@@ -370,6 +507,8 @@ const createInfrastructurePlanner = ({
     const containerSites = sites.filter(site =>
       site.structureType === STRUCTURE_CONTAINER);
     const sources = getRoomSources(room);
+    const extensions = structures.filter(structure =>
+      structure.structureType === STRUCTURE_EXTENSION && structure.my);
     const source2 = sources[1];
 
     // S2 owns one source buffer only. Pending duplicates can be cancelled
@@ -392,13 +531,18 @@ const createInfrastructurePlanner = ({
       }
     }
 
-    const byExtensions = target =>
-      target.pos.getRangeTo(cluster.x, cluster.y) <= 3 &&
-      !sources.some(source => source.pos.getRangeTo(target) <= 2) &&
-      (!room.controller || target.pos.getRangeTo(room.controller) > 3);
-    if (containers.some(byExtensions) || containerSites.some(byExtensions)) {
-      return false;
-    }
+    const missingCluster = getExtensionClusters(room).find(({ anchor }) => {
+      const hasExtensions = extensions.some(extension =>
+        extension.pos.getRangeTo(anchor.x, anchor.y) <= 3);
+      const byExtensions = target =>
+        target.pos.getRangeTo(anchor.x, anchor.y) <= 3 &&
+        !sources.some(source => source.pos.getRangeTo(target) <= 2) &&
+        (!room.controller || target.pos.getRangeTo(room.controller) > 3);
+      return hasExtensions && !containers.some(byExtensions) &&
+        !containerSites.some(byExtensions);
+    });
+    if (!missingCluster) return false;
+    const { key: clusterKey, anchor: cluster } = missingCluster;
 
     const containerLimit = CONTROLLER_STRUCTURES[STRUCTURE_CONTAINER]
       [room.controller.level] || 0;
@@ -409,15 +553,53 @@ const createInfrastructurePlanner = ({
         source.pos.getRangeTo(site) <= 2 &&
         containers.some(container =>
           source.pos.getRangeTo(container) <= 1)));
-      if (!redundantSite || redundantSite.remove() !== OK) return false;
-      console.log(`[${Game.time}] ${room.name} reallocated unfinished ` +
-        `source container site at ${redundantSite.pos.x},` +
-        `${redundantSite.pos.y} to the extension cluster`);
+      if (redundantSite && redundantSite.remove() === OK) {
+        console.log(`[${Game.time}] ${room.name} reallocated unfinished ` +
+          `source container site at ${redundantSite.pos.x},` +
+          `${redundantSite.pos.y} to the extension cluster`);
+      } else {
+        let replacement = room.memory.extensionContainerReplacement;
+        if (replacement && replacement.clusterKey !== clusterKey) {
+          replacement = null;
+          delete room.memory.extensionContainerReplacement;
+        }
+        const retiring = replacement &&
+          Game.getObjectById(replacement.retireContainerId);
+        if (retiring) {
+          if (retiring.store[RESOURCE_ENERGY] > 0) return false;
+          if (retiring.destroy() !== OK) return false;
+          replacement.retired = true;
+          delete replacement.retireContainerId;
+          console.log(`[${Game.time}] ${room.name} removed drained duplicate ` +
+            `source container for ${clusterKey} extension buffer`);
+          return true;
+        }
+        if (!replacement || !replacement.retired) {
+          const redundantContainers = sources.flatMap(source => {
+            const nearby = containers.filter(container =>
+              source.pos.getRangeTo(container) <= 2).sort((a, b) =>
+              source.pos.getRangeTo(a) - source.pos.getRangeTo(b) ||
+              b.store[RESOURCE_ENERGY] - a.store[RESOURCE_ENERGY]);
+            return nearby.slice(1);
+          }).sort((a, b) => a.store[RESOURCE_ENERGY] -
+            b.store[RESOURCE_ENERGY] || a.id.localeCompare(b.id));
+          const redundant = redundantContainers[0];
+          if (!redundant) return false;
+          room.memory.extensionContainerReplacement = {
+            clusterKey,
+            retireContainerId: redundant.id,
+            retireX: redundant.pos.x,
+            retireY: redundant.pos.y,
+            started: Game.time
+          };
+          console.log(`[${Game.time}] ${room.name} draining duplicate source ` +
+            `container ${redundant.id} for ${clusterKey} extensions`);
+          return false;
+        }
+      }
     }
 
     const terrain = room.getTerrain();
-    const extensions = structures.filter(structure =>
-      structure.structureType === STRUCTURE_EXTENSION && structure.my);
     const candidates = [];
     for (let x = cluster.x - 3; x <= cluster.x + 3; x++) {
       for (let y = cluster.y - 3; y <= cluster.y + 3; y++) {
@@ -450,13 +632,19 @@ const createInfrastructurePlanner = ({
       const result = room.createConstructionSite(candidate.x, candidate.y,
         STRUCTURE_CONTAINER);
       if (result === OK) {
-        room.memory.extensionContainerPlan = {
+        if (!room.memory.extensionContainerPlans) {
+          room.memory.extensionContainerPlans = {};
+        }
+        const plan = {
           x: candidate.x,
           y: candidate.y,
           placed: Game.time
         };
+        room.memory.extensionContainerPlans[clusterKey] = plan;
+        if (clusterKey === 'primary') room.memory.extensionContainerPlan = plan;
+        delete room.memory.extensionContainerReplacement;
         console.log(`[${Game.time}] ${room.name} extension container site ` +
-          `placed at ${candidate.x},${candidate.y}`);
+          `placed for ${clusterKey} at ${candidate.x},${candidate.y}`);
         return true;
       }
     }
@@ -598,9 +786,12 @@ const createInfrastructurePlanner = ({
     }
     return false;
   };
-  const isRetiringContainer = (room, structure) =>
-    Boolean(room.memory.controllerContainerPlan &&
-      room.memory.controllerContainerPlan.retireContainerId === structure.id);
+  const isRetiringContainer = (room, structure) => Boolean(
+    room.memory.controllerContainerPlan &&
+      room.memory.controllerContainerPlan.retireContainerId === structure.id ||
+    room.memory.extensionContainerReplacement &&
+      room.memory.extensionContainerReplacement.retireContainerId ===
+        structure.id);
 
   return {
     isExtensionClusterTile,
@@ -613,6 +804,8 @@ const createInfrastructurePlanner = ({
     placeSourceContainerSite,
     manageExtensionContainer,
     manageControllerContainer,
+    getImportantContainerGaps,
+    placeBorderRelaySite,
     isRetiringContainer
   };
 };

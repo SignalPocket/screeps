@@ -20,6 +20,18 @@ const createBodyFactory = constants => {
   };
   const displayOrder = [MOVE, CARRY, WORK, TOUGH, ATTACK,
     RANGED_ATTACK, HEAL, CLAIM];
+  // Leave a little room energy unused so the spawn finishes each generation
+  // sooner and can reach the desired roster before older creeps expire.
+  // Minimum viable bodies are never reduced below their required parts.
+  const bodyEnergyRatio = 0.9;
+  const scaledBodyEnergy = (role, available) => {
+    const minimum = role === 'claimer'
+      ? BODYPART_COST[CLAIM] + BODYPART_COST[MOVE]
+      : workerCost;
+    if (available < minimum) return available;
+    const scaled = Math.floor(available * bodyEnergyRatio / 50) * 50;
+    return Math.min(available, Math.max(minimum, scaled));
+  };
 
   const getBodyCode = parts => {
     const types = parts.map(part =>
@@ -47,6 +59,7 @@ const createBodyFactory = constants => {
       worker: 'builder'
     };
     role = bodyTypeAliases[role] || role;
+    energy = scaledBodyEnergy(role, energy);
     if (role === 'claimer') {
       if (energy >= BODYPART_COST[CLAIM] + BODYPART_COST[WORK] +
           BODYPART_COST[CARRY] + BODYPART_COST[MOVE]) {
@@ -61,7 +74,7 @@ const createBodyFactory = constants => {
     }
     if (role === 'remote-scout') {
       const moveParts = energy >= 450 ? 2 : 1;
-      const workParts = Math.min(3, Math.floor(
+      const workParts = Math.min(2, Math.floor(
         (energy - BODYPART_COST[CARRY] -
           moveParts * BODYPART_COST[MOVE]) / BODYPART_COST[WORK]));
       if (workParts < 1) return null;
@@ -119,7 +132,7 @@ const createBodyFactory = constants => {
     return body.length ? body : null;
   };
 
-  return { workerBody, workerCost, buildBody, getBodyCode };
+  return { workerBody, workerCost, bodyEnergyRatio, buildBody, getBodyCode };
 };
 
 module.exports = { createBodyFactory };

@@ -52,8 +52,10 @@ const derivePopulationPolicy = state => {
 
   const sourceMinimum = Math.max(sources,
     state.efficientSourceWorkers || sources);
-  const sourceDesired = Math.max(sourceMinimum,
-    state.learnedSourceWorkers || sourceMinimum);
+  // Source staffing is a WORK-capacity requirement. Historical tile-count
+  // learning remains diagnostic, but must not turn two efficient miners into
+  // a permanent six-body desired roster.
+  const sourceDesired = sourceMinimum;
   const sourceMaximum = Math.max(sourceDesired,
     state.sourceWorkSpots || sourceDesired);
 

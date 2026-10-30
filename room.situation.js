@@ -229,6 +229,9 @@ const createRoomSituation = dependencies => {
       remoteRoomsWithConstruction
     });
     const operational = getOperationalMetrics(room.memory);
+    // Apply the last completed trend analysis before recording this sample so
+    // the snapshot's desired population matches the policy used this tick.
+    applyTrendAdjustments(policy, room.memory.roomTrendHistory);
     const trendHistory = updateRoomTrends(room.memory, Game.time, {
       repair: repairRemaining,
       build: buildRemaining,
@@ -252,7 +255,6 @@ const createRoomSituation = dependencies => {
       activeOutposts: activeRemotePlans.length,
       ...operational
     });
-    applyTrendAdjustments(policy, trendHistory);
     const targets = Object.fromEntries(Object.entries(policy.roles)
       .map(([name, staffing]) => [name, staffing.desired]));
     targets.hauler = Math.max(targets.hauler,

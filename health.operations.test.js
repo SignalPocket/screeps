@@ -32,6 +32,13 @@ assert.strictEqual(current.staleReturnTicks, 2);
 assert.strictEqual(current.remoteBacklog, 2500);
 assert.strictEqual(current.remoteDelivered, 150);
 
+creep.memory.sourceReserve = 'source-1';
+updateOperationalHealth(memory, 13, [creep], { sourceCoverageGap: 0 });
+assert.strictEqual(current.sourceRecoveryTicks, 0);
+updateOperationalHealth(memory, 14, [creep], { sourceCoverageGap: 2 });
+assert.strictEqual(current.sourceRecoveryTicks, 1);
+assert.strictEqual(current.sourceCoverageGap, 2);
+
 updateOperationalHealth(memory, 250, [], {});
 assert.strictEqual(memory.operationalHealth.previous.bucket, 0);
 assert.strictEqual(memory.operationalHealth.current.bucket, 250);

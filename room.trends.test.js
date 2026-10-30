@@ -83,6 +83,18 @@ assert.strictEqual(deriveRecoveryDirective([{
   laneChanges: 0, foreignDispatch: 1, staleReturns: 0,
   cargoMisroutes: 0, remoteBlocked: 1, remoteBacklog: 2000, build: 0
 }], {}).key, 'remote-ownership');
+assert.strictEqual(deriveRecoveryDirective([{
+  ready: 1, controllerTicks: 10000, taskFlips: 0, roleChanges: 0,
+  stuck: 10, sourceCoverageGap: 2, sourceRecovery: 20,
+  foreignDispatch: 0, staleReturns: 0, cargoMisroutes: 0,
+  remoteBlocked: 0, remoteBacklog: 0, build: 0
+}], {}).key, 'movement');
+assert.strictEqual(deriveRecoveryDirective([{
+  ready: 1, controllerTicks: 10000, taskFlips: 0, roleChanges: 0,
+  stuck: 0, sourceCoverageGap: 2, sourceRecovery: 20,
+  foreignDispatch: 0, staleReturns: 0, cargoMisroutes: 0,
+  remoteBlocked: 0, remoteBacklog: 0, build: 0
+}], {}).key, 'source-recovery');
 
 const policy = {
   roles: {

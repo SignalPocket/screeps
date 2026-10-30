@@ -41,6 +41,8 @@ const compactRecord = (tick, metrics) => ({
     Math.round(metrics.cargoMisrouteTicks || 0)),
   sourceRecovery: Math.max(0,
     Math.round(metrics.sourceRecoveryTicks || 0)),
+  sourceCoverageGap: Math.max(0,
+    Math.round(metrics.sourceCoverageGap || 0)),
   stuck: Math.max(0, Math.round(metrics.stuckTicks || 0)),
   remoteRosterGap: Math.max(0, Math.round(metrics.remoteRosterGap || 0)),
   remoteBacklog: Math.max(0, Math.round(metrics.remoteBacklog || 0)),
@@ -63,10 +65,6 @@ const deriveRecoveryDirective = (records, adjustment = {}) => {
     key: 'spawn', label: 'RESTORE SPAWN',
     action: 'protect filler, extensions, and a spawnable body'
   };
-  if (latest.sourceRecovery >= 5) return {
-    key: 'source-recovery', label: 'RESTORE SOURCES',
-    action: 'hold recovery reservations until WORK coverage is complete'
-  };
   if (latest.taskFlips >= 4 || latest.roleChanges >= 3) return {
     key: 'assignments', label: 'HOLD JOBS',
     action: 'retain useful reservations until completion'
@@ -74,6 +72,10 @@ const deriveRecoveryDirective = (records, adjustment = {}) => {
   if (latest.stuck >= 10) return {
     key: 'movement', label: 'CLEAR TRAFFIC',
     action: 'invalidate stuck paths and preserve destination ownership'
+  };
+  if (latest.sourceCoverageGap > 0 && latest.sourceRecovery >= 5) return {
+    key: 'source-recovery', label: 'RESTORE SOURCES',
+    action: 'hold recovery reservations until WORK coverage is complete'
   };
   if (latest.foreignDispatch > 0 || latest.staleReturns > 0 ||
       latest.cargoMisroutes > 0) return {

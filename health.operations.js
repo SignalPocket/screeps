@@ -8,7 +8,8 @@ const blankWindow = bucket => ({
   taskFlips: 0, idleTransitions: 0, idleTicks: 0,
   rebalancerIdleTicks: 0, foreignDispatchTicks: 0,
   staleReturnTicks: 0, cargoMisrouteTicks: 0,
-  sourceRecoveryTicks: 0, stuckTicks: 0, remoteRosterGap: 0,
+  sourceRecoveryTicks: 0, sourceCoverageGap: 0,
+  stuckTicks: 0, remoteRosterGap: 0,
   remoteBacklog: 0, remoteBlockedRooms: 0, remoteDelivered: 0
 });
 
@@ -69,7 +70,8 @@ const updateOperationalHealth = (memory, tick, creeps, remote = {},
     if (next.idle && next.role === 'rebalancer') {
       current.rebalancerIdleTicks++;
     }
-    if (creep.memory.sourceReserve) current.sourceRecoveryTicks++;
+    if ((remote.sourceCoverageGap || 0) > 0 &&
+        creep.memory.sourceReserve) current.sourceRecoveryTicks++;
     if ((creep.memory.navStuck || 0) >= 2 &&
         (creep.memory.navLastTick || 0) >= tick - 1) current.stuckTicks++;
     if (next.role === 'remote-hauler') {
@@ -95,6 +97,8 @@ const updateOperationalHealth = (memory, tick, creeps, remote = {},
     Math.round(remote.blockedRooms || 0));
   current.remoteRosterGap = Math.max(current.remoteRosterGap,
     Math.round(remote.rosterGap || 0));
+  current.sourceCoverageGap = Math.max(current.sourceCoverageGap,
+    Math.round(remote.sourceCoverageGap || 0));
   current.remoteDelivered = Math.max(current.remoteDelivered,
     Math.round(remote.delivered || 0));
   health.updated = tick;

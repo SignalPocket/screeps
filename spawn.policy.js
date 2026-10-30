@@ -82,12 +82,19 @@ const createSpawnPolicy = ({
       spawn.room.memory.spawnWaitRole = assignmentKey;
       spawn.room.memory.spawnWaitSince = Game.time;
     }
-    const waitLimit = getSpawnChargeWaitLimit(workers.length, workerLimit);
+    const staffingCurrent = assignment.staffingCurrent == null
+      ? workers.length : assignment.staffingCurrent;
+    const staffingTarget = assignment.staffingTarget == null
+      ? workerLimit : assignment.staffingTarget;
+    const waitLimit = getSpawnChargeWaitLimit(staffingCurrent,
+      staffingTarget);
     spawn.room.memory.spawnWaitLimit = waitLimit;
     const sourceWorkerCount = workers.filter(creep =>
-      creep.memory.role === 'miner' ||
-      creep.memory.role === 'harvester').length;
+      (creep.memory.role === 'miner' ||
+        creep.memory.role === 'harvester') &&
+      (creep.spawning || creep.getActiveBodyparts(WORK) > 0)).length;
     const emergency = workers.length === 0 || sourceWorkerCount === 0 ||
+      Boolean(assignment.minimumGap && staffingCurrent === 0) ||
       (spawn.room.controller &&
         spawn.room.controller.ticksToDowngrade < 1000);
     const energyFull = spawn.room.energyAvailable >=
@@ -102,7 +109,8 @@ const createSpawnPolicy = ({
         assignment.minimumEnergy) || refillerWaitExpired ||
       waited >= waitLimit ||
       (!fullBodyRoles.has(assignment.role) && waited >= 25);
-    const bodyEnergy = getSpawnBodyEnergyBudget(workers.length, workerLimit,
+    const bodyEnergy = getSpawnBodyEnergyBudget(staffingCurrent,
+      staffingTarget,
       spawn.room.energyAvailable, spawn.room.energyCapacityAvailable,
       emergency);
     const bodyType = assignment.bodyType || assignment.role;

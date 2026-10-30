@@ -15,10 +15,6 @@ const reconcileRemoteHaulerRosters = ({
     const signature = rosterPlans.map(entry =>
       `${entry.survey.targetRoom}:${entry.survey.remoteHaulerTarget}`)
       .sort().join('|');
-    if (room.memory.remoteHaulerRosterSignature === signature) {
-      results[room.name] = { changed: false, signature };
-      continue;
-    }
     const haulers = creeps.filter(creep =>
       creep.memory.role === 'remote-hauler' &&
       (creep.memory.remoteHome || creep.memory.home) === room.name);
@@ -30,6 +26,27 @@ const reconcileRemoteHaulerRosters = ({
         delivery: entry.delivery,
         creep: null
       })));
+    const neededKeys = new Set(needs.map(need =>
+      `${need.roomName}:${need.slot}`));
+    const slotCounts = haulers.reduce((counts, creep) => {
+      if (creep.memory.remoteRosterSurplus) return counts;
+      const key = `${creep.memory.remoteRoom}:` +
+        `${creep.memory.remoteHaulerSlot}`;
+      counts[key] = (counts[key] || 0) + 1;
+      return counts;
+    }, {});
+    const rosterHealthy = needs.every(need =>
+      slotCounts[`${need.roomName}:${need.slot}`] === 1) &&
+      haulers.every(creep => {
+        const key = `${creep.memory.remoteRoom}:` +
+          `${creep.memory.remoteHaulerSlot}`;
+        return creep.memory.remoteRosterSurplus || neededKeys.has(key);
+      });
+    if (room.memory.remoteHaulerRosterSignature === signature &&
+        rosterHealthy) {
+      results[room.name] = { changed: false, signature };
+      continue;
+    }
     const used = new Set();
     for (const need of needs) {
       need.creep = haulers.filter(creep => !used.has(creep.name) &&

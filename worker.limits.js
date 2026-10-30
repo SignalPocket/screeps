@@ -65,7 +65,7 @@ const createWorkerLimits = ({
     const localWorkerMinimum = roles.source.min + roles.builder.min +
       roles.repairBuilder.min + roles.upgrader.min + roles.hauler.min +
       roles.refiller.min + roles.rebalancer.min + roles.tunnelBuilder.min;
-    const localWorkerDesired = sourceWorkerTargetTotal + targets.builder +
+    const localWorkerDesired = roles.source.desired + targets.builder +
       targets.repairBuilder + targets.upgrader + targets.hauler +
       targets.refiller + targets.rebalancer + targets.tunnelBuilder;
     const countedRemoteRooms = new Set();

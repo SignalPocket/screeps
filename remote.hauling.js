@@ -1,5 +1,8 @@
 'use strict';
 
+const isRoomBorder = (position, margin = 1) => Boolean(position) &&
+  Math.min(position.x, position.y, 49 - position.x, 49 - position.y) <= margin;
+
 const createRemoteHauling = ({
   Game, PathFinder, buildBody, FIND_SOURCES, FIND_STRUCTURES,
   FIND_MY_SPAWNS, STRUCTURE_CONTAINER, RESOURCE_ENERGY, CARRY,
@@ -148,4 +151,4 @@ const createRemoteHauling = ({
   };
 };
 
-module.exports = { createRemoteHauling };
+module.exports = { createRemoteHauling, isRoomBorder };
