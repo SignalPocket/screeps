@@ -38,6 +38,15 @@ const createBodyFactory = constants => {
   };
 
   const buildBody = (role, energy) => {
+    // Spawning is planned by durable body capability. Legacy role names stay
+    // accepted while old callers migrate to the archetype vocabulary.
+    const bodyTypeAliases = {
+      carrier: 'remote-hauler',
+      controller: 'upgrader',
+      field: 'remote-scout',
+      worker: 'builder'
+    };
+    role = bodyTypeAliases[role] || role;
     if (role === 'claimer') {
       if (energy >= BODYPART_COST[CLAIM] + BODYPART_COST[WORK] +
           BODYPART_COST[CARRY] + BODYPART_COST[MOVE]) {

@@ -130,20 +130,27 @@ const createSourceStaffing = ({
     candidates,
     sourceWorkerCount,
     sourceWorkerLimit,
+    sourceWorkCount = sourceWorkerCount,
+    sourceWorkTarget = sourceWorkerLimit,
     haulerCount,
     haulerTarget
   }) => {
     for (const creep of candidates) {
-      const hasWork = creep.getActiveBodyparts(WORK) > 0;
-      if (creep.memory.sourceReplacement && hasWork) {
+      const activeWork = creep.getActiveBodyparts(WORK);
+      const hasWork = activeWork > 0;
+      const needsSourceWork = sourceWorkerCount < sourceWorkerLimit &&
+        sourceWorkCount < sourceWorkTarget;
+      if (creep.memory.sourceReplacement && hasWork && needsSourceWork) {
         // Replacement bodies reserve a roster slot while travelling. Count
         // that reservation so a second flexible worker is not promoted and
         // released again later in this same allocation pass.
         creep.memory.role = 'harvester';
         sourceWorkerCount++;
-      } else if (sourceWorkerCount < sourceWorkerLimit && hasWork) {
+        sourceWorkCount += activeWork;
+      } else if (needsSourceWork && hasWork) {
         creep.memory.role = 'harvester';
         sourceWorkerCount++;
+        sourceWorkCount += activeWork;
       } else if (haulerCount < haulerTarget) {
         creep.memory.role = 'hauler';
         haulerCount++;
@@ -160,7 +167,7 @@ const createSourceStaffing = ({
         creep.memory.role = 'hauler';
       }
     }
-    return { sourceWorkerCount, haulerCount };
+    return { sourceWorkerCount, sourceWorkCount, haulerCount };
   };
 
   return {

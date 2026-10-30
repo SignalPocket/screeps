@@ -29,9 +29,9 @@ const planRefillTargets = ({ rooms, creeps, roomDemandPlans, Game,
     for (const carrier of carriers) {
       const target = Game.getObjectById(carrier.memory.refillTarget);
       const targetPriority = target
-        ? getRefillPriority(room, target) : Infinity;
+        ? getRefillPriority(room, target, carrier) : Infinity;
       const carrierHigherPriorityNeed = targets.some(candidate =>
-        getRefillPriority(room, candidate) < targetPriority &&
+        getRefillPriority(room, candidate, carrier) < targetPriority &&
         remaining[candidate.id] > 0 &&
         isRefillTargetFor(carrier, candidate));
       const isRefilling = carrier.memory.task === 'refill' ||
@@ -56,7 +56,7 @@ const planRefillTargets = ({ rooms, creeps, roomDemandPlans, Game,
         pairs.push({
           carrier,
           target,
-          priority: getRefillPriority(room, target),
+          priority: getRefillPriority(room, target, carrier),
           distance: carrier.pos.getRangeTo(target)
         });
       }

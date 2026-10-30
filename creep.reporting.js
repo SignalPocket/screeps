@@ -11,7 +11,8 @@ const shortRoles = {
   'remote-scout': 'OP',
   'remote-hauler': 'OC',
   claimer: 'CL',
-  worker: 'W'
+  worker: 'W',
+  retire: 'RET'
 };
 
 const shortTasks = {
@@ -39,6 +40,7 @@ const shortTasks = {
   'expansion-build': 'Expand',
   'stage-supply': 'Stage',
   'stock-refill': 'StockSp',
+  'stock-refill-pass': 'StockSp+',
   'stage-refill': 'StageSp',
   'committed-collect': 'Get',
   'committed-refill': 'Fill',
@@ -49,7 +51,8 @@ const shortTasks = {
   standby: 'Wait',
   withdraw: 'Get',
   store: 'Store',
-  'store-storage': 'Store'
+  'store-storage': 'Store',
+  recycle: 'Recycle'
 };
 
 const shortCreepName = name => name

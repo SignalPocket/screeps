@@ -44,9 +44,25 @@ const isRebalanceReviewDue = (target, lastReviewed, gameTime,
   stillNeedsTarget, interval = 25) => !stillNeedsTarget(target) ||
     !Number.isInteger(lastReviewed) || gameTime - lastReviewed >= interval;
 
+// A loaded carrier already beside a store should use real capacity instead of
+// being starved forever by reservations held by more distant carriers.
+const deliverStagedEnergy = ({
+  creep, target, resourceType, moveCreep, OK, ERR_NOT_IN_RANGE
+}) => {
+  if (!creep || !target || !target.store ||
+      creep.store[resourceType] <= 0) return false;
+  const amount = Math.min(creep.store[resourceType],
+    target.store.getFreeCapacity(resourceType));
+  if (amount <= 0) return false;
+  const result = creep.transfer(target, resourceType, amount);
+  if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
+  return result === OK || result === ERR_NOT_IN_RANGE;
+};
+
 module.exports = {
   selectRebalancerSurplus,
   getWithdrawalApproachTarget,
   selectRebalanceTarget,
-  isRebalanceReviewDue
+  isRebalanceReviewDue,
+  deliverStagedEnergy
 };

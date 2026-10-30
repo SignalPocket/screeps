@@ -7,17 +7,42 @@ const createColonyDashboard = ({
 }) => {
   const compact = value => value >= 1000
     ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
-  const roleOrder = ['LM', 'LC', 'RF', 'RB', 'UP', 'BU-L', 'BU-O', 'BU-X',
-    'OP', 'OC', 'W', 'CL'];
+  // Roles are grouped by the body template they should ideally use. This
+  // makes shortages legible as capability shortages instead of a flat list
+  // of labels that happen to compete for the same spawn body.
+  const bodyGroups = [
+    { name: 'MINER W>C', roles: ['LM'] },
+    { name: 'CARRY C=M', roles: ['RF', 'OC'] },
+    { name: 'HAUL W+C', roles: ['LC', 'RB'] },
+    { name: 'RC W>C', roles: ['UP'] },
+    { name: 'WORK W=C=M', roles: ['BU-L', 'BU-O', 'BU-X', 'W'] },
+    { name: 'FIELD W>C', roles: ['OP'] },
+    { name: 'CLAIM CL+M', roles: ['CL'] }
+  ];
+  const roleOrder = bodyGroups.flatMap(group => group.roles);
   const staffingColors = {
     belowMinimum: '#ff5f78',
     belowDesired: '#ffd60a',
-    staffed: '#30d158'
+    staffed: '#30d158',
+    aboveDesired: '#64d2ff',
+    aboveMaximum: '#ff8ad8',
+    unplanned: '#bf5af2'
   };
   const textOpacity = 0.62;
-  const getStaffingStatus = (count, target = {}) =>
-    count < (target.min || 0) ? 'belowMinimum' :
-      count < (target.desired || 0) ? 'belowDesired' : 'staffed';
+  const getStaffingStatus = (count, target = {}) => {
+    const minimum = target.min || 0;
+    const desired = target.desired || 0;
+    if (minimum === 0 && desired === 0 && target.max == null && count > 0) {
+      return 'unplanned';
+    }
+    if (count < minimum) return 'belowMinimum';
+    if (count < desired) return 'belowDesired';
+    if (Number.isFinite(target.max) && count > target.max) {
+      return 'aboveMaximum';
+    }
+    if (count > desired) return 'aboveDesired';
+    return 'staffed';
+  };
 
   const updateDashboard = (creeps, workTargets = {}) => {
     if (Game.time % 5 !== 0) return Memory.colonyDashboard;
@@ -74,36 +99,118 @@ const createColonyDashboard = ({
       return counts;
     }, {});
     const roleTargets = {};
-    const addRoleTarget = (role, minimum, desired) => {
-      const target = roleTargets[role] || { min: 0, desired: 0 };
+    const addRoleTarget = (role, minimum, desired, maximum = desired) => {
+      const target = roleTargets[role] || { min: 0, desired: 0, max: 0 };
       target.min += Math.max(0, minimum || 0);
       target.desired += Math.max(0, desired || 0);
+      if (maximum == null) target.max = null;
+      else if (target.max != null) target.max += Math.max(0, maximum || 0);
       roleTargets[role] = target;
     };
     for (const room of ownedRooms) {
       const policy = getRoomSituation(room).policy;
       const roles = policy.roles;
-      addRoleTarget('LM', roles.source.min, roles.source.desired);
-      addRoleTarget('LC', roles.hauler.min, roles.hauler.desired);
-      addRoleTarget('RF', roles.refiller.min, roles.refiller.desired);
-      addRoleTarget('RB', roles.rebalancer.min, roles.rebalancer.desired);
-      addRoleTarget('UP', roles.upgrader.min, roles.upgrader.desired);
+      const roleMax = entry => Number.isFinite(entry.max)
+        ? entry.max : entry.desired;
+      addRoleTarget('LM', roles.source.min, roles.source.desired,
+        roleMax(roles.source));
+      addRoleTarget('LC', roles.hauler.min, roles.hauler.desired,
+        roleMax(roles.hauler));
+      addRoleTarget('RF', roles.refiller.min, roles.refiller.desired,
+        roleMax(roles.refiller));
+      addRoleTarget('RB', roles.rebalancer.min, roles.rebalancer.desired,
+        roleMax(roles.rebalancer));
+      addRoleTarget('UP', roles.upgrader.min, roles.upgrader.desired,
+        roleMax(roles.upgrader));
       addRoleTarget('BU-L',
         roles.builder.min + roles.repairBuilder.min + roles.tunnelBuilder.min,
         roles.builder.desired + roles.repairBuilder.desired +
-          roles.tunnelBuilder.desired);
-      addRoleTarget('BU-O', policy.remote.builders, policy.remote.builders);
-      addRoleTarget('OP', policy.remote.miners, policy.remote.miners);
-      addRoleTarget('OC', policy.remote.haulers, policy.remote.haulers);
+          roles.tunnelBuilder.desired,
+        roleMax(roles.builder) + roleMax(roles.repairBuilder) +
+          roleMax(roles.tunnelBuilder));
+      const surveys = Object.entries(room.memory)
+        .filter(([key, survey]) => key.endsWith('Survey') && survey &&
+          survey.active && survey.targetRoom)
+        .map(([, survey]) => survey);
+      const remoteBuilders = surveys.length > 0
+        ? surveys.reduce((total, survey) => total +
+          Math.max(0, survey.remoteBuilderTarget || 0), 0)
+        : policy.remote.builders;
+      const remoteMiners = surveys.length > 0
+        ? surveys.reduce((total, survey) => total +
+          (Array.isArray(survey.remoteWorkNeeds)
+            ? survey.remoteWorkNeeds.reduce((sum, need) => sum +
+              Math.max(1, need.minMiners || 0), 0)
+            : Math.max(0, survey.remoteMinerTarget || 0)), 0)
+        : policy.remote.miners;
+      const remoteHaulers = surveys.length > 0
+        ? surveys.reduce((total, survey) => total +
+          Math.max(0, survey.remoteHaulerTarget || 0), 0)
+        : policy.remote.haulers;
+      // Remote headcount is work/route based and may legitimately exceed the
+      // slot count when small bodies share a slot, so it has no hard maximum.
+      addRoleTarget('BU-O', remoteBuilders, remoteBuilders, null);
+      addRoleTarget('OP', remoteMiners, remoteMiners, null);
+      addRoleTarget('OC', remoteHaulers, remoteHaulers, null);
     }
     const roleStatuses = Object.fromEntries([...new Set([
       ...Object.keys(roleCounts), ...Object.keys(roleTargets)
     ])].map(role => [role, getStaffingStatus(roleCounts[role] || 0,
       roleTargets[role])]));
+    const alerts = [];
+    const overMaximum = Object.entries(roleStatuses)
+      .filter(([, status]) => status === 'aboveMaximum')
+      .map(([role]) => `${role}+${(roleCounts[role] || 0) -
+        roleTargets[role].max}`);
+    if (overMaximum.length > 0) {
+      alerts.push(`OVER MAX ${overMaximum.join(' ')}`);
+    }
+    const slotOwners = {};
+    for (const creep of creeps) {
+      let slotKey;
+      if (creep.memory.role === 'remote-scout' &&
+          Number.isInteger(creep.memory.remoteSlot)) {
+        slotKey = `OP ${creep.memory.remoteRoom}/S${creep.memory.remoteSlot + 1}`;
+      } else if (creep.memory.role === 'remote-hauler' &&
+          Number.isInteger(creep.memory.remoteHaulerSlot)) {
+        slotKey = `OC ${creep.memory.remoteRoom}/H` +
+          `${creep.memory.remoteHaulerSlot + 1}`;
+      } else if (creep.memory.role === 'builder' &&
+          creep.memory.builderScope === 'outpost' &&
+          Number.isInteger(creep.memory.remoteBuilderSlot)) {
+        slotKey = `BU-O ${creep.memory.remoteRoom}/B` +
+          `${creep.memory.remoteBuilderSlot + 1}`;
+      }
+      if (slotKey) slotOwners[slotKey] = (slotOwners[slotKey] || 0) + 1;
+    }
+    const sharedSlots = Object.entries(slotOwners)
+      .filter(([, count]) => count > 1)
+      .map(([slot, count]) => `${slot}x${count}`);
+    if (sharedSlots.length > 0) {
+      alerts.push(`SHARED ${sharedSlots.join(' ')}`);
+    }
+    const repurposed = {};
+    for (const creep of creeps) {
+      if (!creep.memory.birthRole ||
+          creep.memory.birthRole === creep.memory.role) continue;
+      const role = creep.memory.role === 'builder'
+        ? creep.memory.builderScope === 'outpost' ? 'BU-O'
+          : creep.memory.builderScope === 'expansion' ? 'BU-X' : 'BU-L'
+        : shortRoles[creep.memory.role] || creep.memory.role;
+      repurposed[role] = (repurposed[role] || 0) + 1;
+    }
+    if (Object.keys(repurposed).length > 0) {
+      alerts.push(`REPURPOSED ${Object.entries(repurposed)
+        .map(([role, count]) => `${role}${count}`).join(' ')}`);
+    }
     const localBuildTargets = workTargets.localBuildTargets || 0;
     const outpostBuildTargets = workTargets.outpostBuildTargets || 0;
     const localFixTargets = workTargets.localFixTargets || 0;
     const outpostFixTargets = workTargets.outpostFixTargets || 0;
+    const localBuildRemaining = workTargets.localBuildRemaining || 0;
+    const outpostBuildRemaining = workTargets.outpostBuildRemaining || 0;
+    const localRepairEnergy = workTargets.localRepairEnergy || 0;
+    const outpostRepairEnergy = workTargets.outpostRepairEnergy || 0;
     const dashboard = {
       updated: Game.time,
       creeps: creeps.length,
@@ -119,10 +226,22 @@ const createColonyDashboard = ({
       roleCounts,
       roleTargets,
       roleStatuses,
+      alerts,
+      bodyTypeCount: bodyGroups.length,
       localBuildTargets,
       outpostBuildTargets,
       localFixTargets,
       outpostFixTargets,
+      localBuildRemaining,
+      outpostBuildRemaining,
+      buildRemaining: localBuildRemaining + outpostBuildRemaining,
+      localRepairEnergy,
+      outpostRepairEnergy,
+      repairEnergy: localRepairEnergy + outpostRepairEnergy,
+      buildAssigned: workTargets.buildAssigned || 0,
+      buildActive: workTargets.buildActive || 0,
+      repairAssigned: workTargets.repairAssigned || 0,
+      repairActive: workTargets.repairActive || 0,
       buildTargets: workTargets.buildTargets ||
         localBuildTargets + outpostBuildTargets,
       fixTargets: workTargets.fixTargets ||
@@ -166,23 +285,38 @@ const createColonyDashboard = ({
       })
       .map(role => {
         const count = dashboard.roleCounts[role] || 0;
-        const target = roleTargets[role] || { min: 0, desired: count };
+        const target = roleTargets[role] || {
+          min: 0, desired: 0, max: null
+        };
         const status = dashboard.roleStatuses &&
           dashboard.roleStatuses[role] || getStaffingStatus(count, target);
         return {
           role,
-          text: `${role} ${count}/${target.desired}`,
+          text: `${role}${count}|${target.min}/${target.desired}/` +
+            `${Number.isFinite(target.max) ? target.max : '*'}`,
           color: staffingColors[status]
         };
       });
-    const roleLines = [];
-    for (let index = 0; index < roleEntries.length; index += 5) {
-      roleLines.push(roleEntries.slice(index, index + 5));
+    const roleEntryByName = Object.fromEntries(roleEntries.map(entry =>
+      [entry.role, entry]));
+    const groupedRoles = bodyGroups.map(group => ({
+      name: group.name,
+      entries: group.roles.map(role => roleEntryByName[role]).filter(Boolean)
+    })).filter(group => group.entries.length > 0);
+    const groupedNames = new Set(bodyGroups.flatMap(group => group.roles));
+    const ungrouped = roleEntries.filter(entry => !groupedNames.has(entry.role));
+    if (ungrouped.length > 0) {
+      groupedRoles.push({ name: 'OTHER', entries: ungrouped });
     }
+    const alertLines = [];
+    for (let index = 0; index < (dashboard.alerts || []).length; index += 2) {
+      alertLines.push(dashboard.alerts.slice(index, index + 2).join(' | '));
+    }
+    const groupStartY = 11.95 + alertLines.length * 0.8;
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
-      room.visual.rect(0.5, 4.5, 21.5,
-        5.75 + roleLines.length * 0.8, {
+      room.visual.rect(0.5, 4.5, 27.5,
+        7.35 + (groupedRoles.length + alertLines.length) * 0.8, {
         fill: '#101820', opacity: 0.22, stroke: '#64d2ff',
         strokeWidth: 0.08
       });
@@ -218,21 +352,48 @@ const createColonyDashboard = ({
           opacity: textOpacity }
       );
       room.visual.text(
-        `Targets build L${dashboard.localBuildTargets || 0}/` +
-          `O${dashboard.outpostBuildTargets || 0} | fix ` +
-          `L${dashboard.localFixTargets || 0}/` +
-          `O${dashboard.outpostFixTargets || 0}`,
+        `Build L${dashboard.localBuildTargets || 0}/` +
+          `O${dashboard.outpostBuildTargets || 0} | remain ` +
+          `${compact(dashboard.buildRemaining || 0)} | assigned ` +
+          `${dashboard.buildAssigned || 0} active ` +
+          `${dashboard.buildActive || 0}`,
         1.2, 9.55,
         { align: 'left', color: '#ff8ad8', font: 'bold 0.83 monospace',
           opacity: textOpacity }
       );
-      roleLines.forEach((line, row) => line.forEach((entry, column) =>
-        room.visual.text(entry.text, 1.2 + column * 4.1,
-          10.35 + row * 0.8, {
+      room.visual.text(
+        `Repair L${dashboard.localFixTargets || 0}/` +
+          `O${dashboard.outpostFixTargets || 0} | energy ` +
+          `${compact(dashboard.repairEnergy || 0)} | assigned ` +
+          `${dashboard.repairAssigned || 0} active ` +
+          `${dashboard.repairActive || 0}`,
+        1.2, 10.35,
+        { align: 'left', color: '#ff9f0a', font: 'bold 0.83 monospace',
+          opacity: textOpacity }
+      );
+      room.visual.text('Jobs: count | min / desired / max (* = work-based)',
+        1.2, 11.15, {
+          align: 'left', color: '#d1d1d6', font: 'bold 0.72 monospace',
+          opacity: textOpacity
+        });
+      alertLines.forEach((line, row) => room.visual.text(line, 1.2,
+        11.95 + row * 0.8, {
+          align: 'left', color: '#ff8ad8', font: 'bold 0.72 monospace',
+          opacity: textOpacity
+        }));
+      groupedRoles.forEach((group, row) => {
+        room.visual.text(group.name, 1.2, groupStartY + row * 0.8, {
+          align: 'left', color: '#64d2ff',
+          font: 'bold 0.68 monospace', opacity: textOpacity
+        });
+        group.entries.forEach((entry, column) =>
+        room.visual.text(entry.text, 6.15 + column * 5.1,
+          groupStartY + row * 0.8, {
             align: 'left', color: entry.color,
             font: 'bold 0.81 monospace',
             opacity: textOpacity
-          })));
+          }));
+      });
     }
   };
 

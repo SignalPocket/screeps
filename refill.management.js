@@ -36,24 +36,10 @@ const createRefillManagement = ({
     }
     if (structure.structureType === STRUCTURE_TOWER) return true;
     if (structure.structureType !== STRUCTURE_EXTENSION) return false;
-    if (!Number.isInteger(creep.memory.refillClusterX) ||
-        !Number.isInteger(creep.memory.refillClusterY)) return true;
-    const belongsToOwnedCluster = Math.max(
-      Math.abs(structure.pos.x - creep.memory.refillClusterX),
-      Math.abs(structure.pos.y - creep.memory.refillClusterY)) <= 3;
-    if (belongsToOwnedCluster) return true;
-    if (!creep.memory.refillCrossClusterFallback) return false;
-    // A lone specialist may cover every extension clump, but it finishes the
-    // spawn-side bank before crossing the room. This keeps recovery moving
-    // without letting the smaller clump steal service from the primary one.
-    const ownedClusterNeedsEnergy = getRoomStructures(creep.room)
-      .some(candidate => candidate.my &&
-        candidate.structureType === STRUCTURE_EXTENSION &&
-        Math.max(
-          Math.abs(candidate.pos.x - creep.memory.refillClusterX),
-          Math.abs(candidate.pos.y - creep.memory.refillClusterY)) <= 3 &&
-        candidate.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
-    return !ownedClusterNeedsEnergy;
+    // Dispatch reservations prevent duplicate trips, so fillers can take the
+    // nearest open extension instead of crossing the room to preserve a
+    // historical clump boundary.
+    return true;
   };
 
   const getRefillerCarryFloor = room => Math.min(400,

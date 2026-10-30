@@ -26,6 +26,7 @@ const { createColonyDashboard } = require('./colony.dashboard');
 const { createRefillManagement } = require('./refill.management');
 const { createSpawnPolicy } = require('./spawn.policy');
 const { createTaskReservations } = require('./task.reservations');
+const { createWorkDispatch } = require('./work.dispatch');
 const { planRefillTargets } = require('./refill.dispatch');
 const { planControllerStations } = require('./controller.stations');
 const { planSalvageAssignments } = require('./salvage.dispatch');
@@ -35,10 +36,11 @@ const { reconcileRemoteHaulerRosters } = require('./remote.roster');
 const { createExpansionPlanner } = require('./expansion.planner');
 const { createRemoteCorridorPlanner } = require('./remote.corridors');
 const { selectMinimumStaffingGap } = require('./staffing.minimums');
+const { createBuilderRoster } = require('./builder.roster');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget,
-  selectRebalanceTarget, isRebalanceReviewDue } =
+  selectRebalanceTarget, isRebalanceReviewDue, deliverStagedEnergy } =
   require('./creep.routing');
 
 const parts = {
@@ -48,6 +50,48 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const dispatchObjects = {};
+const dispatchGame = {
+  time: 100,
+  getObjectById: id => dispatchObjects[id] || null
+};
+const makeEnergyStore = (energy, capacity) => ({
+  energy,
+  getFreeCapacity: () => capacity - energy
+});
+const dispatchCreep = {
+  name: 'carrier', room: { name: 'W1N1' }, memory: {},
+  store: makeEnergyStore(100, 100)
+};
+dispatchObjects.extension = { id: 'extension',
+  store: makeEnergyStore(0, 50) };
+dispatchObjects.controller = { id: 'controller', my: true };
+const workDispatch = createWorkDispatch({
+  Game: dispatchGame, RESOURCE_ENERGY: 'energy'
+});
+let dispatchJobs = workDispatch.reconcile([dispatchCreep], {
+  carrier: { lane: 'refill', targetId: 'extension', amount: 50, priority: 4 }
+});
+assert.strictEqual(dispatchJobs.carrier.lane, 'refill');
+const firstDispatchId = dispatchJobs.carrier.id;
+dispatchGame.time++;
+dispatchJobs = workDispatch.reconcile([dispatchCreep], {
+  carrier: { lane: 'upgrade', targetId: 'controller', amount: 100,
+    priority: 8 }
+});
+assert.strictEqual(dispatchJobs.carrier.id, firstDispatchId);
+assert.strictEqual(dispatchJobs.carrier.lane, 'refill');
+dispatchJobs = workDispatch.reconcile([dispatchCreep], {
+  carrier: { lane: 'upgrade', targetId: 'controller', amount: 100,
+    priority: 0 }
+});
+assert.strictEqual(dispatchJobs.carrier.lane, 'upgrade');
+assert.notStrictEqual(dispatchJobs.carrier.id, firstDispatchId);
+dispatchJobs = workDispatch.reconcile([dispatchCreep], {
+  carrier: { lane: 'standby', cancelCurrent: true, priority: 0 }
+});
+assert.strictEqual(dispatchJobs.carrier, undefined);
 
 const minimumRoles = {
   builder: { min: 1, desired: 2 },
@@ -80,6 +124,50 @@ const expansionBuilder = { memory: { role: 'expansion-builder' } };
 normalizeBuilderMemory(expansionBuilder.memory);
 assert.strictEqual(isExpansionBuilder(expansionBuilder), true);
 
+const rosterLogs = [];
+const rosterGame = { time: 50, creeps: {} };
+const legacyRosterWorker = {
+  name: 'legacy-worker', memory: { role: 'worker', birthRole: 'worker' }
+};
+const retainedOutpostBuilder = {
+  name: 'outpost-new', ticksToLive: 1000, spawning: false,
+  memory: { role: 'builder', builderScope: 'outpost',
+    builderMission: 'maintenance', home: 'W1N1', remoteRoom: 'W2N1',
+    remoteBuilderSlot: 0 }
+};
+const duplicateOutpostBuilder = {
+  name: 'outpost-old', ticksToLive: 200, spawning: false,
+  memory: { role: 'builder', builderScope: 'outpost',
+    builderMission: 'maintenance', home: 'W1N1', remoteHome: 'W1N1',
+    remoteRoom: 'W2N1', remoteTeam: 'left', remoteBuilderSlot: 0,
+    remoteRoadBuilding: true }
+};
+rosterGame.creeps = {
+  legacyRosterWorker, retainedOutpostBuilder, duplicateOutpostBuilder
+};
+const builderRoster = createBuilderRoster({
+  Game: rosterGame, normalizeBuilderMemory,
+  hasBuilderBody: creep => creep === legacyRosterWorker,
+  isOutpostBuilder,
+  log: message => rosterLogs.push(message)
+});
+builderRoster.reconcileBuilderRosters([{
+  name: 'W1N1', controller: { my: true }, memory: {
+    leftSurvey: { active: true, targetRoom: 'W2N1',
+      remoteBuilderTarget: 1 }
+  }
+}]);
+assert.deepStrictEqual(legacyRosterWorker.memory, {
+  role: 'builder', birthRole: 'builder', builderScope: 'local',
+  builderMission: 'flexible'
+});
+assert.strictEqual(retainedOutpostBuilder.memory.builderRosterRoom, 'W2N1');
+assert.strictEqual(duplicateOutpostBuilder.memory.builderScope, 'local');
+assert.strictEqual(duplicateOutpostBuilder.memory.builderMission, 'flexible');
+assert.strictEqual(duplicateOutpostBuilder.memory.remoteRoom, undefined);
+assert.strictEqual(duplicateOutpostBuilder.memory.remoteBuilderSlot, undefined);
+assert.strictEqual(rosterLogs.length, 1);
+
 const spawnPolicyGame = { time: 100 };
 const spawnPolicy = createSpawnPolicy({
   Game: spawnPolicyGame,
@@ -89,8 +177,8 @@ const spawnPolicy = createSpawnPolicy({
   MOVE: parts.MOVE
 });
 assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(0, 10), 5);
-assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(5, 10), 15);
-assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(10, 10), 60);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(5, 10), 8);
+assert.strictEqual(spawnPolicy.getSpawnChargeWaitLimit(10, 10), 30);
 const spawnPolicyCreep = (role, idleNow = false) => ({
   spawning: false,
   memory: { role, idleNow },
@@ -186,6 +274,20 @@ assert.strictEqual(allocated.sourceWorkerCount, 5);
 assert.strictEqual(travellingReplacement.memory.role, 'harvester');
 assert.strictEqual(surplusCarrier.memory.role, 'hauler');
 
+const workCoveredSurplus = roleCandidate('covered', 1, 2,
+  { role: 'worker' });
+const coveredAllocation = rosterStaffing.assignUnallocatedRoles({
+  candidates: [workCoveredSurplus],
+  sourceWorkerCount: 2,
+  sourceWorkerLimit: 5,
+  sourceWorkCount: 5,
+  sourceWorkTarget: 5,
+  haulerCount: 0,
+  haulerTarget: 1
+});
+assert.strictEqual(coveredAllocation.sourceWorkerCount, 2);
+assert.strictEqual(workCoveredSurplus.memory.role, 'hauler');
+
 const refillRoom = {
   memory: {
     extensionCluster: { x: 12, y: 10 },
@@ -260,7 +362,7 @@ assert.strictEqual(soleOverflowRefiller.memory.refillCrossClusterFallback,
 assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
   { structureType: 'spawn' }), true);
 assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
-  refillStructures[1]), false);
+  refillStructures[1]), true);
 primaryExtensionFree = 0;
 assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
   refillStructures[1]), true);
@@ -356,7 +458,15 @@ const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
   localBuildTargets: 5,
   outpostBuildTargets: 2,
   localFixTargets: 1,
-  outpostFixTargets: 2
+  outpostFixTargets: 2,
+  localBuildRemaining: 1200,
+  outpostBuildRemaining: 300,
+  localRepairEnergy: 400,
+  outpostRepairEnergy: 100,
+  buildAssigned: 3,
+  buildActive: 2,
+  repairAssigned: 1,
+  repairActive: 1
 });
 assert.strictEqual(dashboardSnapshot.creeps, 3);
 assert.strictEqual(dashboardSnapshot.spawning, 1);
@@ -365,30 +475,47 @@ assert.deepStrictEqual(dashboardSnapshot.waits, ['LC 4/15t']);
 assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
 assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1, UP: 1 });
 assert.deepStrictEqual(dashboardSnapshot.roleTargets.LM,
-  { min: 2, desired: 3 });
+  { min: 2, desired: 3, max: 3 });
 assert.strictEqual(dashboardSnapshot.roleStatuses.LM, 'belowMinimum');
 assert.strictEqual(dashboardSnapshot.roleStatuses.LC, 'belowDesired');
 assert.strictEqual(dashboardSnapshot.roleStatuses.UP, 'staffed');
 assert.strictEqual(dashboardSnapshot.roleStatuses['BU-L'], 'belowMinimum');
 assert.strictEqual(dashboardSnapshot.buildTargets, 7);
 assert.strictEqual(dashboardSnapshot.fixTargets, 3);
+assert.strictEqual(dashboardSnapshot.bodyTypeCount, 7);
 assert.strictEqual(dashboardSnapshot.localBuildTargets, 5);
 assert.strictEqual(dashboardSnapshot.outpostBuildTargets, 2);
 assert.strictEqual(dashboardSnapshot.localFixTargets, 1);
 assert.strictEqual(dashboardSnapshot.outpostFixTargets, 2);
+assert.strictEqual(dashboardSnapshot.buildRemaining, 1500);
+assert.strictEqual(dashboardSnapshot.repairEnergy, 500);
+assert.strictEqual(dashboardSnapshot.buildAssigned, 3);
+assert.strictEqual(dashboardSnapshot.buildActive, 2);
+assert.strictEqual(dashboardSnapshot.repairAssigned, 1);
+assert.strictEqual(dashboardSnapshot.repairActive, 1);
 dashboard.drawDashboard();
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'COLONY'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'Targets build L5/O2 | fix L1/O2'));
+  call[1] === 'MINER W>C'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LM 1/3' && call[4].color === '#ff5f78'));
+  call[1] === 'HAUL W+C'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LC 1/2' && call[4].color === '#ffd60a'));
+  call[1] === 'RC W>C'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'UP 1/1' && call[4].color === '#30d158'));
+  call[1] === 'WORK W=C=M'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'BU-L 0/1' && call[4].color === '#ff5f78'));
+  call[1] === 'Build L5/O2 | remain 1.5k | assigned 3 active 2'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'Repair L1/O2 | energy 500 | assigned 1 active 1'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'LM1|2/3/3' && call[4].color === '#ff5f78'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'LC1|1/2/2' && call[4].color === '#ffd60a'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'UP1|1/1/1' && call[4].color === '#30d158'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'BU-L0|1/1/1' && call[4].color === '#ff5f78'));
 
 const maintenanceMemory = {
   creeps: {
@@ -556,6 +683,25 @@ assert.strictEqual(refillPlan.A, 'spawn');
 assert.strictEqual(refillPlan.B, 'extension');
 assert.strictEqual(refillPlan.C, 'tower');
 assert.strictEqual(refillA.memory.refillTarget, undefined);
+
+const nearestExtensionFiller = refillCarrier('RF',
+  { spawn: 1, extension: 4, tower: 8 });
+nearestExtensionFiller.memory.role = 'refiller';
+const fillerPlan = planRefillTargets({
+  rooms: [dispatchRefillRoom], creeps: [nearestExtensionFiller],
+  roomDemandPlans: { W1N1: { assignments: { RF: 'refill' } } },
+  Game: { getObjectById: id => dispatchRefillStructures[id] || null },
+  RESOURCE_ENERGY: 'energy', FIND_MY_STRUCTURES: 'structures',
+  STRUCTURE_SPAWN: 'spawn', STRUCTURE_EXTENSION: 'extension',
+  STRUCTURE_TOWER: 'tower', isRefillTargetFor: () => true,
+  getRefillPriority: (room, structure, creep) =>
+    creep.memory.role === 'refiller'
+      ? structure.structureType === 'extension' ? 0 :
+        structure.structureType === 'spawn' ? 1 : 2
+      : structure.structureType === 'spawn' ? 0 :
+        structure.structureType === 'extension' ? 1 : 2
+});
+assert.strictEqual(fillerPlan.RF, 'extension');
 
 const towerActions = [];
 const testTower = {
@@ -1609,6 +1755,33 @@ assert.strictEqual(isRebalanceReviewDue(rcReserve, 100, 125,
   () => true), true);
 assert.strictEqual(isRebalanceReviewDue(rcReserve, 124, 124,
   () => false), true);
+
+let stagedTransfer;
+let stagedMove;
+const stagedCarrier = {
+  store: { energy: 250 },
+  transfer: (target, resourceType, amount) => {
+    stagedTransfer = { target, resourceType, amount };
+    return 0;
+  }
+};
+const stagedReserve = {
+  store: { getFreeCapacity: () => 1950 }
+};
+assert.strictEqual(deliverStagedEnergy({
+  creep: stagedCarrier, target: stagedReserve, resourceType: 'energy',
+  moveCreep: (...args) => { stagedMove = args; }, OK: 0,
+  ERR_NOT_IN_RANGE: -9
+}), true);
+assert.deepStrictEqual(stagedTransfer, {
+  target: stagedReserve, resourceType: 'energy', amount: 250
+});
+assert.strictEqual(stagedMove, undefined);
+stagedReserve.store.getFreeCapacity = () => 0;
+assert.strictEqual(deliverStagedEnergy({
+  creep: stagedCarrier, target: stagedReserve, resourceType: 'energy',
+  moveCreep: () => {}, OK: 0, ERR_NOT_IN_RANGE: -9
+}), false);
 
 const corridorSites = new Map([
   ['W1N1:10:10', [{ structureType: 'road' }]]

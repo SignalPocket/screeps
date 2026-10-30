@@ -3,7 +3,7 @@
 const createSpawnPolicy = ({
   Game, buildBody, CARRY, WORK, MOVE,
   refillerMaxChargeWait = 25,
-  maxSpawnChargeWait = 60
+  maxSpawnChargeWait = 30
 }) => {
   const dedicatedRoles = new Set([
     'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer'
@@ -82,7 +82,8 @@ const createSpawnPolicy = ({
       waited >= waitLimit ||
       (!fullBodyRoles.has(assignment.role) && waited >= 25);
     const candidateBody = chargeComplete
-      ? buildBody(assignment.role, spawn.room.energyAvailable)
+      ? buildBody(assignment.bodyType || assignment.role,
+        spawn.room.energyAvailable)
       : null;
     const mobileWorkRole = assignment.role === 'builder';
     const workParts = candidateBody

@@ -100,18 +100,19 @@ const derivePopulationPolicy = state => {
     state.controllerWorkSpots || 1);
   const upgraderStationCapacity = Math.max(upgraderMinimum,
     Math.min(controllerWorkSpots, Math.max(1, rcl + 1)));
+  const routineUpgraderCapacity = Math.min(2, upgraderStationCapacity);
   let upgraderDesired = upgraderMinimum;
   if (controllerDanger) upgraderDesired = Math.min(
     upgraderStationCapacity, Math.max(2, upgraderDesired));
   else if (!starved && (bufferRatio >= 0.75 || storedEnergy >= 6000)) {
     upgraderDesired = clamp(1 + Math.floor(storedEnergy / 6000), 2,
-      upgraderStationCapacity);
+      routineUpgraderCapacity);
   }
   if (!starved && (state.controllerBufferRatio || 0) >= 0.9) {
     // A persistently full controller buffer means delivery is outrunning RC
     // consumption. Fill every usable controller station immediately instead
     // of raising the target one creep at a time across several spawn cycles.
-    upgraderDesired = Math.max(upgraderDesired, upgraderStationCapacity);
+    upgraderDesired = Math.max(upgraderDesired, routineUpgraderCapacity);
   }
   const upgraderMaximum = Math.max(upgraderDesired,
     upgraderStationCapacity);

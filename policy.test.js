@@ -91,10 +91,10 @@ assert.ok(emergency.roles.upgrader.desired >= 2);
 
 const fullController = derivePopulationPolicy({ ...base,
   controllerBufferRatio: 1, currentUpgraders: 1 });
-assert.strictEqual(fullController.roles.upgrader.desired, 4);
+assert.strictEqual(fullController.roles.upgrader.desired, 2);
 const stillFullController = derivePopulationPolicy({ ...base,
   controllerBufferRatio: 1, currentUpgraders: 2 });
-assert.strictEqual(stillFullController.roles.upgrader.desired, 4);
+assert.strictEqual(stillFullController.roles.upgrader.desired, 2);
 
 for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
   imbalancedRemote, repairSurge, emergency, fullController,
