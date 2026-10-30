@@ -31,6 +31,9 @@ const { planRefillTargets } = require('refill.dispatch');
 const { planControllerStations } = require('controller.stations');
 const { planSalvageAssignments } = require('salvage.dispatch');
 const { runTowers } = require('tower.control');
+const { createOutpostPlanning } = require('outpost.planning');
+const { reconcileRemoteHaulerRosters } = require('remote.roster');
+const { createExpansionPlanner } = require('expansion.planner');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
@@ -246,6 +249,18 @@ module.exports.loop = function () {
     const sites = remoteRoom.find(FIND_MY_CONSTRUCTION_SITES).length;
     return getOutpostBuilderTarget(getRoomStructures(remoteRoom), sites);
   };
+  const { refreshRemoteWorkNeeds, planRegionalOutposts } =
+    createOutpostPlanning({
+      Game, getRemoteBuilderTarget, getRemoteHaulerTarget,
+      getSourceBodyWorkCapacity, scheduledRoomTick, FIND_SOURCES, LEFT, BOTTOM,
+      ENERGY_REGEN_TIME, HARVEST_POWER
+    });
+  const { updateExpansionPlan } = createExpansionPlanner({
+    Game, getRoomSources, FIND_STRUCTURES, FIND_MY_SPAWNS,
+    FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, STRUCTURE_CONTAINER,
+    STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+    LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
+  });
   const { getRefillClusters, isRefillTargetFor, getRefillerCarryFloor,
     reconcileRefillerClusters, releaseUndersizedRefillers } =
     createRefillManagement({
@@ -1139,26 +1154,7 @@ module.exports.loop = function () {
       if (remoteRoom) {
         const refreshStaffing = !Array.isArray(survey.remoteWorkNeeds) ||
           scheduledRoomTick(room, 25, 7);
-        if (refreshStaffing) {
-          const remoteSources = remoteRoom.find(FIND_SOURCES)
-            .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-          if (!survey.sourceStats) survey.sourceStats = {};
-          survey.remoteWorkNeeds = remoteSources.map((source, slot) => {
-          const stats = survey.sourceStats[source.id] || {};
-          const requiredWork = Math.ceil(source.energyCapacity /
-            ENERGY_REGEN_TIME / HARVEST_POWER);
-          const maxWorkPerBody = getSourceBodyWorkCapacity(room);
-          const minimum = Math.ceil(requiredWork / maxWorkPerBody);
-          stats.targetMiners = minimum;
-          stats.staffingVersion = 'required-work-v1';
-          survey.sourceStats[source.id] = stats;
-          return {
-            slot,
-            minMiners: minimum,
-            requiredWork
-          };
-          });
-        }
+        refreshRemoteWorkNeeds(room, survey, remoteRoom, refreshStaffing);
         const remoteMiners = homeCreeps.filter(creep =>
           Number.isInteger(creep.memory.remoteSlot) &&
           creep.memory.remoteRoom === targetRoom);
@@ -1181,304 +1177,20 @@ module.exports.loop = function () {
     }
   }
 
-  // A compact southern outpost feeds the home room through S2: one miner
-  // establishes the first source container, one builder opens the corridor,
-  // and one hauler returns the energy to the S2-side container.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    const exits = Game.map.describeExits(room.name) || {};
-    const targetRoom = exits[BOTTOM];
-    if (!targetRoom) continue;
-    const survey = room.memory.southSurvey || {
-      active: true,
-      started: Game.time
-    };
-    survey.active = true;
-    survey.targetRoom = targetRoom;
-    const visibleSouthRoom = Game.rooms[targetRoom];
-    survey.remoteMinerTarget = Array.isArray(survey.remoteWorkNeeds) &&
-      survey.remoteWorkNeeds.length
-      ? survey.remoteWorkNeeds.reduce((total, need) => total +
-        Math.max(1, need.minMiners || 0), 0)
-      : visibleSouthRoom ? visibleSouthRoom.find(FIND_SOURCES).length : 1;
-    if (!Number.isInteger(survey.remoteHaulerTarget) ||
-        scheduledRoomTick(room, 25, 11)) {
-      survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name,
-        targetRoom);
-    }
-    survey.remoteBuilderTarget = getRemoteBuilderTarget(visibleSouthRoom);
-    survey.delivery = 's2';
-    const remoteRoom = Game.rooms[targetRoom];
-    if (remoteRoom && (!Array.isArray(survey.remoteWorkNeeds) ||
-        scheduledRoomTick(room, 25, 14))) {
-      const sources = remoteRoom.find(FIND_SOURCES)
-        .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-      if (sources.length > 0) {
-        if (!survey.sourceStats) survey.sourceStats = {};
-        survey.remoteWorkNeeds = sources.map((source, slot) => {
-          const stats = survey.sourceStats[source.id] || {};
-          const requiredWork = Math.ceil(source.energyCapacity /
-            ENERGY_REGEN_TIME / HARVEST_POWER);
-          const maxWorkPerBody = getSourceBodyWorkCapacity(room);
-          const minimum = Math.ceil(requiredWork / maxWorkPerBody);
-          const minMiners = minimum;
-          stats.targetMiners = minimum;
-          stats.staffingVersion = 'required-work-v1';
-          survey.sourceStats[source.id] = stats;
-          return { slot, minMiners, requiredWork };
-        });
-      }
-    } else if (!Array.isArray(survey.remoteWorkNeeds)) {
-      survey.remoteWorkNeeds = [{
-        slot: 0,
-        minMiners: 1,
-        requiredWork: 1
-      }];
-    }
-    room.memory.southSurvey = survey;
-  }
-
-  // Establish the diagonal southwest room through the existing western
-  // corridor. Its source workers build adjacent containers in place; builders
-  // and haulers join as soon as the room becomes visible and storage is ready.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    const homeExits = Game.map.describeExits(room.name) || {};
-    const westRoomName = homeExits[LEFT];
-    const westExits = westRoomName
-      ? Game.map.describeExits(westRoomName) || {}
-      : {};
-    const southRoomName = homeExits[BOTTOM];
-    const southExits = southRoomName
-      ? Game.map.describeExits(southRoomName) || {}
-      : {};
-    const targetRoom = westExits[BOTTOM] || southExits[LEFT];
-    if (!targetRoom) continue;
-    const survey = room.memory.southwestSurvey || {
-      active: true,
-      started: Game.time
-    };
-    survey.active = true;
-    survey.targetRoom = targetRoom;
-    const visibleSouthwestRoom = Game.rooms[targetRoom];
-    survey.remoteMinerTarget = Array.isArray(survey.remoteWorkNeeds) &&
-      survey.remoteWorkNeeds.length
-      ? survey.remoteWorkNeeds.reduce((total, need) => total +
-        Math.max(1, need.minMiners || 0), 0)
-      : visibleSouthwestRoom
-        ? visibleSouthwestRoom.find(FIND_SOURCES).length : 1;
-    survey.remoteBuilderTarget = getRemoteBuilderTarget(visibleSouthwestRoom);
-    if (!Number.isInteger(survey.remoteHaulerTarget) ||
-        scheduledRoomTick(room, 25, 17)) {
-      survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name,
-        targetRoom);
-    }
-    const remoteRoom = Game.rooms[targetRoom];
-    if (remoteRoom && (!Array.isArray(survey.remoteWorkNeeds) ||
-        scheduledRoomTick(room, 25, 20))) {
-      const sources = remoteRoom.find(FIND_SOURCES)
-        .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-      if (!survey.sourceStats) survey.sourceStats = {};
-      survey.remoteWorkNeeds = sources.map((source, slot) => {
-        const stats = survey.sourceStats[source.id] || {};
-        const requiredWork = Math.ceil(source.energyCapacity /
-          ENERGY_REGEN_TIME / HARVEST_POWER);
-        const maxWorkPerBody = getSourceBodyWorkCapacity(room);
-        const minimum = Math.ceil(requiredWork / maxWorkPerBody);
-        const minMiners = minimum;
-        stats.targetMiners = minimum;
-        stats.staffingVersion = 'required-work-v1';
-        survey.sourceStats[source.id] = stats;
-        return { slot, minMiners, requiredWork };
-      });
-    } else if (!Array.isArray(survey.remoteWorkNeeds)) {
-      survey.remoteWorkNeeds = [{ slot: 0, minMiners: 1, requiredWork: 1 }];
-    }
-    room.memory.southwestSurvey = survey;
-  }
+  // The southern and diagonal outposts share source-work planning while
+  // retaining their distinct route and delivery policies.
+  planRegionalOutposts(Object.values(Game.rooms));
 
   // Remote-hauler identity is a roster assignment, not a live dispatch
   // decision. Reconcile existing bodies only when the desired roster changes;
   // surplus bodies keep working their current lane and age out naturally.
-  for (const room of Object.values(Game.rooms).filter(candidate =>
-    candidate.controller && candidate.controller.my)) {
-    const rosterPlans = [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom && entry.survey.remoteHaulerTarget > 0);
-    const signature = rosterPlans.map(entry =>
-      `${entry.survey.targetRoom}:${entry.survey.remoteHaulerTarget}`)
-      .sort().join('|');
-    if (room.memory.remoteHaulerRosterSignature === signature) continue;
-    const haulers = Object.values(Game.creeps).filter(creep =>
-      creep.memory.role === 'remote-hauler' &&
-      (creep.memory.remoteHome || creep.memory.home) === room.name);
-    const needs = rosterPlans.flatMap(entry =>
-      [...Array(entry.survey.remoteHaulerTarget).keys()].map(slot => ({
-        roomName: entry.survey.targetRoom,
-        slot,
-        team: entry.team,
-        delivery: entry.delivery,
-        creep: null
-      })));
-    const used = new Set();
-    for (const need of needs) {
-      need.creep = haulers.filter(creep => !used.has(creep.name) &&
-        creep.memory.remoteRoom === need.roomName &&
-        creep.memory.remoteHaulerSlot === need.slot)
-        .sort((a, b) => (b.ticksToLive || 1500) -
-          (a.ticksToLive || 1500))[0] || null;
-      if (need.creep) used.add(need.creep.name);
-    }
-    for (const need of needs.filter(candidate => !candidate.creep)) {
-      const replacement = haulers.filter(creep => !used.has(creep.name))
-        .sort((a, b) =>
-          Number(a.store[RESOURCE_ENERGY] > 0) -
-            Number(b.store[RESOURCE_ENERGY] > 0) ||
-          (b.ticksToLive || 1500) - (a.ticksToLive || 1500))[0];
-      if (!replacement) continue;
-      replacement.memory.remoteRoom = need.roomName;
-      replacement.memory.remoteHaulerSlot = need.slot;
-      replacement.memory.remoteTeam = need.team;
-      replacement.memory.remoteDelivery = need.delivery;
-      delete replacement.memory.remoteRosterSurplus;
-      if (replacement.store[RESOURCE_ENERGY] === 0) {
-        delete replacement.memory.remotePickupTarget;
-        delete replacement.memory.remotePickupSource;
-        delete replacement.memory.remoteDeliveryTarget;
-        delete replacement.memory.dispatchCommitment;
-      }
-      need.creep = replacement;
-      used.add(replacement.name);
-    }
-    for (const hauler of haulers) {
-      if (used.has(hauler.name)) delete hauler.memory.remoteRosterSurplus;
-      else hauler.memory.remoteRosterSurplus = true;
-    }
-    room.memory.remoteHaulerRosterSignature = signature;
-    room.memory.remoteHaulerRosterReconciled = Game.time;
-    console.log(`[${Game.time}] ${room.name} remote roster ` +
-      `${used.size}/${needs.length} assigned; ` +
-      `${Math.max(0, haulers.length - used.size)} surplus aging out`);
-  }
+  reconcileRemoteHaulerRosters({
+    rooms: Object.values(Game.rooms), creeps: Object.values(Game.creeps),
+    Game, RESOURCE_ENERGY
+  });
 
-  // Persistent expansion objective: select the best prepared visible remote
-  // room, wait for a GCL slot, claim it, and bootstrap its first spawn.
-  const primarySpawn = Object.values(Game.spawns)
-    .sort((a, b) => a.name.localeCompare(b.name))[0];
-  if (primarySpawn) {
-    const homeRoom = primarySpawn.room;
-    const ownedRoomCount = Object.values(Game.rooms).filter(room =>
-      room.controller && room.controller.my).length;
-    const candidateNames = [
-      homeRoom.memory.leftSurvey && homeRoom.memory.leftSurvey.targetRoom,
-      homeRoom.memory.southSurvey && homeRoom.memory.southSurvey.targetRoom
-    ].filter(Boolean);
-    let plan = homeRoom.memory.expansionPlan;
-    if (!plan || !plan.targetRoom) {
-      const candidates = candidateNames.map(roomName => Game.rooms[roomName])
-        .filter(room => room && room.controller && !room.controller.owner)
-        .map(room => ({
-          room,
-          score: getRoomSources(room).length * 100 +
-            room.find(FIND_STRUCTURES, {
-              filter: structure => structure.structureType === STRUCTURE_CONTAINER
-            }).length * 25 +
-            room.find(FIND_STRUCTURES, {
-              filter: structure => structure.structureType === STRUCTURE_ROAD
-            }).length
-        }))
-        .sort((a, b) => b.score - a.score ||
-          a.room.name.localeCompare(b.room.name));
-      if (candidates.length > 0) {
-        plan = {
-          targetRoom: candidates[0].room.name,
-          selected: Game.time,
-          status: 'waiting-gcl'
-        };
-        homeRoom.memory.expansionPlan = plan;
-        console.log(`[${Game.time}] expansion target ${plan.targetRoom} ` +
-          `score ${candidates[0].score}`);
-      }
-    }
-    if (plan && plan.targetRoom) {
-      const targetRoom = Game.rooms[plan.targetRoom];
-      const targetController = targetRoom && targetRoom.controller;
-      plan.gclLevel = Game.gcl.level;
-      plan.ownedRooms = ownedRoomCount;
-      plan.canClaim = Game.gcl.level > ownedRoomCount;
-      if (targetController && targetController.my) {
-        const targetSpawn = targetRoom.find(FIND_MY_SPAWNS)[0];
-        const spawnSite = targetRoom.find(FIND_MY_CONSTRUCTION_SITES, {
-          filter: site => site.structureType === STRUCTURE_SPAWN
-        })[0];
-        if (targetSpawn) {
-          plan.status = 'established';
-          plan.spawnId = targetSpawn.id;
-        } else {
-          plan.status = 'bootstrap';
-          if (!spawnSite) {
-            const terrain = targetRoom.getTerrain();
-            const sources = targetRoom.find(FIND_SOURCES);
-            const roads = targetRoom.find(FIND_STRUCTURES, {
-              filter: structure => structure.structureType === STRUCTURE_ROAD
-            });
-            const candidates = [];
-            for (let x = 3; x <= 46; x++) {
-              for (let y = 3; y <= 46; y++) {
-                if (terrain.get(x, y) === TERRAIN_MASK_WALL ||
-                    targetController.pos.getRangeTo(x, y) < 3 ||
-                    sources.some(source => source.pos.getRangeTo(x, y) < 3) ||
-                    targetRoom.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-                    targetRoom.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
-                      .length > 0) continue;
-                const sourceRange = sources.reduce((total, source) =>
-                  total + source.pos.getRangeTo(x, y), 0);
-                const controllerRange = targetController.pos.getRangeTo(x, y);
-                const roadAdjacent = roads.some(road =>
-                  road.pos.getRangeTo(x, y) <= 1);
-                candidates.push({
-                  x,
-                  y,
-                  score: sourceRange * 2 + controllerRange -
-                    (roadAdjacent ? 5 : 0)
-                });
-              }
-            }
-            candidates.sort((a, b) => a.score - b.score ||
-              a.x - b.x || a.y - b.y);
-            for (const candidate of candidates) {
-              if (targetRoom.createConstructionSite(candidate.x, candidate.y,
-                STRUCTURE_SPAWN) === OK) {
-                plan.spawnX = candidate.x;
-                plan.spawnY = candidate.y;
-                console.log(`[${Game.time}] ${plan.targetRoom} bootstrap ` +
-                  `spawn site ${candidate.x},${candidate.y}`);
-                break;
-              }
-            }
-          } else {
-            plan.spawnSiteId = spawnSite.id;
-          }
-        }
-      } else if (!plan.canClaim) {
-        plan.status = 'waiting-gcl';
-      } else if (homeRoom.energyCapacityAvailable <
-          BODYPART_COST[CLAIM] + BODYPART_COST[MOVE]) {
-        plan.status = 'waiting-energy-capacity';
-      } else {
-        plan.status = 'claim-ready';
-      }
-      if (plan.lastReportedStatus !== plan.status) {
-        console.log(`[${Game.time}] expansion ${plan.targetRoom}: ` +
-          `${plan.lastReportedStatus || 'planned'} -> ${plan.status} ` +
-          `(GCL ${plan.gclLevel}, rooms ${plan.ownedRooms})`);
-        plan.lastReportedStatus = plan.status;
-      }
-    }
-  }
+  // Select a prepared outpost, wait for a GCL slot, then bootstrap its spawn.
+  updateExpansionPlan();
 
   // Plan the two remote-source corridors to the home controller container and
   // expose only five road construction sites at a time.

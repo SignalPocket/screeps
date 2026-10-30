@@ -30,6 +30,9 @@ const { planRefillTargets } = require('./refill.dispatch');
 const { planControllerStations } = require('./controller.stations');
 const { planSalvageAssignments } = require('./salvage.dispatch');
 const { runTowers } = require('./tower.control');
+const { createOutpostPlanning } = require('./outpost.planning');
+const { reconcileRemoteHaulerRosters } = require('./remote.roster');
+const { createExpansionPlanner } = require('./expansion.planner');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
@@ -543,6 +546,165 @@ testTower.store.energy = 400;
 towerResult = runTowerTest();
 assert.deepStrictEqual(towerActions, []);
 assert.strictEqual(towerResult.W1N1.mode, 'idle');
+
+const plannedSources = [
+  { id: 'remote-s1', energyCapacity: 3000, pos: { x: 20, y: 10 } },
+  { id: 'remote-s2', energyCapacity: 1500, pos: { x: 5, y: 30 } }
+];
+const plannedRemoteRoom = name => ({
+  name,
+  find: type => type === 'sources' ? plannedSources.slice() : []
+});
+const planningHome = {
+  name: 'W1N1', controller: { my: true }, memory: {}
+};
+const planningGame = {
+  time: 500,
+  rooms: {
+    W1N2: plannedRemoteRoom('W1N2'),
+    W2N2: plannedRemoteRoom('W2N2')
+  },
+  map: {
+    describeExits: roomName => ({
+      W1N1: { left: 'W2N1', bottom: 'W1N2' },
+      W2N1: { bottom: 'W2N2' },
+      W1N2: { left: 'W2N2' }
+    })[roomName] || {}
+  }
+};
+const outpostPlanning = createOutpostPlanning({
+  Game: planningGame,
+  getRemoteBuilderTarget: room => room ? 2 : 0,
+  getRemoteHaulerTarget: () => 3,
+  getSourceBodyWorkCapacity: () => 4,
+  scheduledRoomTick: () => true,
+  FIND_SOURCES: 'sources', LEFT: 'left', BOTTOM: 'bottom',
+  ENERGY_REGEN_TIME: 300, HARVEST_POWER: 2
+});
+const regionalPlan = outpostPlanning.planRegionalOutposts([planningHome]);
+assert.strictEqual(regionalPlan.W1N1.south.targetRoom, 'W1N2');
+assert.strictEqual(regionalPlan.W1N1.south.delivery, 's2');
+assert.strictEqual(regionalPlan.W1N1.south.remoteBuilderTarget, 2);
+assert.strictEqual(regionalPlan.W1N1.south.remoteHaulerTarget, 3);
+assert.deepStrictEqual(regionalPlan.W1N1.south.remoteWorkNeeds, [
+  { slot: 0, minMiners: 1, requiredWork: 3 },
+  { slot: 1, minMiners: 2, requiredWork: 5 }
+]);
+assert.strictEqual(regionalPlan.W1N1.southwest.targetRoom, 'W2N2');
+assert.strictEqual(regionalPlan.W1N1.southwest.remoteMinerTarget, 2);
+const unseenSurvey = {};
+outpostPlanning.refreshRemoteWorkNeeds(planningHome, unseenSurvey, null,
+  false, true);
+assert.deepStrictEqual(unseenSurvey.remoteWorkNeeds,
+  [{ slot: 0, minMiners: 1, requiredWork: 1 }]);
+
+const rosterRoom = {
+  name: 'W1N1', controller: { my: true }, memory: {
+    leftSurvey: { active: true, targetRoom: 'W2N1', remoteHaulerTarget: 2 },
+    southSurvey: { active: true, targetRoom: 'W1N2', remoteHaulerTarget: 1 }
+  }
+};
+const rosterHauler = (name, roomName, slot, energy, ticksToLive) => ({
+  name, ticksToLive, store: { energy }, memory: {
+    role: 'remote-hauler', remoteHome: 'W1N1', remoteRoom: roomName,
+    remoteHaulerSlot: slot, remotePickupTarget: 'stale-pickup',
+    remotePickupSource: 'stale-source', remoteDeliveryTarget: 'stale-delivery',
+    dispatchCommitment: { lane: 'collect' }
+  }
+});
+const rosterExact = rosterHauler('exact', 'W2N1', 0, 50, 500);
+const rosterEmpty = rosterHauler('empty', 'old-room', 0, 0, 900);
+const rosterLoaded = rosterHauler('loaded', 'old-room', 1, 50, 1000);
+const rosterSurplus = rosterHauler('surplus', 'old-room', 2, 50, 500);
+let rosterResult = reconcileRemoteHaulerRosters({
+  rooms: [rosterRoom],
+  creeps: [rosterExact, rosterEmpty, rosterLoaded, rosterSurplus],
+  Game: { time: 700 }, RESOURCE_ENERGY: 'energy'
+});
+assert.strictEqual(rosterResult.W1N1.assigned, 3);
+assert.strictEqual(rosterEmpty.memory.remoteRoom, 'W2N1');
+assert.strictEqual(rosterEmpty.memory.remoteHaulerSlot, 1);
+assert.strictEqual(rosterEmpty.memory.remotePickupTarget, undefined);
+assert.strictEqual(rosterLoaded.memory.remoteRoom, 'W1N2');
+assert.strictEqual(rosterLoaded.memory.remoteTeam, 'south');
+assert.strictEqual(rosterLoaded.memory.remoteDelivery, 's2');
+assert.strictEqual(rosterSurplus.memory.remoteRosterSurplus, true);
+rosterResult = reconcileRemoteHaulerRosters({
+  rooms: [rosterRoom],
+  creeps: [rosterExact, rosterEmpty, rosterLoaded, rosterSurplus],
+  Game: { time: 701 }, RESOURCE_ENERGY: 'energy'
+});
+assert.strictEqual(rosterResult.W1N1.changed, false);
+
+const expansionPosition = (x, y) => ({
+  x, y,
+  getRangeTo: (targetOrX, targetY) => {
+    const targetX = typeof targetOrX === 'number' ? targetOrX : targetOrX.pos.x;
+    const resolvedY = typeof targetOrX === 'number' ? targetY : targetOrX.pos.y;
+    return Math.max(Math.abs(x - targetX), Math.abs(y - resolvedY));
+  }
+});
+const expansionHome = {
+  name: 'W1N1', controller: { my: true }, energyCapacityAvailable: 650,
+  memory: {
+    leftSurvey: { targetRoom: 'W2N1' },
+    southSurvey: { targetRoom: 'W1N2' }
+  }
+};
+const expansionRoom = (name, sourceCount, structures = []) => ({
+  name,
+  controller: { my: false },
+  sources: [...Array(sourceCount).keys()].map(index => ({
+    id: `${name}-source-${index}`, pos: expansionPosition(5 + index, 5)
+  })),
+  find: (type, options) => {
+    const values = type === 'structures' ? structures : [];
+    return options && options.filter ? values.filter(options.filter) : values;
+  }
+});
+const expansionLeft = expansionRoom('W2N1', 1, [
+  { structureType: 'container' }, { structureType: 'road' }
+]);
+const expansionSouth = expansionRoom('W1N2', 2, [
+  { structureType: 'road' }
+]);
+const expansionGame = {
+  time: 900,
+  gcl: { level: 1 },
+  spawns: { Spawn1: { name: 'Spawn1', room: expansionHome } },
+  rooms: { W1N1: expansionHome, W2N1: expansionLeft, W1N2: expansionSouth }
+};
+const expansionPlanner = createExpansionPlanner({
+  Game: expansionGame,
+  getRoomSources: room => room.sources || [],
+  FIND_STRUCTURES: 'structures', FIND_MY_SPAWNS: 'spawns',
+  FIND_MY_CONSTRUCTION_SITES: 'sites', FIND_SOURCES: 'sources',
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_ROAD: 'road',
+  STRUCTURE_SPAWN: 'spawn', TERRAIN_MASK_WALL: 1,
+  LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
+  BODYPART_COST: { claim: 600, move: 50 }, CLAIM: 'claim', MOVE: 'move', OK: 0
+});
+let expansionPlan = expansionPlanner.updateExpansionPlan();
+assert.strictEqual(expansionPlan.targetRoom, 'W1N2');
+assert.strictEqual(expansionPlan.status, 'waiting-gcl');
+expansionGame.gcl.level = 2;
+expansionPlan = expansionPlanner.updateExpansionPlan();
+assert.strictEqual(expansionPlan.status, 'claim-ready');
+
+const bootstrapRoom = {
+  getTerrain: () => ({ get: (x, y) => x === 10 && y === 10 ? 0 : 1 }),
+  find: (type, options) => {
+    const values = type === 'sources'
+      ? [{ pos: expansionPosition(5, 5) }]
+      : type === 'structures'
+        ? [{ structureType: 'road', pos: expansionPosition(10, 9) }]
+        : [];
+    return options && options.filter ? values.filter(options.filter) : values;
+  },
+  lookForAt: () => []
+};
+assert.deepStrictEqual(expansionPlanner.findSpawnSite(bootstrapRoom,
+  { pos: expansionPosition(20, 20) }), [{ x: 10, y: 10, score: 15 }]);
 
 const rangePosition = (x, y) => ({
   x, y,
