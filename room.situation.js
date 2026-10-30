@@ -1,5 +1,10 @@
 'use strict';
 
+const { updateRoomTrends, applyTrendAdjustments } =
+  typeof Game === 'undefined'
+    ? require('./room.trends')
+    : require('room.trends');
+
 const createRoomSituation = dependencies => {
   const {
     Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources,
@@ -30,6 +35,10 @@ const createRoomSituation = dependencies => {
     const bufferRatio = bufferRatios.length ? Math.max(...bufferRatios) : 0;
     const storedSourceEnergy = containers.reduce((total, container) =>
       total + container.store[RESOURCE_ENERGY], 0);
+    const sourceBufferCapacity = containers.reduce((total, container) =>
+      total + (container.store.getCapacity(RESOURCE_ENERGY) || 0), 0);
+    const sourceBufferRatio = sourceBufferCapacity > 0
+      ? storedSourceEnergy / sourceBufferCapacity : 0;
     const controllerContainers = structures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER && room.controller &&
       structure.pos.getRangeTo(room.controller) <= 3);
@@ -189,6 +198,18 @@ const createRoomSituation = dependencies => {
       averageRemoteDistance: activeRemotePlans.length > 1 ? 40 : 25,
       remoteRoomsWithConstruction
     });
+    const trendHistory = updateRoomTrends(room.memory, Game.time, {
+      repair: repairRemaining,
+      build: buildRemaining,
+      sourceRatio: sourceBufferRatio,
+      // A room without a controller work buffer must not look like a hauling
+      // failure. There is no destination to keep stocked yet.
+      workBufferRatio: controllerBufferCapacity > 0
+        ? controllerBufferRatio : 1,
+      readyRatio: energyRatio,
+      dropped: droppedEnergy
+    });
+    applyTrendAdjustments(policy, trendHistory);
     const targets = Object.fromEntries(Object.entries(policy.roles)
       .map(([name, staffing]) => [name, staffing.desired]));
     targets.hauler = Math.max(targets.hauler,

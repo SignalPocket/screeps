@@ -41,7 +41,7 @@ const createBodyFactory = constants => {
     // Spawning is planned by durable body capability. Legacy role names stay
     // accepted while old callers migrate to the archetype vocabulary.
     const bodyTypeAliases = {
-      carrier: 'remote-hauler',
+      carrier: 'hauler',
       controller: 'upgrader',
       field: 'remote-scout',
       worker: 'builder'
@@ -78,25 +78,15 @@ const createBodyFactory = constants => {
       return [...Array(workParts).fill(WORK), CARRY,
         ...Array(moveParts).fill(MOVE)];
     }
-    if (role === 'remote-hauler' || role === 'refiller') {
-      const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
-      const pairs = Math.min(25, Math.floor(energy / pairCost));
-      return pairs > 0
-        ? [...Array(pairs).fill(CARRY), ...Array(pairs).fill(MOVE)] : null;
-    }
-    if (role === 'hauler' || role === 'rebalancer') {
+    if (role === 'remote-hauler' || role === 'refiller' ||
+        role === 'hauler' || role === 'rebalancer') {
       const pairCost = BODYPART_COST[CARRY] + BODYPART_COST[MOVE];
       if (energy < workerCost) return null;
-      const body = [WORK, CARRY, MOVE];
-      let cost = workerCost;
-      while (body.length + 2 <= 50 && cost + pairCost <= energy) {
-        body.push(CARRY, MOVE);
-        cost += pairCost;
-      }
-      if (body.length < 50 && cost + BODYPART_COST[CARRY] <= energy) {
-        body.push(CARRY);
-      }
-      return body;
+      const pairs = Math.min(24, Math.floor(
+        (energy - BODYPART_COST[WORK]) / pairCost));
+      return pairs > 0
+        ? [WORK, ...Array(pairs).fill(CARRY),
+          ...Array(pairs).fill(MOVE)] : null;
     }
     if (role === 'upgrader') {
       const moveParts = energy >= 550 ? 2 : 1;

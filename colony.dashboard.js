@@ -12,8 +12,7 @@ const createColonyDashboard = ({
   // of labels that happen to compete for the same spawn body.
   const bodyGroups = [
     { name: 'MINER W>C', roles: ['LM'] },
-    { name: 'CARRY C=M', roles: ['RF', 'OC'] },
-    { name: 'HAUL W+C', roles: ['LC', 'RB'] },
+    { name: 'HAUL W+C', roles: ['RF', 'OC', 'LC', 'RB'] },
     { name: 'RC W>C', roles: ['UP'] },
     { name: 'WORK W=C=M', roles: ['BU-L', 'BU-O', 'BU-X', 'W'] },
     { name: 'FIELD W>C', roles: ['OP'] },

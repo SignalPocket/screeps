@@ -2,7 +2,6 @@
 
 const BODY_TYPES = Object.freeze({
   MINER: 'miner',
-  CARRIER: 'carrier',
   HAULER: 'hauler',
   CONTROLLER: 'controller',
   WORKER: 'worker',
@@ -10,13 +9,18 @@ const BODY_TYPES = Object.freeze({
   CLAIMER: 'claimer'
 });
 
+// Carrier was the old name for the pure transport family. Keep accepting it
+// from living-creep memory while folding every transport body into HAULER.
+const normalizeBodyType = bodyType => bodyType === 'carrier'
+  ? BODY_TYPES.HAULER : bodyType;
+
 const getBodyTypeForAssignment = assignment => {
   if (!assignment) return null;
-  if (assignment.bodyType) return assignment.bodyType;
+  if (assignment.bodyType) return normalizeBodyType(assignment.bodyType);
   if (assignment.role === 'claimer') return BODY_TYPES.CLAIMER;
   if (assignment.role === 'remote-scout') return BODY_TYPES.FIELD;
   if (assignment.role === 'remote-hauler' ||
-      assignment.role === 'refiller') return BODY_TYPES.CARRIER;
+      assignment.role === 'refiller') return BODY_TYPES.HAULER;
   if (assignment.role === 'hauler' ||
       assignment.role === 'rebalancer') return BODY_TYPES.HAULER;
   if (assignment.role === 'miner' ||
@@ -29,7 +33,9 @@ const getBodyTypeForAssignment = assignment => {
 
 const inferBodyType = (creep, constants) => {
   if (!creep) return null;
-  if (creep.memory && creep.memory.bodyType) return creep.memory.bodyType;
+  if (creep.memory && creep.memory.bodyType) {
+    return normalizeBodyType(creep.memory.bodyType);
+  }
   const memory = creep.memory || {};
   const fromIdentity = getBodyTypeForAssignment({
     role: memory.birthRole || memory.role,
@@ -44,15 +50,16 @@ const inferBodyType = (creep, constants) => {
   const carry = count(constants.CARRY);
   const claim = count(constants.CLAIM);
   if (claim > 0) return BODY_TYPES.CLAIMER;
-  if (work === 0 && carry > 0) return BODY_TYPES.CARRIER;
+  if (work === 0 && carry > 0) return BODY_TYPES.HAULER;
   if (carry >= Math.max(2, work * 2)) return BODY_TYPES.HAULER;
   return BODY_TYPES.WORKER;
 };
 
 const reconcileBodyTypes = (creeps, constants) => {
   for (const creep of creeps || []) {
-    if (!creep.memory.bodyType) {
-      creep.memory.bodyType = inferBodyType(creep, constants);
+    const bodyType = inferBodyType(creep, constants);
+    if (bodyType && creep.memory.bodyType !== bodyType) {
+      creep.memory.bodyType = bodyType;
     }
   }
 };
@@ -66,13 +73,12 @@ const deriveBodyTargets = demand => {
   return {
     [BODY_TYPES.MINER]: target(demand.localMinerMin,
       demand.localMinerDesired),
-    [BODY_TYPES.CARRIER]: target(
-      (demand.refillerMin || 0) + (demand.remoteCarrierMin || 0),
-      (demand.refillerDesired || 0) +
-        (demand.remoteCarrierDesired || 0)),
     [BODY_TYPES.HAULER]: target(
-      (demand.haulerMin || 0) + (demand.rebalancerMin || 0),
-      (demand.haulerDesired || 0) + (demand.rebalancerDesired || 0)),
+      (demand.refillerMin || 0) + (demand.remoteCarrierMin || 0) +
+        (demand.haulerMin || 0) + (demand.rebalancerMin || 0),
+      (demand.refillerDesired || 0) +
+        (demand.remoteCarrierDesired || 0) +
+        (demand.haulerDesired || 0) + (demand.rebalancerDesired || 0)),
     [BODY_TYPES.CONTROLLER]: target(demand.upgraderMin,
       demand.upgraderDesired),
     [BODY_TYPES.WORKER]: target(
@@ -129,7 +135,7 @@ const canBodyTypeRunLane = (bodyType, lane) => {
   }
   if (['collect', 'refill', 'refill-buffer', 'buffer', 'storage',
     'supply'].includes(lane)) {
-    return bodyType === BODY_TYPES.CARRIER || bodyType === BODY_TYPES.HAULER;
+    return normalizeBodyType(bodyType) === BODY_TYPES.HAULER;
   }
   return true;
 };

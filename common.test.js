@@ -202,7 +202,7 @@ assert.strictEqual(idleRequest.needsWorker, false);
 assert.strictEqual(idleRoom.memory.spawnWaitSince, undefined);
 const refillerRoom = {
   memory: { spawnWaitSince: 75, spawnWaitRole: 'refiller' },
-  energyAvailable: 100,
+  energyAvailable: 200,
   energyCapacityAvailable: 1300,
   controller: { ticksToDowngrade: 10000 }
 };
@@ -213,7 +213,7 @@ const refillerRequest = spawnPolicy.prepareSpawnRequest({
   workerLimit: 2,
   hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
 });
-assert.deepStrictEqual(refillerRequest.body, ['carry', 'move']);
+assert.deepStrictEqual(refillerRequest.body, ['work', 'carry', 'move']);
 const builderRoom = {
   memory: {},
   energyAvailable: 300,
@@ -482,7 +482,7 @@ assert.strictEqual(dashboardSnapshot.roleStatuses.UP, 'staffed');
 assert.strictEqual(dashboardSnapshot.roleStatuses['BU-L'], 'belowMinimum');
 assert.strictEqual(dashboardSnapshot.buildTargets, 7);
 assert.strictEqual(dashboardSnapshot.fixTargets, 3);
-assert.strictEqual(dashboardSnapshot.bodyTypeCount, 7);
+assert.strictEqual(dashboardSnapshot.bodyTypeCount, 6);
 assert.strictEqual(dashboardSnapshot.localBuildTargets, 5);
 assert.strictEqual(dashboardSnapshot.outpostBuildTargets, 2);
 assert.strictEqual(dashboardSnapshot.localFixTargets, 1);
@@ -568,12 +568,18 @@ assert.strictEqual(bodies.workerCost, 200);
 assert.deepStrictEqual(bodies.buildBody('harvester', 300),
   ['work', 'work', 'carry', 'move']);
 assert.deepStrictEqual(bodies.buildBody('remote-hauler', 400),
-  ['carry', 'carry', 'carry', 'carry', 'move', 'move', 'move', 'move']);
+  ['work', 'carry', 'carry', 'carry', 'move', 'move', 'move']);
+assert.deepStrictEqual(bodies.buildBody('hauler', 400),
+  ['work', 'carry', 'carry', 'carry', 'move', 'move', 'move']);
+assert.deepStrictEqual(bodies.buildBody('carrier', 400),
+  bodies.buildBody('hauler', 400));
 assert.deepStrictEqual(bodies.buildBody('remote-scout', 1000),
   ['work', 'work', 'work', 'carry', 'move', 'move']);
 assert.strictEqual(bodies.buildBody('refiller', 800)
-  .filter(part => part === 'carry').length, 8);
-assert.deepStrictEqual(bodies.buildBody('refiller', 100), ['carry', 'move']);
+  .filter(part => part === 'carry').length, 7);
+assert.deepStrictEqual(bodies.buildBody('refiller', 200),
+  ['work', 'carry', 'move']);
+assert.strictEqual(bodies.buildBody('refiller', 100), null);
 assert.strictEqual(bodies.buildBody('refiller', 99), null);
 assert.ok(bodies.buildBody('upgrader', 800)
   .filter(part => part === 'work').length >= 6);

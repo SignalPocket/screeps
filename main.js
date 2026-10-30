@@ -1539,6 +1539,13 @@ module.exports.loop = function () {
     }
   }
   for (const spawn of spawnOrder) {
+    if (spawn.spawning) {
+      const roomSpawns = spawnGroups[spawn.room.name] || [];
+      if (roomSpawns.every(candidate => candidate.spawning)) {
+        clearSpawnWait(spawn.room);
+      }
+      continue;
+    }
     const workers = Object.values(Game.creeps).filter(c =>
       c.memory.home === spawn.room.name);
     for (const worker of workers) {
