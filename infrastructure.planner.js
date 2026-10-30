@@ -247,6 +247,16 @@ const createInfrastructurePlanner = ({
       `${candidate.x},${candidate.y} after ${builtExtensions} extensions`);
     return true;
   };
+  const isExtensionBufferPosition = (room, position) => {
+    const plan = room.memory.extensionContainerPlan;
+    if (plan && position.x === plan.x && position.y === plan.y) return true;
+    const cluster = room.memory.extensionCluster;
+    if (!cluster || Math.max(Math.abs(position.x - cluster.x),
+      Math.abs(position.y - cluster.y)) > 3) return false;
+    return !getRoomSources(room).some(source =>
+      source.pos.getRangeTo(position) <= 2) &&
+      (!room.controller || room.controller.pos.getRangeTo(position) > 3);
+  };
   const getContainerPurpose = (room, position) => {
     const source = getRoomSources(room).find(candidate =>
       // Range-two overflow buffers can still be reached from a harvesting
@@ -256,22 +266,14 @@ const createInfrastructurePlanner = ({
     if (room.controller && room.controller.pos.getRangeTo(position) <= 3) {
       return 'controller';
     }
+    if (isExtensionBufferPosition(room, position)) return 'extensions';
     return null;
   };
   const isExtensionRefillBuffer = (room, structure) => {
     if (!structure || structure.structureType !== STRUCTURE_CONTAINER) {
       return false;
     }
-    const plan = room.memory.extensionContainerPlan;
-    if (plan && structure.pos.x === plan.x &&
-        structure.pos.y === plan.y) return true;
-    const cluster = room.memory.extensionCluster;
-    if (!cluster || structure.pos.getRangeTo(cluster.x, cluster.y) > 3) {
-      return false;
-    }
-    return !getRoomSources(room).some(source =>
-      source.pos.getRangeTo(structure) <= 2) &&
-      (!room.controller || structure.pos.getRangeTo(room.controller) > 3);
+    return isExtensionBufferPosition(room, structure.pos);
   };
   const placeSourceContainerSite = room => {
     if (!room.controller || !room.controller.my || room.controller.level < 2) {

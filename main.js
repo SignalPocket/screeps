@@ -34,9 +34,12 @@ const { runTowers } = require('tower.control');
 const { createOutpostPlanning } = require('outpost.planning');
 const { reconcileRemoteHaulerRosters } = require('remote.roster');
 const { createExpansionPlanner } = require('expansion.planner');
+const { createRemoteCorridorPlanner } = require('remote.corridors');
+const { selectMinimumStaffingGap } = require('staffing.minimums');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
-const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
+const { selectRebalancerSurplus, getWithdrawalApproachTarget,
+  selectRebalanceTarget, isRebalanceReviewDue } =
   require('creep.routing');
 
 const { workerCost, buildBody, getBodyCode } = createBodyFactory({
@@ -204,7 +207,8 @@ module.exports.loop = function () {
     TERRAIN_MASK_WALL
   });
   const { updateDashboard, drawDashboard } = createColonyDashboard({
-    Game, Memory, getWorkerLimits, getRoomStructures, shortRoles,
+    Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures,
+    shortRoles,
     maxSpawnWait: MAX_SPAWN_CHARGE_WAIT, RESOURCE_ENERGY, STRUCTURE_SPAWN,
     STRUCTURE_EXTENSION, FIND_DROPPED_RESOURCES
   });
@@ -261,6 +265,13 @@ module.exports.loop = function () {
     STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
   });
+  const { planRemoteCorridors } = createRemoteCorridorPlanner({
+    Game, PathFinder, scheduledRoomTick, getRoomSources,
+    isRetiringContainer, FIND_STRUCTURES, FIND_SOURCES, FIND_MY_SPAWNS,
+    FIND_MY_CONSTRUCTION_SITES, STRUCTURE_CONTAINER, STRUCTURE_ROAD,
+    STRUCTURE_RAMPART, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
+    OBSTACLE_OBJECT_TYPES, LEFT, BOTTOM, OK
+  });
   const { getRefillClusters, isRefillTargetFor, getRefillerCarryFloor,
     reconcileRefillerClusters, releaseUndersizedRefillers } =
     createRefillManagement({
@@ -313,28 +324,12 @@ module.exports.loop = function () {
         getRefillerCarryFloor(room));
     const canAffordQualityRefiller = room.energyAvailable >=
       room.energyCapacityAvailable;
-    if (emergencyRefillerGap ||
-        viableRefillers.length < situationTargets.refiller &&
-          canAffordQualityRefiller) {
-      const replacementCluster = missingRefillCluster ||
-        refillClusters.find(cluster => undersizedRefiller &&
-          undersizedRefiller.memory.refillClusterId === cluster.id);
-      const refillerMinimumEnergy = Math.max(recoveryEnergy,
-        getRefillerCarryFloor(room) / CARRY_CAPACITY *
-          (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]));
-      return {
-        role: 'refiller',
-        forceSpawn: true,
-        refillClusterId: replacementCluster && replacementCluster.id,
-        refillClusterX: replacementCluster && replacementCluster.x,
-        refillClusterY: replacementCluster && replacementCluster.y,
-        refillSpawnOwner: Boolean(replacementCluster &&
-          replacementCluster.fillsSpawn),
-        refillerFallbackAllowed: emergencyRefillerGap,
-        minimumEnergy: emergencyRefillerGap
-          ? refillerMinimumEnergy : room.energyCapacityAvailable
-      };
-    }
+    const replacementCluster = missingRefillCluster ||
+      refillClusters.find(cluster => undersizedRefiller &&
+        undersizedRefiller.memory.refillClusterId === cluster.id);
+    const refillerMinimumEnergy = Math.max(recoveryEnergy,
+      getRefillerCarryFloor(room) / CARRY_CAPACITY *
+        (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]));
     // Income stations come first: fill every currently usable source position
     // before considering role conversions for secondary work.
     const uncoveredLocalSource = getRoomSources(room).find(source => {
@@ -361,12 +356,99 @@ module.exports.loop = function () {
           BODYPART_COST[CARRY] + BODYPART_COST[MOVE]
       };
     }
+    // Minimum staffing is a protected tier. Rank simultaneous deficits by
+    // coverage so a completely absent job (0/1 builders) is restored before
+    // topping up a partially covered one (1/2 haulers). Desired staffing is
+    // evaluated only after no role remains below its minimum.
+    const minimumBuilders = workers.filter(creep =>
+      isLocalBuilder(creep) && creep.memory.builderMission !== 'repair' &&
+      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep) &&
+      hasLocalReplacementLife(creep));
+    const minimumRepairBuilders = workers.filter(creep =>
+      isBuilder(creep, 'local', 'repair') && hasBuilderBody(creep) &&
+      hasLocalReplacementLife(creep));
+    const viableLocalHaulers = workers.filter(creep =>
+      creep.memory.role === 'hauler' && hasLocalReplacementLife(creep));
+    const viableMinimumRebalancers = workers.filter(creep =>
+      creep.memory.role === 'rebalancer' && hasLocalReplacementLife(creep));
+    const minimumGap = selectMinimumStaffingGap(
+      getRoomSituation(room).policy.roles, {
+        builder: minimumBuilders.length,
+        repairBuilder: minimumRepairBuilders.length,
+        hauler: viableLocalHaulers.length,
+        rebalancer: viableMinimumRebalancers.length,
+        refiller: coveredRefillClusters.size
+      }, ['repairBuilder', 'builder', 'refiller', 'hauler', 'rebalancer']);
+    if (minimumGap && minimumGap.role === 'builder') {
+      const convertibleBuilder = workers.some(creep => !creep.spawning &&
+        (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
+        hasBuilderBody(creep));
+      return convertibleBuilder ? null : {
+        role: 'builder',
+        builderScope: 'local',
+        builderMission: 'build',
+        forceSpawn: true,
+        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
+      };
+    }
+    if (minimumGap && minimumGap.role === 'repairBuilder') {
+      return {
+        role: 'builder',
+        builderScope: 'local',
+        builderMission: 'repair',
+        forceSpawn: true,
+        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
+      };
+    }
+    if (minimumGap && minimumGap.role === 'hauler') {
+      const activeLocalHauler = workers.some(creep =>
+        creep.memory.role === 'hauler');
+      return {
+        role: 'hauler',
+        forceSpawn: true,
+        minimumEnergy: activeLocalHauler
+          ? room.energyCapacityAvailable : recoveryEnergy
+      };
+    }
+    if (minimumGap && minimumGap.role === 'rebalancer') {
+      return {
+        role: 'rebalancer',
+        forceSpawn: true,
+        minimumEnergy: room.energyCapacityAvailable
+      };
+    }
+    if (minimumGap && minimumGap.role === 'refiller') {
+      return {
+        role: 'refiller',
+        forceSpawn: true,
+        refillClusterId: replacementCluster && replacementCluster.id,
+        refillClusterX: replacementCluster && replacementCluster.x,
+        refillClusterY: replacementCluster && replacementCluster.y,
+        refillSpawnOwner: Boolean(replacementCluster &&
+          replacementCluster.fillsSpawn),
+        refillerFallbackAllowed: true,
+        minimumEnergy: refillerMinimumEnergy
+      };
+    }
+    if (!emergencyRefillerGap &&
+        viableRefillers.length < situationTargets.refiller &&
+        canAffordQualityRefiller) {
+      return {
+        role: 'refiller',
+        forceSpawn: true,
+        refillClusterId: replacementCluster && replacementCluster.id,
+        refillClusterX: replacementCluster && replacementCluster.x,
+        refillClusterY: replacementCluster && replacementCluster.y,
+        refillSpawnOwner: Boolean(replacementCluster &&
+          replacementCluster.fillsSpawn),
+        refillerFallbackAllowed: false,
+        minimumEnergy: room.energyCapacityAvailable
+      };
+    }
     // Home source buffers need their own carrier. Without this floor, remote
     // haulers are repeatedly pulled into the S1/S2 corridor and clog the same
     // one-tile delivery path that remote traffic must cross.
     const localHaulerFloor = situationTargets.hauler;
-    const viableLocalHaulers = workers.filter(creep =>
-      creep.memory.role === 'hauler' && hasLocalReplacementLife(creep));
     if (viableLocalHaulers.length < localHaulerFloor) {
       const activeLocalHauler = workers.some(creep =>
         creep.memory.role === 'hauler');
@@ -1003,6 +1085,7 @@ module.exports.loop = function () {
       creep.memory.role = 'hauler';
       delete creep.memory.rebalancerSource;
       delete creep.memory.rebalanceTarget;
+      delete creep.memory.rebalanceTargetReviewed;
       delete creep.memory.rebalancePickupTarget;
       delete creep.memory.working;
       delete creep.memory.task;
@@ -1192,315 +1275,8 @@ module.exports.loop = function () {
   // Select a prepared outpost, wait for a GCL slot, then bootstrap its spawn.
   updateExpansionPlan();
 
-  // Plan the two remote-source corridors to the home controller container and
-  // expose only five road construction sites at a time.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    if (!scheduledRoomTick(room, 50, 2)) continue;
-    const survey = room.memory.leftSurvey;
-    const remoteRoom = survey && survey.active &&
-      Game.rooms[survey.targetRoom];
-    if (!remoteRoom) continue;
-    const controllerContainer = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-        structure.pos.getRangeTo(room.controller) <= 3
-    }).sort((a, b) => a.pos.getRangeTo(room.controller) -
-      b.pos.getRangeTo(room.controller))[0];
-    if (!controllerContainer) continue;
-    const remoteSources = remoteRoom.find(FIND_SOURCES)
-      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-    const signature = [survey.targetRoom, controllerContainer.id,
-      ...remoteSources.map(source => source.id)].join(':');
-    let plan = room.memory.remoteRoadPlan;
-    if (!plan || plan.signature !== signature) {
-      const paths = remoteSources.map((source, slot) => {
-        const search = PathFinder.search(source.pos, {
-          pos: controllerContainer.pos,
-          range: 1
-        }, {
-          maxRooms: 2,
-          maxOps: 10000,
-          plainCost: 2,
-          swampCost: 10,
-          roomCallback: roomName => {
-            if (roomName !== room.name && roomName !== remoteRoom.name) {
-              return false;
-            }
-            const visibleRoom = Game.rooms[roomName];
-            if (!visibleRoom) return false;
-            const costs = new PathFinder.CostMatrix();
-            for (const structure of visibleRoom.find(FIND_STRUCTURES)) {
-              if (structure.structureType === STRUCTURE_ROAD) {
-                costs.set(structure.pos.x, structure.pos.y, 1);
-              } else if (OBSTACLE_OBJECT_TYPES.includes(
-                structure.structureType)) {
-                costs.set(structure.pos.x, structure.pos.y, 255);
-              }
-            }
-            for (const site of visibleRoom.find(FIND_MY_CONSTRUCTION_SITES)) {
-              if (site.structureType !== STRUCTURE_ROAD) {
-                costs.set(site.pos.x, site.pos.y, 255);
-              }
-            }
-            return costs;
-          }
-        });
-        return {
-          slot,
-          incomplete: search.incomplete,
-          points: search.path.map(position => ({
-            x: position.x,
-            y: position.y,
-            roomName: position.roomName
-          }))
-        };
-      });
-      plan = { signature, created: Game.time, paths };
-      room.memory.remoteRoadPlan = plan;
-      console.log(`[${Game.time}] ${room.name} planned remote roads: ` +
-        paths.map(path => `L${path.slot + 1}=${path.points.length}`).join(' '));
-    }
-    const corridor = new Map();
-    for (const path of plan.paths || []) {
-      for (let index = 0; index < path.points.length; index++) {
-        const point = path.points[index];
-        const key = `${point.roomName}:${point.x}:${point.y}`;
-        if (!corridor.has(key)) corridor.set(key, { ...point, index });
-      }
-    }
-    const activeRoadSites = [];
-    for (const point of corridor.values()) {
-      const visibleRoom = Game.rooms[point.roomName];
-      if (!visibleRoom) continue;
-      const site = visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
-        point.x, point.y).find(candidate =>
-        candidate.structureType === STRUCTURE_ROAD);
-      if (site) activeRoadSites.push(site);
-    }
-    let availableSites = Math.max(0, 5 - activeRoadSites.length);
-    if (availableSites <= 0) continue;
-    const candidates = [...corridor.values()].sort((a, b) =>
-      a.index - b.index || a.roomName.localeCompare(b.roomName));
-    for (const point of candidates) {
-      if (availableSites <= 0) break;
-      const visibleRoom = Game.rooms[point.roomName];
-      if (!visibleRoom) continue;
-      const structures = visibleRoom.lookForAt(LOOK_STRUCTURES,
-        point.x, point.y);
-      const sites = visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
-        point.x, point.y);
-      if (structures.some(structure =>
-        structure.structureType === STRUCTURE_ROAD) || structures.some(structure =>
-        structure.structureType !== STRUCTURE_RAMPART) || sites.length > 0) {
-        continue;
-      }
-      if (visibleRoom.createConstructionSite(point.x, point.y,
-        STRUCTURE_ROAD) === OK) {
-        availableSites--;
-      }
-    }
-  }
-
-  // Build the southern source-to-S2 corridor five sites at a time.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    if (!scheduledRoomTick(room, 50, 18)) continue;
-    const survey = room.memory.southSurvey;
-    const remoteRoom = survey && survey.active &&
-      Game.rooms[survey.targetRoom];
-    const source2 = getRoomSources(room)
-      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y)[1];
-    if (!remoteRoom || !source2) continue;
-    const s2Container = source2.pos.findInRange(FIND_STRUCTURES, 1, {
-      filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-        !isRetiringContainer(room, structure)
-    }).sort((a, b) => b.pos.y - a.pos.y)[0];
-    const remoteSources = remoteRoom.find(FIND_SOURCES)
-      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-    if (!s2Container || remoteSources.length === 0) continue;
-    const signature = [survey.targetRoom, s2Container.id,
-      ...remoteSources.map(source => source.id)].join(':');
-    let plan = room.memory.southRemoteRoadPlan;
-    if (!plan || plan.signature !== signature) {
-      const paths = remoteSources.map((remoteSource, slot) => {
-        const search = PathFinder.search(remoteSource.pos, {
-          pos: s2Container.pos,
-          range: 1
-        }, {
-          maxRooms: 2,
-          maxOps: 10000,
-          plainCost: 2,
-          swampCost: 10,
-          roomCallback: roomName => {
-            if (roomName !== room.name && roomName !== remoteRoom.name) {
-              return false;
-            }
-            const visibleRoom = Game.rooms[roomName];
-            if (!visibleRoom) return false;
-            const costs = new PathFinder.CostMatrix();
-            for (const structure of visibleRoom.find(FIND_STRUCTURES)) {
-              if (structure.structureType === STRUCTURE_ROAD) {
-                costs.set(structure.pos.x, structure.pos.y, 1);
-              } else if (OBSTACLE_OBJECT_TYPES.includes(
-                structure.structureType)) {
-                costs.set(structure.pos.x, structure.pos.y, 255);
-              }
-            }
-            for (const site of visibleRoom.find(FIND_MY_CONSTRUCTION_SITES)) {
-              if (site.structureType !== STRUCTURE_ROAD) {
-                costs.set(site.pos.x, site.pos.y, 255);
-              }
-            }
-            return costs;
-          }
-        });
-        return {
-          slot,
-          incomplete: search.incomplete,
-          points: search.path.map(position => ({
-            x: position.x,
-            y: position.y,
-            roomName: position.roomName
-          }))
-        };
-      });
-      plan = {
-        signature,
-        created: Game.time,
-        paths
-      };
-      room.memory.southRemoteRoadPlan = plan;
-      console.log(`[${Game.time}] ${room.name} planned south roads ` +
-        paths.map(path => `D${path.slot + 1}=${path.points.length}`)
-          .join(' ') + ' to S2');
-    }
-    const points = (plan.paths || []).flatMap(path =>
-      path.points.map((point, index) => ({
-        ...point,
-        slot: path.slot,
-        index
-      }))).sort((a, b) => a.index - b.index || a.slot - b.slot);
-    let activeSites = 0;
-    for (const point of points) {
-      const visibleRoom = Game.rooms[point.roomName];
-      if (!visibleRoom) continue;
-      if (visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES, point.x, point.y)
-        .some(site => site.structureType === STRUCTURE_ROAD)) activeSites++;
-    }
-    let availableSites = Math.max(0, 5 - activeSites);
-    for (const point of points) {
-      if (availableSites <= 0) break;
-      const visibleRoom = Game.rooms[point.roomName];
-      if (!visibleRoom) continue;
-      const structures = visibleRoom.lookForAt(LOOK_STRUCTURES,
-        point.x, point.y);
-      const sites = visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
-        point.x, point.y);
-      if (structures.some(structure =>
-        structure.structureType === STRUCTURE_ROAD) || structures.some(
-        structure => structure.structureType !== STRUCTURE_RAMPART) ||
-        sites.length > 0) continue;
-      if (visibleRoom.createConstructionSite(point.x, point.y,
-        STRUCTURE_ROAD) === OK) availableSites--;
-    }
-  }
-
-  // Build the southwest source-to-home corridor five sites at a time once a
-  // bootstrap worker provides vision in the diagonal room.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    if (!scheduledRoomTick(room, 50, 34)) continue;
-    const survey = room.memory.southwestSurvey;
-    const remoteRoom = survey && survey.active &&
-      Game.rooms[survey.targetRoom];
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    const homeExits = Game.map.describeExits(room.name) || {};
-    const westRoomName = homeExits[LEFT];
-    const southRoomName = homeExits[BOTTOM];
-    if (!remoteRoom || !spawn || !westRoomName) continue;
-    const remoteSources = remoteRoom.find(FIND_SOURCES)
-      .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-    if (!remoteSources.length) continue;
-    const signature = [survey.targetRoom, spawn.id,
-      ...remoteSources.map(source => source.id)].join(':');
-    let plan = room.memory.southwestRemoteRoadPlan;
-    if (!plan || plan.signature !== signature ||
-        (plan.paths || []).some(path => path.incomplete) &&
-          Game.time - (plan.created || 0) >= 25) {
-      const allowedRooms = new Set([
-        room.name, westRoomName, southRoomName, remoteRoom.name
-      ]);
-      const paths = remoteSources.map((remoteSource, slot) => {
-        const search = PathFinder.search(remoteSource.pos, {
-          pos: spawn.pos,
-          range: 1
-        }, {
-          maxRooms: 3,
-          maxOps: 15000,
-          plainCost: 2,
-          swampCost: 10,
-          roomCallback: roomName => {
-            if (!allowedRooms.has(roomName)) return false;
-            const visibleRoom = Game.rooms[roomName];
-            if (!visibleRoom) return false;
-            const costs = new PathFinder.CostMatrix();
-            for (const structure of visibleRoom.find(FIND_STRUCTURES)) {
-              if (structure.structureType === STRUCTURE_ROAD) {
-                costs.set(structure.pos.x, structure.pos.y, 1);
-              } else if (OBSTACLE_OBJECT_TYPES.includes(
-                structure.structureType)) {
-                costs.set(structure.pos.x, structure.pos.y, 255);
-              }
-            }
-            return costs;
-          }
-        });
-        return {
-          slot,
-          incomplete: search.incomplete,
-          points: search.path.map(position => ({
-            x: position.x,
-            y: position.y,
-            roomName: position.roomName
-          }))
-        };
-      });
-      plan = { signature, created: Game.time, paths };
-      room.memory.southwestRemoteRoadPlan = plan;
-      console.log(`[${Game.time}] ${room.name} planned southwest roads ` +
-        paths.map(path => `SW${path.slot + 1}=${path.points.length}`)
-          .join(' '));
-    }
-    const points = (plan.paths || []).flatMap(path =>
-      path.points.map((point, index) => ({
-        ...point,
-        slot: path.slot,
-        index
-      }))).sort((a, b) => a.index - b.index || a.slot - b.slot);
-    let activeSites = 0;
-    for (const point of points) {
-      const visibleRoom = Game.rooms[point.roomName];
-      if (visibleRoom && visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
-        point.x, point.y).some(site =>
-        site.structureType === STRUCTURE_ROAD)) activeSites++;
-    }
-    let availableSites = Math.max(0, 5 - activeSites);
-    for (const point of points) {
-      if (availableSites <= 0) break;
-      const visibleRoom = Game.rooms[point.roomName];
-      if (!visibleRoom) continue;
-      const structures = visibleRoom.lookForAt(LOOK_STRUCTURES,
-        point.x, point.y);
-      const sites = visibleRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
-        point.x, point.y);
-      if (structures.some(structure =>
-        structure.structureType === STRUCTURE_ROAD) || structures.some(
-        structure => structure.structureType !== STRUCTURE_RAMPART) ||
-        sites.length > 0) continue;
-      if (visibleRoom.createConstructionSite(point.x, point.y,
-        STRUCTURE_ROAD) === OK) availableSites--;
-    }
-  }
+  // Plan all remote road corridors and expose at most five sites per route.
+  planRemoteCorridors(Object.values(Game.rooms));
 
   // The S2 wall tunnel is the one RCL2 road exception. Add one dedicated
   // tunnel builder without consuming population reserved for the room.
@@ -3567,22 +3343,19 @@ module.exports.loop = function () {
             return targetRatio > 0 && capacity > 0 &&
               structure.store[RESOURCE_ENERGY] < capacity * targetRatio;
           };
+          // Review the balance every 25 ticks so one distant buffer cannot
+          // monopolize the creep without making its destination churn.
           let target = Game.getObjectById(creep.memory.rebalanceTarget);
-          if (!stillNeedsEnergy(target)) {
-            delete creep.memory.rebalanceTarget;
-            target = getRoomStructures(creep.room)
-              .filter(stillNeedsEnergy)
-              .sort((a, b) => {
-                const aCapacity = a.store.getCapacity(RESOURCE_ENERGY) || 1;
-                const bCapacity = b.store.getCapacity(RESOURCE_ENERGY) || 1;
-                const aProgress = a.store[RESOURCE_ENERGY] /
-                  (aCapacity * getBufferTargetRatio(a));
-                const bProgress = b.store[RESOURCE_ENERGY] /
-                  (bCapacity * getBufferTargetRatio(b));
-                return aProgress - bProgress ||
-                  creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b);
-              })[0];
+          if (isRebalanceReviewDue(target,
+            creep.memory.rebalanceTargetReviewed, Game.time,
+            stillNeedsEnergy)) {
+            target = selectRebalanceTarget(
+              getRoomStructures(creep.room),
+              getBufferTargetRatio,
+              structure => creep.pos.getRangeTo(structure));
+            creep.memory.rebalanceTargetReviewed = Game.time;
             if (target) creep.memory.rebalanceTarget = target.id;
+            else delete creep.memory.rebalanceTarget;
           }
           if (creep.store[RESOURCE_ENERGY] > 0) {
             if (target) return transferEnergy(target);

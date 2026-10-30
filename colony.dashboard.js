@@ -1,7 +1,7 @@
 'use strict';
 
 const createColonyDashboard = ({
-  Game, Memory, getWorkerLimits, getRoomStructures, shortRoles,
+  Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
   maxSpawnWait, RESOURCE_ENERGY, STRUCTURE_SPAWN, STRUCTURE_EXTENSION,
   FIND_DROPPED_RESOURCES
 }) => {
@@ -9,6 +9,15 @@ const createColonyDashboard = ({
     ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
   const roleOrder = ['LM', 'LC', 'RF', 'RB', 'UP', 'BU-L', 'BU-O', 'BU-X',
     'OP', 'OC', 'W', 'CL'];
+  const staffingColors = {
+    belowMinimum: '#ff5f78',
+    belowDesired: '#ffd60a',
+    staffed: '#30d158'
+  };
+  const textOpacity = 0.62;
+  const getStaffingStatus = (count, target = {}) =>
+    count < (target.min || 0) ? 'belowMinimum' :
+      count < (target.desired || 0) ? 'belowDesired' : 'staffed';
 
   const updateDashboard = (creeps, workTargets = {}) => {
     if (Game.time % 5 !== 0) return Memory.colonyDashboard;
@@ -64,6 +73,33 @@ const createColonyDashboard = ({
       counts[role] = (counts[role] || 0) + 1;
       return counts;
     }, {});
+    const roleTargets = {};
+    const addRoleTarget = (role, minimum, desired) => {
+      const target = roleTargets[role] || { min: 0, desired: 0 };
+      target.min += Math.max(0, minimum || 0);
+      target.desired += Math.max(0, desired || 0);
+      roleTargets[role] = target;
+    };
+    for (const room of ownedRooms) {
+      const policy = getRoomSituation(room).policy;
+      const roles = policy.roles;
+      addRoleTarget('LM', roles.source.min, roles.source.desired);
+      addRoleTarget('LC', roles.hauler.min, roles.hauler.desired);
+      addRoleTarget('RF', roles.refiller.min, roles.refiller.desired);
+      addRoleTarget('RB', roles.rebalancer.min, roles.rebalancer.desired);
+      addRoleTarget('UP', roles.upgrader.min, roles.upgrader.desired);
+      addRoleTarget('BU-L',
+        roles.builder.min + roles.repairBuilder.min + roles.tunnelBuilder.min,
+        roles.builder.desired + roles.repairBuilder.desired +
+          roles.tunnelBuilder.desired);
+      addRoleTarget('BU-O', policy.remote.builders, policy.remote.builders);
+      addRoleTarget('OP', policy.remote.miners, policy.remote.miners);
+      addRoleTarget('OC', policy.remote.haulers, policy.remote.haulers);
+    }
+    const roleStatuses = Object.fromEntries([...new Set([
+      ...Object.keys(roleCounts), ...Object.keys(roleTargets)
+    ])].map(role => [role, getStaffingStatus(roleCounts[role] || 0,
+      roleTargets[role])]));
     const localBuildTargets = workTargets.localBuildTargets || 0;
     const outpostBuildTargets = workTargets.outpostBuildTargets || 0;
     const localFixTargets = workTargets.localFixTargets || 0;
@@ -81,6 +117,8 @@ const createColonyDashboard = ({
       carriedEnergy,
       looseEnergy,
       roleCounts,
+      roleTargets,
+      roleStatuses,
       localBuildTargets,
       outpostBuildTargets,
       localFixTargets,
@@ -113,65 +151,88 @@ const createColonyDashboard = ({
     if (!dashboard) return;
     const waitText = dashboard.waits && dashboard.waits.length
       ? `Wait ${dashboard.waits.join(' | ')}` : 'Wait none';
-    const roleEntries = Object.entries(dashboard.roleCounts || {})
+    const roleTargets = dashboard.roleTargets || {};
+    const roleEntries = [...new Set([
+      ...Object.keys(dashboard.roleCounts || {}), ...Object.keys(roleTargets)
+    ])]
+      .filter(role => (dashboard.roleCounts[role] || 0) > 0 ||
+        (roleTargets[role] && roleTargets[role].desired > 0))
       .sort((a, b) => {
-        const aIndex = roleOrder.indexOf(a[0]);
-        const bIndex = roleOrder.indexOf(b[0]);
+        const aIndex = roleOrder.indexOf(a);
+        const bIndex = roleOrder.indexOf(b);
         return (aIndex < 0 ? roleOrder.length : aIndex) -
           (bIndex < 0 ? roleOrder.length : bIndex) ||
-          a[0].localeCompare(b[0]);
+          a.localeCompare(b);
       })
-      .map(([role, count]) => `${role} ${count}`);
+      .map(role => {
+        const count = dashboard.roleCounts[role] || 0;
+        const target = roleTargets[role] || { min: 0, desired: count };
+        const status = dashboard.roleStatuses &&
+          dashboard.roleStatuses[role] || getStaffingStatus(count, target);
+        return {
+          role,
+          text: `${role} ${count}/${target.desired}`,
+          color: staffingColors[status]
+        };
+      });
     const roleLines = [];
     for (let index = 0; index < roleEntries.length; index += 5) {
-      roleLines.push(roleEntries.slice(index, index + 5).join(' | '));
+      roleLines.push(roleEntries.slice(index, index + 5));
     }
     for (const room of Object.values(Game.rooms).filter(candidate =>
       candidate.controller && candidate.controller.my)) {
-      room.visual.rect(0.5, 20.5, 15.5,
+      room.visual.rect(0.5, 4.5, 21.5,
         5.75 + roleLines.length * 0.8, {
-        fill: '#101820', opacity: 0.82, stroke: '#64d2ff',
+        fill: '#101820', opacity: 0.22, stroke: '#64d2ff',
         strokeWidth: 0.08
       });
-      room.visual.text('COLONY', 1.2, 21.3, {
-        align: 'left', color: '#64d2ff', font: 'bold 0.75'
+      room.visual.text('COLONY', 1.2, 5.3, {
+        align: 'left', color: '#64d2ff', font: 'bold 1 monospace',
+        opacity: textOpacity
       });
       room.visual.text(
         `Creeps ${dashboard.creeps} | spawning ${dashboard.spawning} | ` +
           `need ${dashboard.needed}`,
-        1.2, 22.2,
-        { align: 'left', color: '#ffffff', font: 0.65 }
+        1.2, 6.2,
+        { align: 'left', color: '#ffffff', font: 'bold 0.85 monospace',
+          opacity: textOpacity }
       );
-      room.visual.text(waitText, 1.2, 23.05, {
+      room.visual.text(waitText, 1.2, 7.05, {
         align: 'left', color: dashboard.waits && dashboard.waits.length
-          ? '#ff9f0a' : '#30d158', font: 0.65
+          ? '#ff9f0a' : '#30d158', font: 'bold 0.85 monospace',
+        opacity: textOpacity
       });
       room.visual.text(
         `Energy ${compact(dashboard.totalEnergy)} | ready ` +
           `${dashboard.readyEnergy}/${dashboard.readyCapacity}`,
-        1.2, 23.9,
-        { align: 'left', color: '#ffd60a', font: 0.65 }
+        1.2, 7.9,
+        { align: 'left', color: '#ffd60a', font: 'bold 0.85 monospace',
+          opacity: textOpacity }
       );
       room.visual.text(
         `Reserve ${compact(dashboard.reserveEnergy)} | carry ` +
           `${compact(dashboard.carriedEnergy)} | loose ` +
           `${compact(dashboard.looseEnergy)}`,
-        1.2, 24.75,
-        { align: 'left', color: '#d1d1d6', font: 0.6 }
+        1.2, 8.75,
+        { align: 'left', color: '#d1d1d6', font: 'bold 0.81 monospace',
+          opacity: textOpacity }
       );
       room.visual.text(
         `Targets build L${dashboard.localBuildTargets || 0}/` +
           `O${dashboard.outpostBuildTargets || 0} | fix ` +
           `L${dashboard.localFixTargets || 0}/` +
           `O${dashboard.outpostFixTargets || 0}`,
-        1.2, 25.55,
-        { align: 'left', color: '#ff8ad8', font: 0.62 }
+        1.2, 9.55,
+        { align: 'left', color: '#ff8ad8', font: 'bold 0.83 monospace',
+          opacity: textOpacity }
       );
-      roleLines.forEach((line, index) => room.visual.text(
-        `${index === 0 ? 'Types ' : '      '}${line}`,
-        1.2, 26.35 + index * 0.8,
-        { align: 'left', color: '#8fd3ff', font: 0.6 }
-      ));
+      roleLines.forEach((line, row) => line.forEach((entry, column) =>
+        room.visual.text(entry.text, 1.2 + column * 4.1,
+          10.35 + row * 0.8, {
+            align: 'left', color: entry.color,
+            font: 'bold 0.81 monospace',
+            opacity: textOpacity
+          })));
     }
   };
 

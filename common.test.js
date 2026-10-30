@@ -33,9 +33,12 @@ const { runTowers } = require('./tower.control');
 const { createOutpostPlanning } = require('./outpost.planning');
 const { reconcileRemoteHaulerRosters } = require('./remote.roster');
 const { createExpansionPlanner } = require('./expansion.planner');
+const { createRemoteCorridorPlanner } = require('./remote.corridors');
+const { selectMinimumStaffingGap } = require('./staffing.minimums');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
-const { selectRebalancerSurplus, getWithdrawalApproachTarget } =
+const { selectRebalancerSurplus, getWithdrawalApproachTarget,
+  selectRebalanceTarget, isRebalanceReviewDue } =
   require('./creep.routing');
 
 const parts = {
@@ -45,6 +48,22 @@ const parts = {
     ranged_attack: 150, heal: 250, claim: 600, tough: 10 }
 };
 const bodies = createBodyFactory(parts);
+
+const minimumRoles = {
+  builder: { min: 1, desired: 2 },
+  refiller: { min: 2, desired: 2 },
+  hauler: { min: 2, desired: 4 },
+  rebalancer: { min: 1, desired: 1 }
+};
+assert.strictEqual(selectMinimumStaffingGap(minimumRoles, {
+  builder: 0, refiller: 1, hauler: 1, rebalancer: 1
+}, ['builder', 'refiller', 'hauler', 'rebalancer']).role, 'builder');
+assert.strictEqual(selectMinimumStaffingGap(minimumRoles, {
+  builder: 1, refiller: 1, hauler: 1, rebalancer: 1
+}, ['builder', 'refiller', 'hauler', 'rebalancer']).role, 'refiller');
+assert.strictEqual(selectMinimumStaffingGap(minimumRoles, {
+  builder: 1, refiller: 2, hauler: 2, rebalancer: 1
+}), null);
 
 const legacyFixer = { memory: { role: 'fixer', birthRole: 'fixer' } };
 assert.strictEqual(normalizeBuilderMemory(legacyFixer.memory), true);
@@ -167,9 +186,12 @@ const refillRoom = {
   find: () => [{ pos: { getRangeTo: (x, y) =>
     Math.max(Math.abs(10 - x), Math.abs(10 - y)) } }]
 };
+let primaryExtensionFree = 50;
 const refillStructures = [
-  { my: true, structureType: 'extension', pos: { x: 12, y: 10 } },
-  { my: true, structureType: 'extension', pos: { x: 30, y: 30 } }
+  { my: true, structureType: 'extension', pos: { x: 12, y: 10 },
+    store: { getFreeCapacity: () => primaryExtensionFree } },
+  { my: true, structureType: 'extension', pos: { x: 30, y: 30 },
+    store: { getFreeCapacity: () => 50 } }
 ];
 const refillManagement = createRefillManagement({
   Game: { time: 10 },
@@ -217,6 +239,22 @@ assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
   { structureType: 'spawn' }), true);
 assert.strictEqual(refillManagement.isRefillTargetFor(primaryRefiller,
   { structureType: 'tower' }), true);
+
+const soleOverflowRefiller = refiller('sole', 400, 30, 30,
+  { refillClusterId: 'overflow' });
+refillManagement.reconcileRefillerClusters(refillRoom,
+  [soleOverflowRefiller]);
+assert.strictEqual(soleOverflowRefiller.memory.refillClusterId, 'primary');
+assert.strictEqual(soleOverflowRefiller.memory.refillSpawnOwner, true);
+assert.strictEqual(soleOverflowRefiller.memory.refillCrossClusterFallback,
+  true);
+assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
+  { structureType: 'spawn' }), true);
+assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
+  refillStructures[1]), false);
+primaryExtensionFree = 0;
+assert.strictEqual(refillManagement.isRefillTargetFor(soleOverflowRefiller,
+  refillStructures[1]), true);
 
 const namingMemory = { creeps: {}, roomOrdinals: {} };
 const namingRoom = {
@@ -275,12 +313,25 @@ const dashboardGame = {
 const dashboard = createColonyDashboard({
   Game: dashboardGame,
   Memory: dashboardMemory,
-  getWorkerLimits: () => ({ workerLimit: 3 }),
+  getWorkerLimits: () => ({ workerLimit: 4 }),
+  getRoomSituation: () => ({ policy: {
+    roles: {
+      source: { min: 2, desired: 3 },
+      hauler: { min: 1, desired: 2 },
+      refiller: { min: 0, desired: 0 },
+      rebalancer: { min: 0, desired: 0 },
+      upgrader: { min: 1, desired: 1 },
+      builder: { min: 1, desired: 1 },
+      repairBuilder: { min: 0, desired: 0 },
+      tunnelBuilder: { min: 0, desired: 0 }
+    },
+    remote: { builders: 0, miners: 0, haulers: 0 }
+  } }),
   getRoomStructures: () => [
     { my: true, structureType: 'spawn', store: { energy: 100 } },
     { my: true, structureType: 'container', store: { energy: 500 } }
   ],
-  shortRoles: { hauler: 'LC', harvester: 'LM' },
+  shortRoles: { hauler: 'LC', harvester: 'LM', upgrader: 'UP' },
   maxSpawnWait: 60,
   RESOURCE_ENERGY: 'energy',
   STRUCTURE_SPAWN: 'spawn',
@@ -289,7 +340,8 @@ const dashboard = createColonyDashboard({
 });
 const dashboardCreeps = [
   { memory: { home: 'W1N1', role: 'hauler' }, store: { energy: 50 } },
-  { memory: { home: 'W1N1', role: 'harvester' }, store: { energy: 0 } }
+  { memory: { home: 'W1N1', role: 'harvester' }, store: { energy: 0 } },
+  { memory: { home: 'W1N1', role: 'upgrader' }, store: { energy: 0 } }
 ];
 const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
   localBuildTargets: 5,
@@ -297,12 +349,18 @@ const dashboardSnapshot = dashboard.updateDashboard(dashboardCreeps, {
   localFixTargets: 1,
   outpostFixTargets: 2
 });
-assert.strictEqual(dashboardSnapshot.creeps, 2);
+assert.strictEqual(dashboardSnapshot.creeps, 3);
 assert.strictEqual(dashboardSnapshot.spawning, 1);
 assert.strictEqual(dashboardSnapshot.needed, 1);
 assert.deepStrictEqual(dashboardSnapshot.waits, ['LC 4/15t']);
 assert.strictEqual(dashboardSnapshot.totalEnergy, 675);
-assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1 });
+assert.deepStrictEqual(dashboardSnapshot.roleCounts, { LC: 1, LM: 1, UP: 1 });
+assert.deepStrictEqual(dashboardSnapshot.roleTargets.LM,
+  { min: 2, desired: 3 });
+assert.strictEqual(dashboardSnapshot.roleStatuses.LM, 'belowMinimum');
+assert.strictEqual(dashboardSnapshot.roleStatuses.LC, 'belowDesired');
+assert.strictEqual(dashboardSnapshot.roleStatuses.UP, 'staffed');
+assert.strictEqual(dashboardSnapshot.roleStatuses['BU-L'], 'belowMinimum');
 assert.strictEqual(dashboardSnapshot.buildTargets, 7);
 assert.strictEqual(dashboardSnapshot.fixTargets, 3);
 assert.strictEqual(dashboardSnapshot.localBuildTargets, 5);
@@ -315,7 +373,13 @@ assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
   call[1] === 'Targets build L5/O2 | fix L1/O2'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'Types LM 1 | LC 1'));
+  call[1] === 'LM 1/3' && call[4].color === '#ff5f78'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'LC 1/2' && call[4].color === '#ffd60a'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'UP 1/1' && call[4].color === '#30d158'));
+assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
+  call[1] === 'BU-L 0/1' && call[4].color === '#ff5f78'));
 
 const maintenanceMemory = {
   creeps: {
@@ -1407,6 +1471,14 @@ const extensionBuffer = {
 };
 assert.strictEqual(infrastructurePlanner.isExtensionRefillBuffer(
   infrastructureRoom, extensionBuffer), true);
+assert.strictEqual(infrastructurePlanner.getContainerPurpose(
+  infrastructureRoom, extensionBuffer.pos), 'extensions');
+const plannedExtensionRoom = {
+  memory: { extensionContainerPlan: { x: 30, y: 31 } },
+  controller: { pos: { getRangeTo: () => 10 } }
+};
+assert.strictEqual(infrastructurePlanner.getContainerPurpose(
+  plannedExtensionRoom, { x: 30, y: 31 }), 'extensions');
 
 const overflowSites = [];
 const saturatedCluster = { x: 10, y: 10, version: 'low-traffic-v1' };
@@ -1505,5 +1577,170 @@ assert.strictEqual(getWithdrawalApproachTarget(routingUpgrader,
   controllerBuffer, routingStation), controllerPosition);
 assert.strictEqual(getWithdrawalApproachTarget(routingUpgrader,
   sourceBuffer, routingStation), sourceBuffer);
+
+const rebalanceBuffer = (id, energy, targetRatio, distance) => ({
+  id, targetRatio, distance,
+  store: { energy, getCapacity: () => 2000 }
+});
+const rcReserve = rebalanceBuffer('rc-reserve', 0, 0.75, 30);
+const extensionReserve = rebalanceBuffer('extension-reserve', 0, 0.5, 5);
+assert.strictEqual(selectRebalanceTarget([
+  { id: 'road', structureType: 'road' }, extensionReserve, rcReserve
+],
+  structure => structure.targetRatio, structure => structure.distance),
+rcReserve);
+rcReserve.store.energy = 800;
+extensionReserve.store.energy = 400;
+assert.strictEqual(selectRebalanceTarget([extensionReserve, rcReserve],
+  structure => structure.targetRatio, structure => structure.distance),
+extensionReserve);
+assert.strictEqual(isRebalanceReviewDue(rcReserve, 100, 124,
+  () => true), false);
+assert.strictEqual(isRebalanceReviewDue(rcReserve, 100, 125,
+  () => true), true);
+assert.strictEqual(isRebalanceReviewDue(rcReserve, 124, 124,
+  () => false), true);
+
+const corridorSites = new Map([
+  ['W1N1:10:10', [{ structureType: 'road' }]]
+]);
+const corridorStructures = new Map([
+  ['W1N1:11:10', [{ structureType: 'road' }]],
+  ['W1N1:12:10', [{ structureType: 'extension' }]],
+  ['W1N1:13:10', [{ structureType: 'rampart' }]]
+]);
+const placedCorridorSites = [];
+const corridorRoom = {
+  name: 'W1N1',
+  lookForAt: (type, x, y) => {
+    const key = `W1N1:${x}:${y}`;
+    return type === 'sites-at'
+      ? corridorSites.get(key) || []
+      : corridorStructures.get(key) || [];
+  },
+  createConstructionSite: (x, y, structureType) => {
+    const key = `W1N1:${x}:${y}`;
+    corridorSites.set(key, [{ structureType }]);
+    placedCorridorSites.push({ x, y, structureType });
+    return 0;
+  }
+};
+const corridorPlanner = createRemoteCorridorPlanner({
+  Game: { time: 100, rooms: { W1N1: corridorRoom }, map: {
+    describeExits: () => ({})
+  } },
+  PathFinder: { CostMatrix: class {}, search: () => ({
+    incomplete: false, path: []
+  }) },
+  scheduledRoomTick: () => false,
+  getRoomSources: () => [],
+  isRetiringContainer: () => false,
+  FIND_STRUCTURES: 'structures',
+  FIND_SOURCES: 'sources',
+  FIND_MY_SPAWNS: 'spawns',
+  FIND_MY_CONSTRUCTION_SITES: 'sites',
+  STRUCTURE_CONTAINER: 'container',
+  STRUCTURE_ROAD: 'road',
+  STRUCTURE_RAMPART: 'rampart',
+  LOOK_STRUCTURES: 'structures-at',
+  LOOK_CONSTRUCTION_SITES: 'sites-at',
+  OBSTACLE_OBJECT_TYPES: ['extension'],
+  LEFT: 7,
+  BOTTOM: 5,
+  OK: 0
+});
+const corridorPaths = [{
+  slot: 0,
+  points: [10, 11, 12, 13, 14, 15, 16, 17].map(x => ({
+    x, y: 10, roomName: 'W1N1'
+  }))
+}];
+corridorPlanner.placeRoadSites(corridorPaths);
+assert.deepStrictEqual(placedCorridorSites.map(site => site.x),
+  [13, 14, 15, 16]);
+assert.strictEqual(corridorSites.size, 5);
+const sharedCorridorPaths = [corridorPaths[0], {
+  slot: 1,
+  points: [{ x: 10, y: 10, roomName: 'W1N1' }]
+}];
+assert.strictEqual(corridorPlanner.getCorridorPoints(
+  sharedCorridorPaths, true).length, 8);
+assert.strictEqual(corridorPlanner.getCorridorPoints(
+  sharedCorridorPaths, false).length, 9);
+
+const routeMatrices = [];
+class RouteCostMatrix {
+  constructor() {
+    this.values = [];
+    routeMatrices.push(this);
+  }
+  set(x, y, value) {
+    this.values.push({ x, y, value });
+  }
+}
+const controller = {};
+const controllerContainer = {
+  id: 'controller-container',
+  structureType: 'container',
+  pos: { getRangeTo: target => target === controller ? 2 : 0 }
+};
+const routeRemoteSource = {
+  id: 'remote-source',
+  pos: { x: 20, y: 20, roomName: 'W1N2' }
+};
+const routeHome = {
+  name: 'W1N1',
+  controller: { ...controller, my: true },
+  memory: { leftSurvey: { active: true, targetRoom: 'W1N2' } },
+  find: (type, options) => {
+    const values = type === 'structures' ? [controllerContainer] : [];
+    return options && options.filter ? values.filter(options.filter) : values;
+  },
+  lookForAt: () => [],
+  createConstructionSite: () => 0
+};
+controllerContainer.pos.getRangeTo = target =>
+  target === routeHome.controller ? 2 : 0;
+const routeRemote = {
+  name: 'W1N2',
+  find: type => type === 'sources' ? [routeRemoteSource] :
+    type === 'sites' ? [{
+      structureType: 'extension', pos: { x: 21, y: 20 }
+    }] : [],
+  lookForAt: () => [],
+  createConstructionSite: () => 0
+};
+let routeSearchOptions;
+const routePlanner = createRemoteCorridorPlanner({
+  Game: { time: 102, rooms: { W1N1: routeHome, W1N2: routeRemote }, map: {
+    describeExits: () => ({})
+  } },
+  PathFinder: {
+    CostMatrix: RouteCostMatrix,
+    search: (origin, goal, options) => {
+      routeSearchOptions = options;
+      options.roomCallback('W1N2');
+      return { incomplete: false, path: [{
+        x: 19, y: 20, roomName: 'W1N2'
+      }] };
+    }
+  },
+  scheduledRoomTick: (room, interval, phase) => phase === 2,
+  getRoomSources: () => [],
+  isRetiringContainer: () => false,
+  FIND_STRUCTURES: 'structures', FIND_SOURCES: 'sources',
+  FIND_MY_SPAWNS: 'spawns', FIND_MY_CONSTRUCTION_SITES: 'sites',
+  STRUCTURE_CONTAINER: 'container', STRUCTURE_ROAD: 'road',
+  STRUCTURE_RAMPART: 'rampart', LOOK_STRUCTURES: 'structures-at',
+  LOOK_CONSTRUCTION_SITES: 'sites-at',
+  OBSTACLE_OBJECT_TYPES: ['extension'], LEFT: 7, BOTTOM: 5, OK: 0
+});
+routePlanner.planRemoteCorridors([routeHome]);
+assert.strictEqual(routeHome.memory.remoteRoadPlan.signature,
+  'W1N2:controller-container:remote-source');
+assert.strictEqual(routeSearchOptions.maxRooms, 2);
+assert.strictEqual(routeSearchOptions.maxOps, 10000);
+assert.ok(routeMatrices[0].values.some(entry => entry.x === 21 &&
+  entry.y === 20 && entry.value === 255));
 
 console.log('common module scenarios passed');

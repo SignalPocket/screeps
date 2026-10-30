@@ -38,9 +38,22 @@ const createRefillManagement = ({
     if (structure.structureType !== STRUCTURE_EXTENSION) return false;
     if (!Number.isInteger(creep.memory.refillClusterX) ||
         !Number.isInteger(creep.memory.refillClusterY)) return true;
-    return Math.max(
+    const belongsToOwnedCluster = Math.max(
       Math.abs(structure.pos.x - creep.memory.refillClusterX),
       Math.abs(structure.pos.y - creep.memory.refillClusterY)) <= 3;
+    if (belongsToOwnedCluster) return true;
+    if (!creep.memory.refillCrossClusterFallback) return false;
+    // A lone specialist may cover every extension clump, but it finishes the
+    // spawn-side bank before crossing the room. This keeps recovery moving
+    // without letting the smaller clump steal service from the primary one.
+    const ownedClusterNeedsEnergy = getRoomStructures(creep.room)
+      .some(candidate => candidate.my &&
+        candidate.structureType === STRUCTURE_EXTENSION &&
+        Math.max(
+          Math.abs(candidate.pos.x - creep.memory.refillClusterX),
+          Math.abs(candidate.pos.y - creep.memory.refillClusterY)) <= 3 &&
+        candidate.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
+    return !ownedClusterNeedsEnergy;
   };
 
   const getRefillerCarryFloor = room => Math.min(400,
@@ -59,6 +72,28 @@ const createRefillManagement = ({
     const claimed = new Set();
     const assignedNames = new Set();
     for (const creep of refillers) {
+      delete creep.memory.refillCrossClusterFallback;
+    }
+    // When there are not enough specialists for every clump, the strongest
+    // available refiller must own the spawn-side cluster. Do not preserve an
+    // old overflow assignment after the primary owner dies: that strands the
+    // spawn and the larger primary extension bank while the small clump fills.
+    const spawnCluster = clusters.find(cluster => cluster.fillsSpawn);
+    if (spawnCluster && refillers.length > 0 &&
+        refillers.length < clusters.length) {
+      const primaryOwner = refillers[0];
+      primaryOwner.memory.refillClusterId = spawnCluster.id;
+      primaryOwner.memory.refillClusterX = spawnCluster.x;
+      primaryOwner.memory.refillClusterY = spawnCluster.y;
+      primaryOwner.memory.refillSpawnOwner = true;
+      primaryOwner.memory.refillCrossClusterFallback = true;
+      delete primaryOwner.memory.refillTarget;
+      delete primaryOwner.memory.dispatchCommitment;
+      claimed.add(spawnCluster.id);
+      assignedNames.add(primaryOwner.name);
+    }
+    for (const creep of refillers) {
+      if (assignedNames.has(creep.name)) continue;
       const cluster = clustersById[creep.memory.refillClusterId];
       if (!cluster || claimed.has(cluster.id)) continue;
       claimed.add(cluster.id);
