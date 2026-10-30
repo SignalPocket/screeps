@@ -16,7 +16,10 @@ assert.strictEqual(analysis.haulerBonus, 3);
 const memory = {};
 updateRoomTrends(memory, 105, {
   repair: 10, build: 20, sourceRatio: 0.5, workBufferRatio: 0.2,
-  readyRatio: 0.5, dropped: 0
+  lowestSourceRatio: 0.25, extensionBufferRatio: 0.75,
+  readyRatio: 0.5, storedEnergy: 12345, dropped: 0,
+  population: 14, desiredPopulation: 16, controllerTicks: 9876,
+  controllerProgress: 0.3334, activeOutposts: 2
 });
 updateRoomTrends(memory, 150, {
   repair: 999, build: 999, sourceRatio: 1, workBufferRatio: 0,
@@ -24,13 +27,32 @@ updateRoomTrends(memory, 150, {
 });
 assert.strictEqual(memory.roomTrendHistory.records.length, 1);
 assert.strictEqual(memory.roomTrendHistory.records[0].repair, 10);
+assert.strictEqual(memory.roomTrendHistory.records[0].stored, 12345);
+assert.strictEqual(memory.roomTrendHistory.records[0].sourceLow, 0.25);
+assert.strictEqual(memory.roomTrendHistory.records[0].extensions, 0.75);
+assert.strictEqual(memory.roomTrendHistory.records[0].population, 14);
+assert.strictEqual(memory.roomTrendHistory.records[0].desired, 16);
+assert.strictEqual(memory.roomTrendHistory.records[0].controllerProgress,
+  0.333);
+const oldDatabase = {
+  version: 1, interval: 100, maxRecords: 36,
+  records: [{ tick: 100, repair: 1, source: 0, work: 0, dropped: 0 }],
+  adjustment: {}
+};
+const migratingMemory = { roomTrendHistory: oldDatabase };
+updateRoomTrends(migratingMemory, 200, {});
+assert.strictEqual(migratingMemory.roomTrendHistory.records.length, 1);
+assert.strictEqual(migratingMemory.roomTrendHistory.interval, 250);
+assert.strictEqual(migratingMemory.roomTrendHistory.version, 2);
 for (let index = 2; index <= 45; index++) {
-  updateRoomTrends(memory, index * 100, {
+  updateRoomTrends(memory, index * 250, {
     repair: index * 1000, build: 0, sourceRatio: 0.5,
     workBufferRatio: 0.2, readyRatio: 0.5, dropped: 0
   });
 }
-assert.strictEqual(memory.roomTrendHistory.records.length, 36);
+assert.strictEqual(memory.roomTrendHistory.records.length, 32);
+assert.strictEqual(memory.roomTrendHistory.interval, 250);
+assert.strictEqual(memory.roomTrendHistory.version, 2);
 
 const policy = {
   roles: {

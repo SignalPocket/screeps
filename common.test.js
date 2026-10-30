@@ -36,6 +36,7 @@ const { reconcileRemoteHaulerRosters } = require('./remote.roster');
 const { createExpansionPlanner } = require('./expansion.planner');
 const { createRemoteCorridorPlanner } = require('./remote.corridors');
 const { selectMinimumStaffingGap } = require('./staffing.minimums');
+const { createStaffingPlanner } = require('./staffing.plan');
 const { createBuilderRoster } = require('./builder.roster');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('./builder.roles');
@@ -421,6 +422,18 @@ const dashboardGame = {
   rooms: { W1N1: dashboardRoom },
   spawns: { Spawn1: { spawning: { name: 'new' } } }
 };
+const dashboardStaffing = createStaffingPlanner({
+  isBuilder: (creep, scope, mission) => creep.memory.role === 'builder' &&
+    creep.memory.builderScope === scope &&
+    (!mission || creep.memory.builderMission === mission),
+  isLocalBuilder: creep => creep.memory.role === 'builder' &&
+    creep.memory.builderScope !== 'outpost' &&
+    creep.memory.builderScope !== 'expansion',
+  hasWorkParts: creep => ['harvester', 'upgrader', 'builder']
+    .includes(creep.memory.role),
+  hasLocalReplacementLife: () => true,
+  hasRemoteReplacementLife: () => true
+}).buildRoomStaffingPlan;
 const dashboard = createColonyDashboard({
   Game: dashboardGame,
   Memory: dashboardMemory,
@@ -442,6 +455,7 @@ const dashboard = createColonyDashboard({
     { my: true, structureType: 'spawn', store: { energy: 100 } },
     { my: true, structureType: 'container', store: { energy: 500 } }
   ],
+  buildRoomStaffingPlan: dashboardStaffing,
   shortRoles: { hauler: 'LC', harvester: 'LM', upgrader: 'UP' },
   maxSpawnWait: 60,
   RESOURCE_ENERGY: 'energy',

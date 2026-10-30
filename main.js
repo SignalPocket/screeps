@@ -25,6 +25,8 @@ const { createMemoryMaintenance } = require('memory.maintenance');
 const { createCreepNaming } = require('creep.naming');
 const { createColonyDashboard } = require('colony.dashboard');
 const { collectColonyWorkMetrics } = require('colony.work-metrics');
+const { buildSourceGroups, selectSourceGroup } =
+  require('source.collection');
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
 const { createTaskReservations } = require('task.reservations');
@@ -37,7 +39,8 @@ const { createOutpostPlanning } = require('outpost.planning');
 const { reconcileRemoteHaulerRosters } = require('remote.roster');
 const { createExpansionPlanner } = require('expansion.planner');
 const { createRemoteCorridorPlanner } = require('remote.corridors');
-const { selectMinimumStaffingGap } = require('staffing.minimums');
+const { createStaffingPlanner } = require('staffing.plan');
+const { createMinimumSpawnPlanner } = require('minimum.spawn');
 const { createBuilderRoster } = require('builder.roster');
 const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
   deriveBodyTargets, buildBodyRoster, canBodyTypeRunLane } =
@@ -107,6 +110,13 @@ module.exports.loop = function () {
     getRemoteReplacementLead,
     hasRemoteReplacementLife, hasLocalReplacementLife } =
     createCreepLifecycle({ Game, WORK, MOVE, CREEP_SPAWN_TIME });
+  const { buildRoomStaffingPlan } = createStaffingPlanner({
+    isBuilder, isLocalBuilder, hasWorkParts,
+    hasLocalReplacementLife, hasRemoteReplacementLife
+  });
+  const { planMinimumSpawn } = createMinimumSpawnPlanner({
+    getRoomSources, getSource2TunnelSite, hasBuilderBody, workerCost
+  });
   const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
     createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
   logDeadCreeps(Memory.creeps);
@@ -185,52 +195,34 @@ module.exports.loop = function () {
   });
   const getBodyRosterPlan = (room, workers) => {
     const situation = getRoomSituation(room);
-    const roles = situation.policy.roles;
-    const activePlans = [room.memory.leftSurvey, room.memory.southSurvey,
-      room.memory.southwestSurvey].filter(plan =>
-      plan && plan.active && plan.targetRoom);
-    const remoteMinerTarget = activePlans.reduce((total, plan) => total +
-      ((plan.remoteWorkNeeds || []).length
-        ? plan.remoteWorkNeeds.reduce((sum, need) => sum +
-          Math.max(1, need.minMiners || 0), 0)
-        : Math.max(1, plan.remoteMinerTarget || 0)), 0);
-    const remoteCarrierTarget = activePlans.reduce((total, plan) => total +
-      Math.max(1, plan.remoteHaulerTarget ||
-        (plan.remoteWorkNeeds || []).length || 1), 0);
-    const remoteBuilderTarget = activePlans.reduce((total, plan) => total +
-      Math.max(0, plan.remoteBuilderTarget || 0), 0);
-    const localMinerTarget = getRoomSources(room).reduce((total, source) => {
-      const requiredWork = Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER);
-      return total + Math.max(1, Math.ceil(requiredWork /
-        getSourceBodyWorkCapacity(room)));
-    }, 0);
+    const jobs = buildRoomStaffingPlan(room, workers,
+      situation.policy).jobs;
     const expansion = room.memory.expansionPlan;
     const claimerTarget = expansion && expansion.status === 'claim-ready'
       ? 1 : 0;
     const targets = deriveBodyTargets({
-      localMinerMin: localMinerTarget,
-      localMinerDesired: localMinerTarget,
-      refillerMin: roles.refiller.min,
-      refillerDesired: situation.targets.refiller,
-      remoteCarrierMin: activePlans.length,
-      remoteCarrierDesired: remoteCarrierTarget,
-      haulerMin: roles.hauler.min,
-      haulerDesired: situation.targets.hauler,
-      rebalancerMin: roles.rebalancer.min,
-      rebalancerDesired: situation.targets.rebalancer,
-      upgraderMin: roles.upgrader.min,
-      upgraderDesired: situation.targets.upgrader,
-      builderMin: roles.builder.min,
-      builderDesired: situation.targets.builder,
-      repairMin: roles.repairBuilder.min,
-      repairDesired: situation.targets.repairBuilder,
-      tunnelMin: roles.tunnelBuilder.min,
-      tunnelDesired: situation.targets.tunnelBuilder,
-      remoteBuilderMin: Math.min(activePlans.length, remoteBuilderTarget),
-      remoteBuilderDesired: remoteBuilderTarget,
-      remoteMinerMin: remoteMinerTarget,
-      remoteMinerDesired: remoteMinerTarget,
+      localMinerMin: jobs.source.min,
+      localMinerDesired: jobs.source.desired,
+      refillerMin: jobs.refiller.min,
+      refillerDesired: jobs.refiller.desired,
+      remoteCarrierMin: jobs.remoteHauler.min,
+      remoteCarrierDesired: jobs.remoteHauler.desired,
+      haulerMin: jobs.hauler.min,
+      haulerDesired: jobs.hauler.desired,
+      rebalancerMin: jobs.rebalancer.min,
+      rebalancerDesired: jobs.rebalancer.desired,
+      upgraderMin: jobs.upgrader.min,
+      upgraderDesired: jobs.upgrader.desired,
+      builderMin: jobs.builder.min,
+      builderDesired: jobs.builder.desired,
+      repairMin: jobs.repairBuilder.min,
+      repairDesired: jobs.repairBuilder.desired,
+      tunnelMin: jobs.tunnelBuilder.min,
+      tunnelDesired: jobs.tunnelBuilder.desired,
+      remoteBuilderMin: jobs.remoteBuilder.min,
+      remoteBuilderDesired: jobs.remoteBuilder.desired,
+      remoteMinerMin: jobs.remoteMiner.min,
+      remoteMinerDesired: jobs.remoteMiner.desired,
       claimerMin: claimerTarget,
       claimerDesired: claimerTarget
     });
@@ -249,7 +241,7 @@ module.exports.loop = function () {
   };
   const { updateDashboard, drawDashboard } = createColonyDashboard({
     Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures,
-    shortRoles,
+    shortRoles, buildRoomStaffingPlan,
     maxSpawnWait: MAX_SPAWN_CHARGE_WAIT, RESOURCE_ENERGY, STRUCTURE_SPAWN,
     STRUCTURE_EXTENSION, FIND_DROPPED_RESOURCES
   });
@@ -426,98 +418,16 @@ module.exports.loop = function () {
     // coverage so a completely absent job (0/1 builders) is restored before
     // topping up a partially covered one (1/2 haulers). Desired staffing is
     // evaluated only after no role remains below its minimum.
-    const minimumBuilders = workers.filter(creep =>
-      isLocalBuilder(creep) && creep.memory.builderMission !== 'repair' &&
-      creep.memory.builderMission !== 'tunnel' && hasWorkParts(creep) &&
-      hasLocalReplacementLife(creep));
-    const minimumRepairBuilders = workers.filter(creep =>
-      isBuilder(creep, 'local', 'repair') && hasWorkParts(creep) &&
-      hasLocalReplacementLife(creep));
-    const viableLocalHaulers = workers.filter(creep =>
-      creep.memory.role === 'hauler' && hasLocalReplacementLife(creep));
-    const viableMinimumRebalancers = workers.filter(creep =>
-      creep.memory.role === 'rebalancer' && hasLocalReplacementLife(creep));
-    const minimumGap = selectMinimumStaffingGap(
-      getRoomSituation(room).policy.roles, {
-        builder: minimumBuilders.length,
-        repairBuilder: minimumRepairBuilders.length,
-        hauler: viableLocalHaulers.length,
-        rebalancer: viableMinimumRebalancers.length,
-        refiller: coveredRefillClusters.size
-      }, ['repairBuilder', 'builder', 'refiller', 'hauler', 'rebalancer']);
-    if (minimumGap && minimumGap.role === 'builder') {
-      const convertibleBuilder = workers.some(creep => !creep.spawning &&
-        (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
-        hasBuilderBody(creep));
-      return convertibleBuilder ? null : {
-        role: 'builder',
-        builderScope: 'local',
-        builderMission: 'build',
-        forceSpawn: true,
-        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
-      };
-    }
-    if (minimumGap && minimumGap.role === 'repairBuilder') {
-      return {
-        role: 'builder',
-        builderScope: 'local',
-        builderMission: 'repair',
-        forceSpawn: true,
-        minimumEnergy: Math.min(room.energyCapacityAvailable, workerCost * 4)
-      };
-    }
-    if (minimumGap && minimumGap.role === 'hauler') {
-      const activeLocalHauler = workers.some(creep =>
-        creep.memory.role === 'hauler');
-      return {
-        role: 'hauler',
-        forceSpawn: true,
-        minimumEnergy: activeLocalHauler
-          ? room.energyCapacityAvailable : recoveryEnergy
-      };
-    }
-    if (minimumGap && minimumGap.role === 'refiller') {
-      return {
-        role: 'refiller',
-        forceSpawn: true,
-        refillClusterId: replacementCluster && replacementCluster.id,
-        refillClusterX: replacementCluster && replacementCluster.x,
-        refillClusterY: replacementCluster && replacementCluster.y,
-        refillSpawnOwner: Boolean(replacementCluster &&
-          replacementCluster.fillsSpawn),
-        refillerFallbackAllowed: true,
-        minimumEnergy: refillerMinimumEnergy
-      };
-    }
-    if (!emergencyRefillerGap &&
-        viableRefillers.length < situationTargets.refiller &&
-        canAffordQualityRefiller) {
-      return {
-        role: 'refiller',
-        forceSpawn: true,
-        refillClusterId: replacementCluster && replacementCluster.id,
-        refillClusterX: replacementCluster && replacementCluster.x,
-        refillClusterY: replacementCluster && replacementCluster.y,
-        refillSpawnOwner: Boolean(replacementCluster &&
-          replacementCluster.fillsSpawn),
-        refillerFallbackAllowed: false,
-        minimumEnergy: room.energyCapacityAvailable
-      };
-    }
-    // Home source buffers need their own carrier. Without this floor, remote
-    // haulers are repeatedly pulled into the S1/S2 corridor and clog the same
-    // one-tile delivery path that remote traffic must cross.
-    const localHaulerFloor = situationTargets.hauler;
-    if (viableLocalHaulers.length < localHaulerFloor) {
-      const activeLocalHauler = workers.some(creep =>
-        creep.memory.role === 'hauler');
-      return {
-        role: 'hauler',
-        forceSpawn: true,
-        minimumEnergy: activeLocalHauler
-          ? room.energyCapacityAvailable : recoveryEnergy
-      };
-    }
+    const minimumPlan = planMinimumSpawn({
+      room, workers,
+      staffingPlan: buildRoomStaffingPlan(room, workers,
+        getRoomSituation(room).policy),
+      replacementCluster, recoveryEnergy,
+      refillerMinimumEnergy
+    });
+    const minimumGap = minimumPlan.gap;
+    const viableLocalHaulers = minimumPlan.haulers;
+    if (minimumPlan.handled) return minimumPlan.request;
     // Damaged outpost containers can erase the remote economy entirely. Once
     // home income and its dedicated refill specialist are safe, restore one
     // maintainer before remote carrier replacement churn can starve repairs.
@@ -641,6 +551,36 @@ module.exports.loop = function () {
         role: 'rebalancer',
         forceSpawn: true,
         minimumEnergy: room.energyCapacityAvailable
+      };
+    }
+    // Every local and remote minimum above is now covered. Only now may the
+    // spawn fill yellow, desired staffing for the room.
+    if (!emergencyRefillerGap &&
+        viableRefillers.length < situationTargets.refiller &&
+        canAffordQualityRefiller) {
+      return {
+        role: 'refiller',
+        forceSpawn: true,
+        refillClusterId: replacementCluster && replacementCluster.id,
+        refillClusterX: replacementCluster && replacementCluster.x,
+        refillClusterY: replacementCluster && replacementCluster.y,
+        refillSpawnOwner: Boolean(replacementCluster &&
+          replacementCluster.fillsSpawn),
+        refillerFallbackAllowed: false,
+        minimumEnergy: room.energyCapacityAvailable
+      };
+    }
+    // Home source buffers need their desired carrier roster only after no red
+    // local or outpost job remains.
+    const localHaulerFloor = situationTargets.hauler;
+    if (viableLocalHaulers.length < localHaulerFloor) {
+      const activeLocalHauler = workers.some(creep =>
+        creep.memory.role === 'hauler');
+      return {
+        role: 'hauler',
+        forceSpawn: true,
+        minimumEnergy: activeLocalHauler
+          ? room.energyCapacityAvailable : recoveryEnergy
       };
     }
     // A saturated home economy needs a real energy sink before adding more
@@ -2787,18 +2727,10 @@ module.exports.loop = function () {
       collectionDemand = Math.max(collectionDemand,
         emptyHaulers[0].store.getCapacity(RESOURCE_ENERGY));
     }
-    const projectedSourceGroups = sources.map((source, index) => {
-      const buffers = sourceBuffers.filter(buffer =>
-        getContainerPurpose(room, buffer.pos) === `source:${source.id}`);
-      return {
-        source,
-        index,
-        stored: buffers.reduce((total, buffer) => total +
-          getUnreservedEnergy(buffer), 0),
-        capacity: buffers.reduce((total, buffer) => total +
-          (buffer.store.getCapacity(RESOURCE_ENERGY) || 0), 0)
-      };
-    }).filter(group => group.capacity > 0 && group.stored > 0);
+    const projectedSourceGroups = buildSourceGroups({
+      room, sources, buffers: sourceBuffers, getContainerPurpose,
+      getUnreservedEnergy
+    });
     const stageSources = sources.filter(source => sourceBuffers.some(buffer =>
       getContainerPurpose(room, buffer.pos) === `source:${source.id}`));
     let stageSourceIndex = 0;
@@ -2814,25 +2746,8 @@ module.exports.loop = function () {
       if ((collectionDemand > 0 || ownsOpenRefill) && collectibleEnergy > 0) {
         assignments[creep.name] = 'collect';
         const cargoCapacity = creep.store.getCapacity(RESOURCE_ENERGY);
-        const rankedSourceGroups = projectedSourceGroups.slice()
-          .sort((a, b) => b.stored / b.capacity - a.stored / a.capacity ||
-            b.index - a.index);
-        const fullestGroup = rankedSourceGroups[0];
-        let group = projectedSourceGroups.find(candidate =>
-          candidate.source.id === creep.memory.collectionSourceTarget &&
-          candidate.stored > 0);
-        if (!group) group = fullestGroup;
-        if (group && fullestGroup && group !== fullestGroup) {
-          const currentRatio = group.stored / group.capacity;
-          const fullestRatio = fullestGroup.stored / fullestGroup.capacity;
-          // Preserve a trip already in progress unless another source buffer
-          // is materially more urgent. This prevents target oscillation while
-          // still letting a nearly full S2 break an old S1 preference.
-          if (fullestRatio >= 0.9 && currentRatio < 0.9 ||
-              fullestRatio - currentRatio >= 0.15) {
-            group = fullestGroup;
-          }
-        }
+        const group = selectSourceGroup(projectedSourceGroups,
+          creep.memory.collectionSourceTarget);
         const drainSourceBacklog = group && remainingSourceBacklog > 0;
         if (storage && storageWithdrawalDemand > 0 &&
             !drainSourceBacklog) {

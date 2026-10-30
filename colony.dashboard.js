@@ -2,6 +2,7 @@
 
 const createColonyDashboard = ({
   Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
+  buildRoomStaffingPlan,
   maxSpawnWait, RESOURCE_ENERGY, STRUCTURE_SPAWN, STRUCTURE_EXTENSION,
   FIND_DROPPED_RESOURCES
 }) => {
@@ -98,6 +99,8 @@ const createColonyDashboard = ({
       return counts;
     }, {});
     const roleTargets = {};
+    const roleCoverage = {};
+    const roleUsableCounts = {};
     const addRoleTarget = (role, minimum, desired, maximum = desired) => {
       const target = roleTargets[role] || { min: 0, desired: 0, max: 0 };
       target.min += Math.max(0, minimum || 0);
@@ -106,56 +109,36 @@ const createColonyDashboard = ({
       else if (target.max != null) target.max += Math.max(0, maximum || 0);
       roleTargets[role] = target;
     };
+    const addJobTarget = (role, job) => {
+      addRoleTarget(role, job.min, job.desired, job.max);
+      roleCoverage[role] = (roleCoverage[role] || 0) + job.coverageCount;
+      roleUsableCounts[role] = (roleUsableCounts[role] || 0) + job.count;
+    };
     for (const room of ownedRooms) {
       const policy = getRoomSituation(room).policy;
-      const roles = policy.roles;
-      const roleMax = entry => Number.isFinite(entry.max)
-        ? entry.max : entry.desired;
-      addRoleTarget('LM', roles.source.min, roles.source.desired,
-        roleMax(roles.source));
-      addRoleTarget('LC', roles.hauler.min, roles.hauler.desired,
-        roleMax(roles.hauler));
-      addRoleTarget('RF', roles.refiller.min, roles.refiller.desired,
-        roleMax(roles.refiller));
-      addRoleTarget('RB', roles.rebalancer.min, roles.rebalancer.desired,
-        roleMax(roles.rebalancer));
-      addRoleTarget('UP', roles.upgrader.min, roles.upgrader.desired,
-        roleMax(roles.upgrader));
-      addRoleTarget('BU-L',
-        roles.builder.min + roles.repairBuilder.min + roles.tunnelBuilder.min,
-        roles.builder.desired + roles.repairBuilder.desired +
-          roles.tunnelBuilder.desired,
-        roleMax(roles.builder) + roleMax(roles.repairBuilder) +
-          roleMax(roles.tunnelBuilder));
-      const surveys = Object.entries(room.memory)
-        .filter(([key, survey]) => key.endsWith('Survey') && survey &&
-          survey.active && survey.targetRoom)
-        .map(([, survey]) => survey);
-      const remoteBuilders = surveys.length > 0
-        ? surveys.reduce((total, survey) => total +
-          Math.max(0, survey.remoteBuilderTarget || 0), 0)
-        : policy.remote.builders;
-      const remoteMiners = surveys.length > 0
-        ? surveys.reduce((total, survey) => total +
-          (Array.isArray(survey.remoteWorkNeeds)
-            ? survey.remoteWorkNeeds.reduce((sum, need) => sum +
-              Math.max(1, need.minMiners || 0), 0)
-            : Math.max(0, survey.remoteMinerTarget || 0)), 0)
-        : policy.remote.miners;
-      const remoteHaulers = surveys.length > 0
-        ? surveys.reduce((total, survey) => total +
-          Math.max(0, survey.remoteHaulerTarget || 0), 0)
-        : policy.remote.haulers;
-      // Remote headcount is work/route based and may legitimately exceed the
-      // slot count when small bodies share a slot, so it has no hard maximum.
-      addRoleTarget('BU-O', remoteBuilders, remoteBuilders, null);
-      addRoleTarget('OP', remoteMiners, remoteMiners, null);
-      addRoleTarget('OC', remoteHaulers, remoteHaulers, null);
+      const jobs = buildRoomStaffingPlan(room, creeps, policy).jobs;
+      addJobTarget('LM', jobs.source);
+      addJobTarget('LC', jobs.hauler);
+      addJobTarget('RF', jobs.refiller);
+      addJobTarget('RB', jobs.rebalancer);
+      addJobTarget('UP', jobs.upgrader);
+      for (const job of [jobs.builder, jobs.repairBuilder,
+        jobs.tunnelBuilder]) addJobTarget('BU-L', job);
+      addJobTarget('BU-O', jobs.remoteBuilder);
+      addJobTarget('OP', jobs.remoteMiner);
+      addJobTarget('OC', jobs.remoteHauler);
     }
     const roleStatuses = Object.fromEntries([...new Set([
       ...Object.keys(roleCounts), ...Object.keys(roleTargets)
-    ])].map(role => [role, getStaffingStatus(roleCounts[role] || 0,
-      roleTargets[role])]));
+    ])].map(role => {
+      const target = roleTargets[role];
+      if (!target || roleCoverage[role] == null) {
+        return [role, getStaffingStatus(roleCounts[role] || 0, target)];
+      }
+      if (roleCoverage[role] < target.min) return [role, 'belowMinimum'];
+      return [role, getStaffingStatus(roleUsableCounts[role] || 0,
+        { ...target, min: 0 })];
+    }));
     const alerts = [];
     const overMaximum = Object.entries(roleStatuses)
       .filter(([, status]) => status === 'aboveMaximum')

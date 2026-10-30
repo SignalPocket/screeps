@@ -1,21 +1,32 @@
 'use strict';
 
-const SAMPLE_INTERVAL = 100;
-const MAX_RECORDS = 36;
+const SAMPLE_INTERVAL = 250;
+const MAX_RECORDS = 32;
 
 const clamp = (value, minimum, maximum) =>
   Math.max(minimum, Math.min(maximum, value));
 const average = values => values.length
   ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+const ratio = value => Math.round(clamp(Number(value) || 0, 0, 1) * 1000) /
+  1000;
 
 const compactRecord = (tick, metrics) => ({
   tick,
   repair: Math.max(0, Math.round(metrics.repair || 0)),
   build: Math.max(0, Math.round(metrics.build || 0)),
-  source: clamp(Number(metrics.sourceRatio) || 0, 0, 1),
-  work: clamp(Number(metrics.workBufferRatio) || 0, 0, 1),
-  ready: clamp(Number(metrics.readyRatio) || 0, 0, 1),
-  dropped: Math.max(0, Math.round(metrics.dropped || 0))
+  source: ratio(metrics.sourceRatio),
+  sourceLow: ratio(metrics.lowestSourceRatio),
+  work: ratio(metrics.workBufferRatio),
+  extensions: metrics.extensionBufferRatio == null
+    ? null : ratio(metrics.extensionBufferRatio),
+  ready: ratio(metrics.readyRatio),
+  stored: Math.max(0, Math.round(metrics.storedEnergy || 0)),
+  dropped: Math.max(0, Math.round(metrics.dropped || 0)),
+  population: Math.max(0, Math.round(metrics.population || 0)),
+  desired: Math.max(0, Math.round(metrics.desiredPopulation || 0)),
+  controllerTicks: Math.max(0, Math.round(metrics.controllerTicks || 0)),
+  controllerProgress: ratio(metrics.controllerProgress),
+  outposts: Math.max(0, Math.round(metrics.activeOutposts || 0))
 });
 
 const analyzeRecords = (records, previous = {}) => {
@@ -75,12 +86,15 @@ const updateRoomTrends = (memory, tick, metrics, options = {}) => {
   const maxRecords = options.maxRecords || MAX_RECORDS;
   const bucket = Math.floor(tick / interval) * interval;
   const database = memory.roomTrendHistory || {
-    version: 1, interval, maxRecords, records: [], adjustment: {}
+    version: 2, interval, maxRecords, records: [], adjustment: {}
   };
   if (!Array.isArray(database.records)) database.records = [];
   const record = compactRecord(bucket, metrics);
   const last = database.records[database.records.length - 1];
-  if (last && last.tick === bucket) {
+  database.interval = interval;
+  database.maxRecords = maxRecords;
+  database.version = 2;
+  if (last && (last.tick === bucket || tick - last.tick < interval)) {
     memory.roomTrendHistory = database;
     return database;
   }
@@ -88,8 +102,6 @@ const updateRoomTrends = (memory, tick, metrics, options = {}) => {
   if (database.records.length > maxRecords) {
     database.records.splice(0, database.records.length - maxRecords);
   }
-  database.interval = interval;
-  database.maxRecords = maxRecords;
   database.updated = tick;
   database.adjustment = analyzeRecords(database.records,
     database.adjustment);

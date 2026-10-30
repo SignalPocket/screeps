@@ -165,6 +165,20 @@ const createRoomSituation = dependencies => {
         structure.structureType === STRUCTURE_EXTENSION &&
         Math.max(Math.abs(structure.pos.x - cluster.x),
           Math.abs(structure.pos.y - cluster.y)) <= 3));
+    const extensionContainers = structures.filter(structure =>
+      structure.structureType === STRUCTURE_CONTAINER &&
+      (getContainerPurpose
+        ? getContainerPurpose(room, structure.pos) === 'extensions'
+        : extensionClusters.some(cluster =>
+          Math.max(Math.abs(structure.pos.x - cluster.x),
+            Math.abs(structure.pos.y - cluster.y)) <= 3)));
+    const extensionBufferCapacity = extensionContainers.reduce(
+      (total, container) => total +
+        (container.store.getCapacity(RESOURCE_ENERGY) || 0), 0);
+    const extensionBufferRatio = extensionBufferCapacity > 0
+      ? extensionContainers.reduce((total, container) => total +
+        container.store[RESOURCE_ENERGY], 0) / extensionBufferCapacity
+      : null;
     const policy = derivePopulationPolicy({
       rcl: room.controller && room.controller.level,
       controllerOwned: Boolean(room.controller && room.controller.my),
@@ -212,8 +226,18 @@ const createRoomSituation = dependencies => {
       // failure. There is no destination to keep stocked yet.
       workBufferRatio: controllerBufferCapacity > 0
         ? controllerBufferRatio : 1,
+      lowestSourceRatio: bufferRatios.length ? Math.min(...bufferRatios) : 0,
+      extensionBufferRatio,
       readyRatio: energyRatio,
-      dropped: droppedEnergy
+      storedEnergy,
+      dropped: droppedEnergy,
+      population: Object.values(Game.creeps).filter(creep =>
+        creep.memory.home === room.name).length,
+      desiredPopulation: policy.totals.desired,
+      controllerTicks: room.controller && room.controller.ticksToDowngrade,
+      controllerProgress: room.controller && room.controller.progressTotal > 0
+        ? room.controller.progress / room.controller.progressTotal : 0,
+      activeOutposts: activeRemotePlans.length
     });
     applyTrendAdjustments(policy, trendHistory);
     const targets = Object.fromEntries(Object.entries(policy.roles)
