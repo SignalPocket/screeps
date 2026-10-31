@@ -2,6 +2,10 @@
 
 Personal Screeps colony, edited directly in Steam's local script folder.
 
+The durable architecture, policy specifications, subsystem ownership, module
+reference, decision records, and live-verification procedure are indexed in
+[`docs/README.md`](docs/README.md).
+
 ## One-folder workflow
 
 Open this folder in VS Code. Edit main.js and save; Steam synchronizes the
