@@ -87,6 +87,7 @@ const dualRoom = {
       { x: 26, y: 7 }, { x: 26, y: 6 }
     ]
 };
+const dualMoves = [];
 const dualBrigade = createControllerBrigade({
   Game, RoomPosition: Position, RESOURCE_ENERGY: 'energy', OK: 0,
   ERR_NOT_IN_RANGE: -9, LOOK_STRUCTURES: 'structures',
@@ -95,7 +96,8 @@ const dualBrigade = createControllerBrigade({
   STRUCTURE_ROAD: 'road', TERRAIN_MASK_WALL: 1,
   getRoomStructures: () => [buffer, secondaryBuffer, ...roadStructures],
   getContainerPurpose: () => 'controller',
-  moveCreep: () => {}
+  moveCreep: (creep, target, moveRange, options) =>
+    dualMoves.push({ creep, target, range: moveRange, options })
 });
 const dualPlan = dualBrigade.buildPlan(dualRoom);
 assert.strictEqual(dualPlan.stationary, true);
@@ -219,6 +221,45 @@ const roster = [0, 1, 3, 4, 5, 6, 7].map(slot => ({ memory: {
 } }));
 assert.strictEqual(brigade.getMissingSlot(roster, 'W1N1',
   plan.segments.length), 2);
+const completeRoster = Array.from({ length: plan.segments.length },
+  (_, slot) => ({ name: `BRIG${slot + 1}`, ticksToLive: slot === 2 ? 60 : 500,
+    spawning: false, memory: { home: 'W1N1',
+      role: CONTROLLER_BRIGADE_ROLE, controllerRelaySlot: slot } }));
+assert.strictEqual(brigade.getMissingSlot(completeRoster, 'W1N1',
+  plan.segments.length, 60), 2);
+completeRoster.push({ name: 'BRIG3-R100', ticksToLive: 1500,
+  spawning: false, memory: { home: 'W1N1',
+    role: CONTROLLER_BRIGADE_ROLE, controllerRelaySlot: 2 } });
+assert.strictEqual(brigade.getMissingSlot(completeRoster, 'W1N1',
+  plan.segments.length, 60), null);
+
+const reliefSegment = dualPlan.segments[1];
+const incumbent = {
+  name: 'BRIG2', ticksToLive: 20, room: dualRoom,
+  memory: { home: 'W1N1', role: CONTROLLER_BRIGADE_ROLE,
+    controllerRelaySlot: 1 },
+  pos: new Position(reliefSegment.pickup.x, reliefSegment.pickup.y),
+  store: { energy: 0, getFreeCapacity: () => 100 }
+};
+const relief = {
+  name: 'BRIG2-R100', ticksToLive: 1500, room: dualRoom,
+  memory: { home: 'W1N1', role: CONTROLLER_BRIGADE_ROLE,
+    controllerRelaySlot: 1 },
+  pos: new Position(reliefSegment.pickup.x + 1,
+    reliefSegment.pickup.y + 1),
+  store: { energy: 0, getFreeCapacity: () => 100 }
+};
+Game.creeps[incumbent.name] = incumbent;
+Game.creeps[relief.name] = relief;
+assert.strictEqual(dualBrigade.run(relief, dualPlan), true);
+assert.strictEqual(relief.memory.controllerRelayStandby, true);
+assert.strictEqual(relief.memory.taskTarget, 'BRIG2 relief waiting');
+assert.strictEqual(dualMoves[dualMoves.length - 1].range, 1);
+delete Game.creeps[incumbent.name];
+assert.strictEqual(dualBrigade.run(relief, dualPlan), true);
+assert.strictEqual(relief.memory.controllerRelayStandby, undefined);
+assert.strictEqual(dualMoves[dualMoves.length - 1].range, 0);
+delete Game.creeps[relief.name];
 
 const lastSegment = plan.segments[finalSlot];
 const relay = {

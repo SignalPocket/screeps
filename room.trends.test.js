@@ -110,7 +110,8 @@ const policy = {
     repairBuilder: { min: 0, desired: 1, max: 1, reason: 'repair' },
     hauler: { min: 1, desired: 2, max: 3, reason: 'haul' }
   },
-  remote: { miners: 1, haulers: 1, builders: 0 },
+  remote: { minersMin: 1, miners: 2, haulersMin: 1, haulers: 3,
+    buildersMin: 0, builders: 0 },
   totals: { min: 0, desired: 0, max: 0 }
 };
 applyTrendAdjustments(policy, { adjustment: {
@@ -119,6 +120,7 @@ applyTrendAdjustments(policy, { adjustment: {
 assert.strictEqual(policy.roles.repairBuilder.desired, 3);
 assert.strictEqual(policy.roles.repairBuilder.max, 3);
 assert.strictEqual(policy.roles.hauler.desired, 3);
-assert.strictEqual(policy.totals.desired, 8);
+assert.strictEqual(policy.totals.min, 3);
+assert.strictEqual(policy.totals.desired, 11);
 
 console.log('room trend scenarios passed');

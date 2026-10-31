@@ -257,6 +257,14 @@ const expiredBuilderRequest = spawnPolicy.prepareSpawnRequest({
   hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
 });
 assert.deepStrictEqual(expiredBuilderRequest.body, ['work', 'carry', 'move']);
+const cappedForceRequest = spawnPolicy.prepareSpawnRequest({
+  spawn: { room: builderRoom },
+  assignment: { role: 'builder', forceSpawn: true },
+  workers: [spawnPolicyCreep('builder'), spawnPolicyCreep('harvester')],
+  workerLimit: 2,
+  hasWorkParts: creep => creep.getActiveBodyparts(parts.WORK) > 0
+});
+assert.strictEqual(cappedForceRequest.needsWorker, false);
 
 const rosterStaffing = createSourceStaffing({
   Game: { time: 1 },
@@ -418,6 +426,14 @@ namingMemory.creeps['01-RF-P-500'] = {};
 assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
   role: 'refiller', refillClusterId: 'primary'
 }), '01-RF-P-500-2');
+assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
+  role: 'controller-relay', controllerRelaySlot: 0
+}), 'BRIG1');
+namingGame.creeps.BRIG1 = {};
+assert.strictEqual(naming.getBirthName(namingGame.spawns.Spawn1, {
+  role: 'controller-relay', controllerRelaySlot: 0
+}), 'BRIG1-R500');
+delete namingGame.creeps.BRIG1;
 
 const dashboardDraws = [];
 const dashboardRoom = {
@@ -1180,6 +1196,21 @@ assert.strictEqual(landmarkRoom.memory.controllerContainerPairPlan.ready,
 assert.deepStrictEqual(
   landmarkRoom.memory.controllerContainerPlan.containerIds,
   ['rc-one', 'rc-two']);
+landmarkRoom.memory.controllerContainerPairPlan.branchX = 1;
+landmarks.recover(landmarkRoom);
+assert.deepStrictEqual({
+  x: landmarkRoom.memory.controllerContainerPairPlan.branchX,
+  y: landmarkRoom.memory.controllerContainerPairPlan.branchY
+}, { x: 38, y: 15 });
+const flagFailureRoom = {
+  name: 'W2N2', storage: null,
+  memory: { extensionCluster: { x: 10, y: 10 } },
+  find: () => [], createFlag: () => -10
+};
+landmarks.reconcile(flagFailureRoom);
+assert.deepStrictEqual(flagFailureRoom.memory.landmarkFlags.names, []);
+assert.deepStrictEqual(flagFailureRoom.memory.landmarkFlags.errors,
+  ['LM_W2N2_EXT_PRIMARY']);
 
 let moveOptions;
 const movementGame = { time: 20, rooms: { W1N1: {
@@ -1334,7 +1365,9 @@ const staffingRoom = {
   energyCapacityAvailable: 550,
   getTerrain: () => ({ get: (x, y) => x === 9 && y === 9 ? 1 : 0 }),
   lookForAt: (type, x, y) => type === 'structures' && x === 11 && y === 11
-    ? [{ structureType: 'spawn' }] : []
+    ? [{ structureType: 'spawn' }]
+    : type === 'structures' && x === 9 && y === 9
+      ? [{ structureType: 'road' }] : []
 };
 const staffing = createSourceStaffing({
   Game: staffingGame,
@@ -1342,12 +1375,13 @@ const staffing = createSourceStaffing({
   TERRAIN_MASK_WALL: 1,
   LOOK_STRUCTURES: 'structures',
   LOOK_CONSTRUCTION_SITES: 'sites',
+  STRUCTURE_ROAD: 'road',
   OBSTACLE_OBJECT_TYPES: ['spawn'],
   BODYPART_COST: { carry: 50, move: 50, work: 100 },
   CARRY: 'carry', MOVE: 'move', WORK: 'work',
   ENERGY_REGEN_TIME: 300, HARVEST_POWER: 2
 });
-assert.strictEqual(staffing.getSourceSpotCount(staffingRoom, staffingSource), 6);
+assert.strictEqual(staffing.getSourceSpotCount(staffingRoom, staffingSource), 7);
 assert.strictEqual(staffing.getSourceBodyWorkCapacity(staffingRoom), 4);
 assert.deepStrictEqual(staffing.getSourceWorkerTargets(staffingRoom,
   { 'staff-source': 3 }), { 'staff-source': 2 });
@@ -1512,6 +1546,9 @@ const roomSituation = createRoomSituation({
     capturedPolicyState = state;
     return {
       mode: 'developing',
+      health: 'healthy',
+      permissions: { remoteMaintenance: true, remoteGrowth: true },
+      budgets: { constructionCrewScale: 0.75 },
       roles: {
         source: { min: 1, desired: 1, max: 2 },
         hauler: { min: 1, desired: 1, max: 2 }
@@ -1550,6 +1587,9 @@ assert.strictEqual(capturedPolicyState.sourceCount, 1);
 assert.strictEqual(capturedHealthState.sourceEnergyRatio, 0.5);
 assert.strictEqual(situationResult.targets.hauler, 1);
 assert.strictEqual(situationRoom.memory.populationPolicy.updated, 300);
+assert.strictEqual(situationRoom.memory.populationPolicy.health, 'healthy');
+assert.strictEqual(
+  situationRoom.memory.populationPolicy.budgets.constructionCrewScale, 0.75);
 assert.strictEqual(situationRoom.memory.roomStatus.key, 'stable');
 
 const limitSource = {
@@ -1578,7 +1618,12 @@ const workerLimits = createWorkerLimits({
   getRoomCreeps: () => [{ memory: { navStuck: 2, navLastTick: 400 } }],
   getSourceWorkerTargets: () => ({ 'limit-source': 2 }),
   getRoomSituation: () => ({ targets: limitTargets,
-    policy: { roles: limitRoles } }),
+    policy: {
+      roles: limitRoles,
+      permissions: { remoteMaintenance: true, remoteGrowth: true },
+      remote: { minersMin: 2, miners: 2, haulersMin: 1, haulers: 2,
+        buildersMin: 1, builders: 1 }
+    } }),
   LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
   OBSTACLE_OBJECT_TYPES: ['spawn'], STRUCTURE_ROAD: 'road',
   STRUCTURE_RAMPART: 'rampart', TERRAIN_MASK_WALL: 1
@@ -1594,8 +1639,12 @@ const roadGatedLimits = createWorkerLimits({
   getRoomCreeps: () => [],
   getSourceWorkerTargets: () => ({ 'limit-source': 2 }),
   getRoomSituation: () => ({ targets: limitTargets,
-    policy: { roles: limitRoles } }),
-  remoteGrowthAllowed: () => false,
+    policy: {
+      roles: limitRoles,
+      permissions: { remoteMaintenance: true, remoteGrowth: false },
+      remote: { minersMin: 2, miners: 2, haulersMin: 1, haulers: 1,
+        buildersMin: 1, builders: 1 }
+    } }),
   LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
   OBSTACLE_OBJECT_TYPES: ['spawn'], STRUCTURE_ROAD: 'road',
   STRUCTURE_RAMPART: 'rampart', TERRAIN_MASK_WALL: 1
@@ -1764,6 +1813,64 @@ assert.strictEqual(roadPlanner.isHeatmapRoadPosition(roadRoom,
 assert.strictEqual(roadPlanner.isHeatmapRoadPosition(roadRoom,
   { pos: { x: 8, y: 8 } }), false);
 assert.strictEqual(roadPlanner.getRoadBudget(roadRoom, importantPaths, 3), 50);
+
+const infrastructureRange = (origin, targetOrX, maybeY) => {
+  const target = typeof targetOrX === 'number'
+    ? { x: targetOrX, y: maybeY }
+    : (targetOrX.pos || targetOrX);
+  return Math.max(Math.abs(origin.x - target.x),
+    Math.abs(origin.y - target.y));
+};
+const protectedSource = { id: 'protected-source', pos: { x: 10, y: 10 } };
+protectedSource.pos.getRangeTo = (targetOrX, maybeY) =>
+  infrastructureRange(protectedSource.pos, targetOrX, maybeY);
+const protectedRoad = { structureType: 'road', pos: { x: 11, y: 10 } };
+protectedRoad.pos.getRangeTo = (targetOrX, maybeY) =>
+  infrastructureRange(protectedRoad.pos, targetOrX, maybeY);
+const protectedExtension = {
+  structureType: 'extension', pos: { x: 12, y: 10 }
+};
+protectedExtension.pos.getRangeTo = (targetOrX, maybeY) =>
+  infrastructureRange(protectedExtension.pos, targetOrX, maybeY);
+const protectedController = { my: true, pos: { x: 20, y: 20 } };
+protectedController.pos.getRangeTo = (targetOrX, maybeY) =>
+  infrastructureRange(protectedController.pos, targetOrX, maybeY);
+const placedProtectedRoads = [];
+const protectedRoadRoom = {
+  name: 'W7N4',
+  memory: { traffic: { tiles: { '9:10': 8 } } },
+  controller: protectedController,
+  find: type => type === 'structures'
+    ? [protectedRoad, protectedExtension]
+    : type === 'sites' ? [] : [],
+  getTerrain: () => ({ get: (x, y) => x === 9 && y === 10 ? 1 : 0 }),
+  findPath: () => [],
+  lookForAt: (type, x, y) => type === 'structures-at' &&
+    x === 11 && y === 10 ? [protectedRoad] : [],
+  createConstructionSite: (x, y, type) => {
+    placedProtectedRoads.push({ x, y, type });
+    return 0;
+  }
+};
+const protectedRoadPlanner = createRoadPlanner({
+  Game: { time: 701 }, RoomPosition: function () {},
+  scheduledRoomTick: () => false,
+  getRoomSources: () => [protectedSource], getRoomCreeps: () => [],
+  showTrafficHeatmap: false, FIND_MY_SPAWNS: 'spawns',
+  FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
+  STRUCTURE_ROAD: 'road', STRUCTURE_CONTAINER: 'container',
+  LOOK_STRUCTURES: 'structures-at', LOOK_CONSTRUCTION_SITES: 'sites-at',
+  TERRAIN_MASK_WALL: 1, TERRAIN_MASK_SWAMP: 2, OK: 0
+});
+const protectedPaths = protectedRoadPlanner
+  .getInfrastructureRoadPaths(protectedRoadRoom);
+assert.ok(protectedRoadPlanner.isHeatmapRoadPosition(protectedRoadRoom,
+  protectedRoad));
+assert.ok(protectedRoadRoom.memory.protectedInfrastructureRoadTiles['9:10']);
+assert.strictEqual(protectedRoadPlanner.placeRoadSite(protectedRoadRoom,
+  protectedPaths, protectedRoadRoom.memory.traffic, 50), true);
+assert.deepStrictEqual(placedProtectedRoads[0],
+  { x: 9, y: 10, type: 'road' });
 
 const infrastructureSource = {
   id: 'infra-source',

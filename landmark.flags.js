@@ -19,19 +19,21 @@ const createLandmarkFlags = ({
     const name = nameFor(room, landmark.key);
     const flag = Game.flags[name];
     if (!flag) {
-      room.createFlag(landmark.x, landmark.y, name,
+      const created = room.createFlag(landmark.x, landmark.y, name,
         landmark.color, landmark.secondaryColor);
-      return true;
+      return created === name ? name : null;
     }
     if (flag.pos.roomName !== room.name || flag.pos.x !== landmark.x ||
         flag.pos.y !== landmark.y) {
-      flag.setPosition(landmark.x, landmark.y);
+      if (flag.setPosition(landmark.x, landmark.y) !== 0) return null;
     }
     if (flag.color !== landmark.color ||
         flag.secondaryColor !== landmark.secondaryColor) {
-      flag.setColor(landmark.color, landmark.secondaryColor);
+      if (flag.setColor(landmark.color, landmark.secondaryColor) !== 0) {
+        return null;
+      }
     }
-    return true;
+    return name;
   };
   const recover = room => {
     const primaryCluster = flagPosition(room, 'EXT_PRIMARY');
@@ -57,9 +59,7 @@ const createLandmarkFlags = ({
     const primary = flagPosition(room, 'RC_PRIMARY');
     const secondary = flagPosition(room, 'RC_SECONDARY');
     const branch = flagPosition(room, 'BRIG_BRANCH');
-    if ((!room.memory.controllerContainerPairPlan ||
-        room.memory.controllerContainerPairPlan.version !== 2) &&
-        primary && secondary && branch) {
+    if (primary && secondary && branch) {
       const containers = room.find(FIND_STRUCTURES, {
         filter: structure => structure.structureType === STRUCTURE_CONTAINER
       });
@@ -67,21 +67,30 @@ const createLandmarkFlags = ({
         container.pos.x === point.x && container.pos.y === point.y);
       const primaryContainer = at(primary);
       const secondaryContainer = at(secondary);
-      room.memory.controllerContainerPairPlan = {
-        version: 2,
-        mode: 'stationary-branch',
-        sacrificeClusterKey: 'overflow',
-        primaryId: primaryContainer && primaryContainer.id,
-        primaryX: primary.x,
-        primaryY: primary.y,
-        secondaryId: secondaryContainer && secondaryContainer.id,
-        secondaryX: secondary.x,
-        secondaryY: secondary.y,
-        branchX: branch.x,
-        branchY: branch.y,
-        ready: Boolean(primaryContainer && secondaryContainer),
-        recoveredFromFlags: Game.time
-      };
+      const pair = room.memory.controllerContainerPairPlan;
+      const matchesFlags = pair && pair.version === 2 &&
+        pair.primaryX === primary.x && pair.primaryY === primary.y &&
+        pair.secondaryX === secondary.x && pair.secondaryY === secondary.y &&
+        pair.branchX === branch.x && pair.branchY === branch.y &&
+        (!primaryContainer || pair.primaryId === primaryContainer.id) &&
+        (!secondaryContainer || pair.secondaryId === secondaryContainer.id);
+      if (!matchesFlags) {
+        room.memory.controllerContainerPairPlan = {
+          version: 2,
+          mode: 'stationary-branch',
+          sacrificeClusterKey: 'overflow',
+          primaryId: primaryContainer && primaryContainer.id,
+          primaryX: primary.x,
+          primaryY: primary.y,
+          secondaryId: secondaryContainer && secondaryContainer.id,
+          secondaryX: secondary.x,
+          secondaryY: secondary.y,
+          branchX: branch.x,
+          branchY: branch.y,
+          ready: Boolean(primaryContainer && secondaryContainer),
+          recoveredFromFlags: Game.time
+        };
+      }
       if (primaryContainer && secondaryContainer) {
         room.memory.controllerContainerPlan = {
           version: 3,
@@ -138,11 +147,15 @@ const createLandmarkFlags = ({
         color: COLOR_ORANGE, secondaryColor: COLOR_WHITE
       }
     ].filter(Boolean);
-    for (const landmark of landmarks) ensureFlag(room, landmark);
+    const names = landmarks.map(landmark => ensureFlag(room, landmark))
+      .filter(Boolean);
     room.memory.landmarkFlags = {
       version: 1,
       updated: Game.time,
-      names: landmarks.map(landmark => nameFor(room, landmark.key))
+      names,
+      errors: landmarks.length === names.length ? undefined : landmarks
+        .map(landmark => nameFor(room, landmark.key))
+        .filter(name => !names.includes(name))
     };
     return landmarks;
   };

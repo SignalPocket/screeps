@@ -29,6 +29,12 @@ const createStaffingPlanner = dependencies => {
     getRoomSources = () => []
   } = dependencies;
 
+  /**
+   * Compare viable creep coverage with an already-derived policy.
+   * This planner may count and rank gaps; it must not create independent
+   * targets from room memory. Remote targets therefore come from policy.remote
+   * even though survey memory is still used to identify eligible creeps.
+   */
   const buildRoomStaffingPlan = (room, creeps, policy) => {
     const homeCreeps = (creeps || []).filter(creep =>
       creep.memory.home === room.name);
@@ -51,6 +57,7 @@ const createStaffingPlanner = dependencies => {
       };
     };
     const roles = policy.roles;
+    const remotePolicy = policy.remote || {};
     add('source', homeCreeps.filter(creep => localViable(creep) &&
       (creep.memory.role === 'miner' ||
         creep.memory.role === 'harvester') && hasWorkParts(creep)),
@@ -84,13 +91,9 @@ const createStaffingPlanner = dependencies => {
     const remoteMiners = homeCreeps.filter(creep => remoteViable(creep) &&
       creep.memory.role === 'remote-scout' &&
       remoteRooms.has(creep.memory.remoteRoom));
-    const remoteMinerTarget = surveys.reduce((total, survey) => total +
-      (Array.isArray(survey.remoteWorkNeeds) && survey.remoteWorkNeeds.length
-        ? survey.remoteWorkNeeds.reduce((sum, need) => sum +
-          Math.max(1, need.minMiners || 0), 0)
-        : Math.max(1, survey.remoteMinerTarget || 0)), 0);
     add('remoteMiner', remoteMiners, {
-      min: remoteMinerTarget, desired: remoteMinerTarget,
+      min: remotePolicy.minersMin || 0,
+      desired: remotePolicy.miners || 0,
       max: null
     });
     const remoteHaulers = homeCreeps.filter(creep => remoteViable(creep) &&
@@ -98,23 +101,17 @@ const createStaffingPlanner = dependencies => {
       remoteRooms.has(creep.memory.remoteRoom));
     const coveredRemoteRooms = new Set(remoteHaulers.map(creep =>
       creep.memory.remoteRoom));
-    const remoteHaulerTarget = surveys.reduce((total, survey) => total +
-      Math.max(1, survey.remoteHaulerTarget || 0), 0);
     add('remoteHauler', remoteHaulers, {
-      min: surveys.length,
-      desired: remoteHaulerTarget,
+      min: remotePolicy.haulersMin || 0,
+      desired: remotePolicy.haulers || 0,
       max: null
     }, coveredRemoteRooms.size);
     const remoteBuilders = homeCreeps.filter(creep => remoteViable(creep) &&
       isBuilder(creep, 'outpost') &&
       remoteRooms.has(creep.memory.remoteRoom));
-    const remoteBuilderTarget = surveys.reduce((total, survey) => total +
-      Math.max(0, survey.remoteBuilderTarget || 0), 0);
-    const remoteBuilderMinimum = surveys.filter(survey =>
-      (survey.remoteBuilderTarget || 0) > 0).length;
     add('remoteBuilder', remoteBuilders, {
-      min: remoteBuilderMinimum,
-      desired: remoteBuilderTarget,
+      min: remotePolicy.buildersMin || 0,
+      desired: remotePolicy.builders || 0,
       max: null
     });
 

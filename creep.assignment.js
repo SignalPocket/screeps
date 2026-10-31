@@ -8,7 +8,7 @@ const transientFields = [
 const sourceFields = [
   'preferredSource', 'harvestSource', 'harvestX', 'harvestY',
   'sourceReplacement', 'sourceReserve', 'minerSource', 'minerContainer',
-  'minerX', 'minerY'
+  'minerX', 'minerY', 'sourceRecoveryPlanTick'
 ];
 const builderFields = [
   'builderScope', 'builderMission', 'builderTarget', 'builderRosterRoom',

@@ -4,10 +4,16 @@ const createWorkerLimits = ({
   Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
   getRoomSituation, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
   OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD, STRUCTURE_RAMPART,
-  TERRAIN_MASK_WALL, remoteGrowthAllowed = () => true
+  TERRAIN_MASK_WALL
 }) => {
   const cache = {};
 
+  /**
+   * Collapse policy role targets into total population budgets.
+   * Geometry is diagnostic here; it must not increase remote or role demand
+   * beyond the policy snapshot. Results are cached briefly to avoid repeating
+   * source-tile scans on every consumer path.
+   */
   const getWorkerLimits = room => {
     if (cache[room.name]) return cache[room.name];
     const savedPlan = room.memory.workerLimitsPlan;
@@ -68,30 +74,15 @@ const createWorkerLimits = ({
     const localWorkerDesired = roles.source.desired + targets.builder +
       targets.repairBuilder + targets.upgrader + targets.hauler +
       targets.refiller + targets.rebalancer + targets.tunnelBuilder;
-    const countedRemoteRooms = new Set();
-    const allowRemoteGrowth = remoteGrowthAllowed(room);
-    let remoteWorkerMinimum = 0;
-    let remoteWorkerDesired = 0;
-    for (const plan of Object.values(room.memory)) {
-      if (!plan || typeof plan !== 'object' || !plan.active ||
-          !plan.targetRoom || countedRemoteRooms.has(plan.targetRoom)) continue;
-      countedRemoteRooms.add(plan.targetRoom);
-      const needs = Array.isArray(plan.remoteWorkNeeds)
-        ? plan.remoteWorkNeeds : [];
-      const remoteMiners = needs.length > 0
-        ? needs.reduce((total, need) => total +
-          Math.max(1, need.minMiners || 0), 0)
-        : (plan.remoteMinerTarget || 1);
-      const remoteHaulerMinimum = Math.max(1, needs.length || 1);
-      const remoteBuilders = plan.remoteBuilderTarget || 0;
-      remoteWorkerMinimum += remoteMiners + remoteHaulerMinimum +
-        Math.min(1, remoteBuilders);
-      remoteWorkerDesired += remoteMiners +
-        (allowRemoteGrowth
-          ? Math.max(remoteHaulerMinimum, plan.remoteHaulerTarget || 0)
-          : remoteHaulerMinimum) +
-        (allowRemoteGrowth ? remoteBuilders : Math.min(1, remoteBuilders));
-    }
+    const remote = situation.policy.remote || {};
+    const maintainRemotes = Boolean(situation.policy.permissions &&
+      situation.policy.permissions.remoteMaintenance);
+    const allowRemoteGrowth = Boolean(situation.policy.permissions &&
+      situation.policy.permissions.remoteGrowth);
+    const remoteWorkerMinimum = (remote.minersMin || 0) +
+      (remote.haulersMin || 0) + (remote.buildersMin || 0);
+    const remoteWorkerDesired = (remote.miners || 0) +
+      (remote.haulers || 0) + (remote.builders || 0);
     const minimumWorkerLimit = localWorkerMinimum + remoteWorkerMinimum;
     const desiredWorkerLimit = Math.max(minimumWorkerLimit,
       localWorkerDesired + remoteWorkerDesired);
@@ -108,6 +99,7 @@ const createWorkerLimits = ({
       sourceSpotTotal,
       minerLimit,
       localWorkerMinimum,
+      maintainRemotes,
       allowRemoteGrowth,
       remoteWorkerMinimum,
       minimumWorkerLimit,

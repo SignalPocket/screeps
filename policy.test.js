@@ -73,15 +73,35 @@ assert.strictEqual(splitExtensions.roles.refiller.min, 2);
 assert.strictEqual(splitExtensions.roles.refiller.desired, 2);
 assert.strictEqual(splitExtensions.roles.refiller.max, 2);
 
-const remote = derivePopulationPolicy({ ...base, activeRemoteRooms: 2,
+const remote = derivePopulationPolicy({ ...base, rcl: 5,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true,
+  activeRemoteRooms: 2,
   activeRemoteSources: 4, averageRemoteDistance: 40,
   remoteRoomsWithConstruction: 1 });
+assert.strictEqual(remote.health, 'healthy');
+assert.strictEqual(remote.permissions.remoteGrowth, true);
 assert.strictEqual(remote.remote.miners, 4);
 assert.ok(remote.remote.haulers >= 4);
 assert.strictEqual(remote.remote.builders, 1);
 assert.strictEqual(remote.roles.rebalancer.min, 1);
   assert.strictEqual(remote.roles.rebalancer.desired, 1);
   assert.ok(remote.roles.rebalancer.max >= 2);
+
+const strainedRemote = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 0.4, bufferRatio: 0.1, storedEnergy: 1000,
+  coreRoadAccessComplete: true, activeRemoteRooms: 2,
+  activeRemoteSources: 4, remoteHaulerDemand: 7 });
+assert.strictEqual(strainedRemote.health, 'strained');
+assert.strictEqual(strainedRemote.permissions.remoteMaintenance, true);
+assert.strictEqual(strainedRemote.permissions.remoteGrowth, false);
+assert.strictEqual(strainedRemote.remote.haulersMin, 2);
+assert.strictEqual(strainedRemote.remote.haulers, 2);
+
+const roadBlockedRemote = derivePopulationPolicy({ ...base, rcl: 5,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: false,
+  activeRemoteRooms: 1, activeRemoteSources: 2, remoteHaulerDemand: 7 });
+assert.strictEqual(roadBlockedRemote.permissions.remoteGrowth, false);
+assert.strictEqual(roadBlockedRemote.remote.haulers, 1);
 
 const imbalancedRemote = derivePopulationPolicy({ ...base,
   activeRemoteRooms: 3, activeRemoteSources: 4, containerImbalance: 0.65 });

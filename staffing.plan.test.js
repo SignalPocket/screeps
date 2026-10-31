@@ -23,7 +23,11 @@ const policy = {
     rebalancer: role(), upgrader: role(1), builder: role(),
     repairBuilder: role(), tunnelBuilder: role()
   },
-  remote: { miners: 0, haulers: 0, builders: 0 }
+  remote: {
+    minersMin: 1, miners: 1,
+    haulersMin: 1, haulers: 5,
+    buildersMin: 0, builders: 0
+  }
 };
 const room = {
   name: 'W1N1',
@@ -68,7 +72,11 @@ const missingOutpostCoverage = planner({
       remoteHaulerTarget: 2, remoteBuilderTarget: 0
     }
   }
-}, creeps, policy);
+}, creeps, {
+  ...policy,
+  remote: { ...policy.remote, minersMin: 2, miners: 2,
+    haulersMin: 2, haulers: 7 }
+});
 assert.strictEqual(missingOutpostCoverage.jobs.remoteHauler.count, 8);
 assert.strictEqual(missingOutpostCoverage.jobs.remoteHauler.coverageCount, 1);
 assert.strictEqual(missingOutpostCoverage.minimumGap.role, 'remoteHauler');

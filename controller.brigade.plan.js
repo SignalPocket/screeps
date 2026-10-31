@@ -1,7 +1,6 @@
 'use strict';
 
 const {
-  CONTROLLER_BRIGADE_ROLE,
   CONTROLLER_BRIGADE_SIZE,
   CONTROLLER_BRIGADE_PLAN_VERSION,
   CONTROLLER_BRIGADE_MAX_LEG
@@ -25,19 +24,6 @@ const createControllerBrigadePlanner = dependencies => {
     RoomPosition, LOOK_CONSTRUCTION_SITES, STRUCTURE_CONTAINER, STRUCTURE_ROAD,
     getRoomStructures, getContainerPurpose
   } = dependencies;
-
-  const getMissingSlot = (creeps, roomName,
-    activeSize = CONTROLLER_BRIGADE_SIZE) => {
-    const occupied = new Set((creeps || []).filter(creep =>
-      creep.memory.home === roomName &&
-      creep.memory.role === CONTROLLER_BRIGADE_ROLE &&
-      Number.isInteger(creep.memory.controllerRelaySlot))
-      .map(creep => creep.memory.controllerRelaySlot));
-    for (let slot = 0; slot < activeSize; slot++) {
-      if (!occupied.has(slot)) return slot;
-    }
-    return null;
-  };
 
   const getControllerEndpoints = room => {
     const replacement = room.memory.controllerContainerPlan;
@@ -258,7 +244,7 @@ const createControllerBrigadePlanner = dependencies => {
     };
   };
 
-  return { getMissingSlot, buildPlan };
+  return { buildPlan };
 };
 
 module.exports = { createControllerBrigadePlanner };

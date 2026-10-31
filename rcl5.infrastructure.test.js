@@ -25,7 +25,7 @@ const room = {
   find(type, options) {
     const values = type === 'my-structures' ? structures
       : type === 'sites' ? sites
-        : type === 'spawns' ? [] : [];
+      : type === 'spawns' ? [{ id: 'spawn-1', pos: position(10, 10) }] : [];
     return options && options.filter ? values.filter(options.filter) : values;
   },
   createConstructionSite(x, y, structureType) {
@@ -56,25 +56,34 @@ assert.strictEqual(network.placeLinkSite(room), false);
 const linkSites = sites.filter(site => site.structureType === 'link');
 assert.strictEqual(linkSites.length, 2);
 assert.ok(linkSites.some(site => room.controller.pos.getRangeTo(site) <= 3));
-assert.ok(linkSites.some(site => source.pos.getRangeTo(site) <= 2));
+assert.ok(linkSites.some(site => position(10, 10).getRangeTo(site) <= 2));
 
 const energyStore = (energy, capacity = 800) => ({
   energy,
   getFreeCapacity: () => capacity - energy
 });
-const hub = { id: 'hub', structureType: 'link', pos: position(24, 24),
+const controllerLink = { id: 'controller-link', structureType: 'link',
+  pos: position(24, 24),
   store: energyStore(0) };
-const sourceLink = { id: 'source-link', structureType: 'link',
-  pos: position(6, 5), store: energyStore(600), cooldown: 0,
+const spawnLink = { id: 'spawn-link', structureType: 'link',
+  pos: position(11, 10), store: energyStore(600), cooldown: 0,
   transferEnergy(target, amount) {
     this.transferred = { target: target.id, amount };
     return 0;
   }
 };
-structures.push(hub, sourceLink);
+structures.push(controllerLink, spawnLink);
 sites.splice(0, sites.length);
-assert.strictEqual(network.getSourceLink(room, source).id, 'source-link');
 assert.strictEqual(network.runLinks(room).transfers, 1);
-assert.deepStrictEqual(sourceLink.transferred, { target: 'hub', amount: 600 });
+assert.deepStrictEqual(spawnLink.transferred,
+  { target: 'controller-link', amount: 600 });
+
+controllerLink.store = energyStore(700);
+controllerLink.cooldown = 0;
+controllerLink.transferEnergy = spawnLink.transferEnergy;
+spawnLink.store = energyStore(0);
+delete spawnLink.transferred;
+assert.strictEqual(network.runLinks(room).transfers, 0);
+assert.strictEqual(controllerLink.transferred, undefined);
 
 console.log('RCL5 infrastructure scenarios passed');

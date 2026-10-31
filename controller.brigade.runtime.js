@@ -1,8 +1,7 @@
 'use strict';
 
 const {
-  CONTROLLER_BRIGADE_ROLE,
-  CONTROLLER_BRIGADE_SIZE
+  CONTROLLER_BRIGADE_ROLE
 } = typeof Game === 'undefined'
   ? require('./controller.brigade.constants')
   : require('controller.brigade.constants');
@@ -11,7 +10,8 @@ const key = point => `${point.x},${point.y}`;
 
 const createControllerBrigadeRuntime = dependencies => {
   const {
-    Game, RoomPosition, RESOURCE_ENERGY, OK, ERR_NOT_IN_RANGE, moveCreep
+    Game, RoomPosition, RESOURCE_ENERGY, OK, ERR_NOT_IN_RANGE, moveCreep,
+    getSlotOwner
   } = dependencies;
 
   const at = (creep, point) => creep.pos.x === point.x &&
@@ -96,6 +96,7 @@ const createControllerBrigadeRuntime = dependencies => {
   const getPipelineEnergy = (home, plan, pipeline) => Object.values(Game.creeps)
     .filter(candidate => candidate.memory.home === home &&
       candidate.memory.role === CONTROLLER_BRIGADE_ROLE &&
+      !candidate.memory.controllerRelayStandby &&
       plan.segments[candidate.memory.controllerRelaySlot] &&
       plan.segments[candidate.memory.controllerRelaySlot].pipeline ===
         pipeline)
@@ -151,13 +152,9 @@ const createControllerBrigadeRuntime = dependencies => {
     return true;
   };
 
-  const findDownstream = (creep, segment) =>
+  const findDownstream = (creep, segment, plan) =>
     Number.isInteger(segment.downstreamSlot)
-      ? Object.values(Game.creeps).find(candidate =>
-        candidate.memory.home === creep.memory.home &&
-        candidate.memory.role === CONTROLLER_BRIGADE_ROLE &&
-        candidate.memory.controllerRelaySlot === segment.downstreamSlot)
-      : null;
+      ? getSlotOwner(creep.memory.home, segment.downstreamSlot, plan) : null;
 
   const runDelivery = ({ creep, plan, slot, segment, delivery, energy,
     stats, provisionalBuilders }) => {
@@ -167,7 +164,7 @@ const createControllerBrigadeRuntime = dependencies => {
         `${delivery.x},${delivery.y}`;
       return true;
     }
-    const downstream = findDownstream(creep, segment);
+    const downstream = findDownstream(creep, segment, plan);
     if (downstream) {
       const downstreamPickup = position(plan.roomName,
         plan.segments[segment.downstreamSlot].pickup);
@@ -225,11 +222,7 @@ const createControllerBrigadeRuntime = dependencies => {
       .filter(target => target && target.store &&
         target.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
     const downstream = Number.isInteger(segment.downstreamSlot)
-      ? Object.values(Game.creeps).find(candidate =>
-        candidate.memory.home === creep.memory.home &&
-        candidate.memory.role === CONTROLLER_BRIGADE_ROLE &&
-        candidate.memory.controllerRelaySlot === segment.downstreamSlot)
-      : null;
+      ? getSlotOwner(creep.memory.home, segment.downstreamSlot, plan) : null;
     const downstreamSegment = Number.isInteger(segment.downstreamSlot)
       ? plan.segments[segment.downstreamSlot] : null;
     const downstreamReady = downstream && downstreamSegment &&
@@ -309,6 +302,19 @@ const createControllerBrigadeRuntime = dependencies => {
     } else if (onOwnStop) {
       creep.memory.controllerRelaySeated = true;
     }
+    if (plan.stationary) {
+      const owner = getSlotOwner(creep.memory.home, slot, plan);
+      if (owner && owner.name !== creep.name) {
+        creep.memory.controllerRelayStandby = true;
+        creep.memory.controllerRelaySeated = false;
+        moveCreep(creep, pickup, 1, {
+          direct: true, preferRoads: true, roadOnly: false
+        });
+        creep.memory.taskTarget = `BRIG${slot + 1} relief waiting`;
+        return true;
+      }
+    }
+    delete creep.memory.controllerRelayStandby;
     const stats = getStats(creep.room, plan.segments.length);
     recordMovement(creep, plan, slot, stats);
     if (plan.stationary) {

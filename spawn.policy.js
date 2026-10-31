@@ -16,10 +16,6 @@ const createSpawnPolicy = ({
     'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer',
     'controller-relay'
   ]);
-  const replacementRoles = new Set([
-    'upgrader', 'builder', 'remote-scout', 'remote-hauler', 'refiller',
-    'rebalancer', 'claimer', 'controller-relay'
-  ]);
   const fullBodyRoles = new Set([
     'miner', 'harvester', 'hauler', 'refiller', 'rebalancer', 'upgrader',
     'builder', 'remote-scout', 'remote-hauler', 'claimer'
@@ -52,6 +48,12 @@ const createSpawnPolicy = ({
     return Math.min(available, capacity);
   };
 
+  /**
+   * Turn an assignment into a bounded spawn request.
+   * Assignment selection answers "which missing capability is next"; this
+   * function answers "may we add population now, and what can we afford".
+   * `forceSpawn` affects body timing only and never bypasses population caps.
+   */
   const prepareSpawnRequest = ({
     spawn, assignment, workers, workerLimit, hasWorkParts
   }) => {
@@ -66,10 +68,8 @@ const createSpawnPolicy = ({
         (assignment.role === 'hauler'
           ? creep.getActiveBodyparts(CARRY) > 0
           : hasWorkParts(creep)));
-    const specialistReplacement = assignment &&
-      (replacementRoles.has(assignment.role) || assignment.forceSpawn);
     const needsWorker = Boolean(assignment && !hasCapableIdleWorker &&
-      (workers.length < workerLimit || specialistReplacement));
+      workers.length < workerLimit);
     if (!needsWorker) {
       clearSpawnWait(spawn.room);
       return { needsWorker: false, body: null };

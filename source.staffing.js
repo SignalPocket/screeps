@@ -6,6 +6,7 @@ const createSourceStaffing = ({
   TERRAIN_MASK_WALL,
   LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES,
+  STRUCTURE_ROAD,
   OBSTACLE_OBJECT_TYPES,
   BODYPART_COST,
   CARRY,
@@ -20,9 +21,13 @@ const createSourceStaffing = ({
     for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
       for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
         if (x < 0 || x > 49 || y < 0 || y > 49 ||
-            (x === source.pos.x && y === source.pos.y) ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL) continue;
-        const blocked = room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
+            (x === source.pos.x && y === source.pos.y)) continue;
+        const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
+        const completedTunnelRoad = tileStructures.some(structure =>
+          structure.structureType === STRUCTURE_ROAD);
+        if (terrain.get(x, y) === TERRAIN_MASK_WALL &&
+            !completedTunnelRoad) continue;
+        const blocked = tileStructures.some(structure =>
           OBSTACLE_OBJECT_TYPES.includes(structure.structureType));
         const blockedSite = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
           .some(site => OBSTACLE_OBJECT_TYPES.includes(site.structureType));

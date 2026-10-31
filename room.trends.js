@@ -235,9 +235,14 @@ const applyTrendAdjustments = (policy, database) => {
   add('repairBuilder', adjustment.repairBonus, 'rising repair backlog');
   add('hauler', adjustment.haulerBonus, 'source-to-work buffer gap');
   for (const key of ['min', 'desired', 'max']) {
+    const remoteTotal = key === 'min'
+      ? (policy.remote.minersMin || 0) +
+        (policy.remote.haulersMin || 0) +
+        (policy.remote.buildersMin || 0)
+      : (policy.remote.miners || 0) + (policy.remote.haulers || 0) +
+        (policy.remote.builders || 0);
     policy.totals[key] = Object.values(policy.roles).reduce((sum, role) =>
-      sum + role[key], 0) + policy.remote.miners + policy.remote.haulers +
-      policy.remote.builders;
+      sum + role[key], 0) + remoteTotal;
   }
   return policy;
 };

@@ -665,6 +665,24 @@ const createInfrastructurePlanner = ({
       filter: site => site.structureType === STRUCTURE_CONTAINER &&
         site.pos.getRangeTo(room.controller) <= 3
     });
+    const activateControllerPair = (primary, secondary, pairPlan) => {
+      pairPlan.ready = true;
+      pairPlan.secondaryId = secondary.id;
+      delete pairPlan.siteId;
+      room.memory.controllerContainerPlan = {
+        version: 3,
+        ready: true,
+        containerId: primary.id,
+        containerIds: [primary.id, secondary.id],
+        desiredX: primary.pos.x,
+        desiredY: primary.pos.y,
+        destinations: [
+          { id: primary.id, x: primary.pos.x, y: primary.pos.y },
+          { id: secondary.id, x: secondary.pos.x, y: secondary.pos.y }
+        ]
+      };
+      return true;
+    };
     const terrain = room.getTerrain();
     const origin = room.storage || room.find(FIND_MY_SPAWNS)[0];
     const usableStandingTile = (x, y) => {
@@ -716,9 +734,13 @@ const createInfrastructurePlanner = ({
       Math.abs(a.controllerRange - 2) - Math.abs(b.controllerRange - 2) ||
       Number(a.swamp) - Number(b.swamp) ||
       a.supplyDistance - b.supplyDistance || a.x - b.x || a.y - b.y);
-    const wantsPair = room.memory.controllerBrigadePlan &&
-      Array.isArray(room.memory.controllerBrigadePlan.segments) &&
-      room.memory.controllerBrigadePlan.segments.length >= 8;
+    const existingPairPlan = room.memory.controllerContainerPairPlan;
+    // Pair creation can retire an extension-clump container, so discovering a
+    // long brigade is not sufficient authorization. Existing pairs remain
+    // maintainable; new destructive migrations require an explicit room flag.
+    const pairEnabled = room.memory.controllerContainerPairEnabled === true;
+    const wantsPair = pairEnabled ||
+      existingPairPlan && existingPairPlan.version === 2;
     const primary = wantsPair && (Game.getObjectById(
       room.memory.controllerContainerPlan &&
         room.memory.controllerContainerPlan.containerId) ||
@@ -727,7 +749,20 @@ const createInfrastructurePlanner = ({
           a.store.getUsedCapacity(RESOURCE_ENERGY) ||
         a.id.localeCompare(b.id))[0]);
     if (primary) {
-      const existingPairPlan = room.memory.controllerContainerPairPlan;
+      const readyExistingSecondary = existingPairPlan &&
+        existingPairPlan.version === 2 &&
+        existingPairPlan.primaryId === primary.id &&
+        Number.isInteger(existingPairPlan.secondaryX) &&
+        Number.isInteger(existingPairPlan.secondaryY) &&
+        Number.isInteger(existingPairPlan.branchX) &&
+        Number.isInteger(existingPairPlan.branchY) &&
+        controllerContainers.find(container =>
+          container.pos.x === existingPairPlan.secondaryX &&
+          container.pos.y === existingPairPlan.secondaryY);
+      if (readyExistingSecondary) {
+        return activateControllerPair(primary, readyExistingSecondary,
+          existingPairPlan);
+      }
       const secondCandidates = candidates.map(candidate => {
         let stationaryLineCreeps = Infinity;
         let branch;
@@ -745,8 +780,8 @@ const createInfrastructurePlanner = ({
             });
           }
         }
-        branchOptions.sort((a, b) => b.lowerBound - a.lowerBound ||
-          b.x - a.x || b.y - a.y);
+        branchOptions.sort((a, b) => a.lowerBound - b.lowerBound ||
+          a.x - b.x || a.y - b.y);
         for (const option of branchOptions) {
           const branchPosition = new RoomPosition(option.x, option.y,
             room.name);
@@ -769,7 +804,7 @@ const createInfrastructurePlanner = ({
         primary.pos.getRangeTo(candidate.x, candidate.y) >= 4 &&
         candidate.stationaryLineCreeps <= 17)
         .sort((a, b) => b.standingTiles - a.standingTiles ||
-          b.stationaryLineCreeps - a.stationaryLineCreeps ||
+          a.stationaryLineCreeps - b.stationaryLineCreeps ||
           b.x - a.x || b.y - a.y ||
           Math.abs(a.controllerRange - 2) -
             Math.abs(b.controllerRange - 2) ||
@@ -808,22 +843,7 @@ const createInfrastructurePlanner = ({
       const readySecondary = controllerContainers.find(container =>
         container.pos.x === second.x && container.pos.y === second.y);
       if (readySecondary) {
-        pairPlan.ready = true;
-        pairPlan.secondaryId = readySecondary.id;
-        delete pairPlan.siteId;
-        room.memory.controllerContainerPlan = {
-          version: 3,
-          ready: true,
-          containerId: primary.id,
-          containerIds: [primary.id, readySecondary.id],
-          desiredX: primary.pos.x,
-          desiredY: primary.pos.y,
-          destinations: [
-            { id: primary.id, x: primary.pos.x, y: primary.pos.y },
-            { id: readySecondary.id, x: second.x, y: second.y }
-          ]
-        };
-        return true;
+        return activateControllerPair(primary, readySecondary, pairPlan);
       }
       const readySecondarySite = controllerSites.find(site =>
         site.pos.x === second.x && site.pos.y === second.y);
@@ -834,6 +854,7 @@ const createInfrastructurePlanner = ({
       const obsoleteSecondarySite = existingPairPlan &&
         controllerSites.find(site => site.id === existingPairPlan.siteId);
       let removedObsoleteSite = false;
+      if (obsoleteSecondarySite && !pairEnabled) return false;
       if (obsoleteSecondarySite && obsoleteSecondarySite.remove() === OK) {
         removedObsoleteSite = true;
         console.log(`[${Game.time}] ${room.name} moved unfinished second ` +
@@ -844,6 +865,7 @@ const createInfrastructurePlanner = ({
       const activeControllerSiteCount = controllerSites.length -
         Number(removedObsoleteSite);
       if (containers.length + activeControllerSiteCount >= containerLimit) {
+        if (!pairEnabled) return false;
         const overflow = room.memory.extensionOverflowCluster;
         const retired = overflow && containers.filter(container =>
           container.id !== primary.id &&

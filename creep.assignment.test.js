@@ -30,9 +30,14 @@ assert.strictEqual(remoteMiner.memory.remoteBuilderSlot, undefined);
 
 const sourceWorker = { memory: {
   role: 'harvester', assignmentRole: 'harvester',
-  sourceReserve: 's1', preferredSource: 's1'
+  sourceReserve: 's1', preferredSource: 's1', sourceRecoveryPlanTick: 42
 } };
 reconcileCreepAssignment(sourceWorker);
 assert.strictEqual(sourceWorker.memory.sourceReserve, 's1');
+assert.strictEqual(sourceWorker.memory.sourceRecoveryPlanTick, 42);
+
+sourceWorker.memory.role = 'builder';
+reconcileCreepAssignment(sourceWorker);
+assert.strictEqual(sourceWorker.memory.sourceRecoveryPlanTick, undefined);
 
 console.log('creep assignment scenarios passed');

@@ -75,6 +75,7 @@ const ROOM_STAGE_PLANS = Object.freeze({
     goal: 'reduce hauling distance and sustain the room through links and mature roads',
     logic: Object.freeze([
       'use links where they replace repeated long-distance carrying',
+      'feed the controller-side link while the controller brigade keeps supplying its buffers',
       'finish core road access while preserving container throughput',
       'expand outpost hauling only when home logistics remain healthy'
     ]),

@@ -25,6 +25,18 @@ const normalize = entry => {
   return entry;
 };
 
+/**
+ * Convert one owned room's normalized observations into the authoritative
+ * staffing and budget decision for this tick.
+ *
+ * This function is intentionally pure. Callers may measure the world, and
+ * executors may act on the result, but neither may silently redefine role
+ * targets or optional-work gates. Safety floors are `min`; sustainable work
+ * is `desired`; `max` is a surge ceiling, never a spawn target.
+ *
+ * @param {object} state API-free room observations from room.situation.js
+ * @returns {object} mode, health, permissions, budgets, roles, remote, totals
+ */
 const derivePopulationPolicy = state => {
   const rcl = clamp(state.rcl || 0, 0, 8);
   const sources = Math.max(1, state.sourceCount || 0);
@@ -49,6 +61,41 @@ const derivePopulationPolicy = state => {
       storedEnergy < starvationReserve;
   const logisticsBacklog = bufferRatio >= 0.65 ||
     (state.droppedEnergy || 0) >= droppedBacklog;
+
+  // One shared health classification controls optional colony load.  Role
+  // modules must not each invent their own interpretation of a low spawn
+  // charge, a large reserve, or the current RCL.
+  const reserveFloor = scaleReserve(energyCapacity, 2, 600);
+  const reserveSurplus = scaleReserve(energyCapacity, 6, 1800);
+  let health = 'healthy';
+  if (bootstrap || controllerDanger) health = 'critical';
+  else if (starved || repair.critical) health = 'recovering';
+  else if (energyRatio < 0.5 ||
+      sourceBufferCapacity > 0 && bufferRatio < 0.2 ||
+      storedEnergy < reserveFloor) health = 'strained';
+  else if (bufferRatio >= 0.75 && storedEnergy >= reserveSurplus) {
+    health = 'surplus';
+  }
+  const healthRank = {
+    critical: 0, recovering: 1, strained: 2, healthy: 3, surplus: 4
+  }[health];
+  const permissions = {
+    // Existing productive outposts are income infrastructure from RCL 3 on.
+    // Their floor survives a strained room, while expansion to full route
+    // throughput waits for a healthy RCL 5 economy.
+    remoteMaintenance: rcl >= 3 && healthRank >= 1,
+    remoteGrowth: rcl >= 5 && healthRank >= 3 &&
+      state.coreRoadAccessComplete !== false,
+    controllerBrigade: rcl >= 5 && healthRank >= 3,
+    optionalConstruction: healthRank >= 2,
+    optionalPopulation: healthRank >= 3
+  };
+  const budgets = {
+    constructionCrewScale: healthRank <= 1 ? 0.25
+      : healthRank === 2 ? 0.5 : healthRank === 3 ? 0.75 : 1,
+    reserveFloor,
+    reserveSurplus
+  };
 
   const sourceMinimum = Math.max(sources,
     state.efficientSourceWorkers || sources);
@@ -171,15 +218,36 @@ const derivePopulationPolicy = state => {
   const activeRemoteRooms = Math.max(0, state.activeRemoteRooms || 0);
   const activeRemoteSources = Math.max(activeRemoteRooms,
     state.activeRemoteSources || 0);
+  const remoteMinerDemand = Math.max(activeRemoteSources,
+    state.remoteMinerDemand || 0);
+  const remoteHaulerDemand = Math.max(activeRemoteRooms,
+    state.remoteHaulerDemand || 0);
+  const remoteBuilderDemand = Math.max(0,
+    state.remoteBuilderDemand || state.remoteRoomsWithConstruction || 0);
+  const remoteMinerMinimum = permissions.remoteMaintenance
+    ? remoteMinerDemand : 0;
+  const remoteHaulerMinimum = permissions.remoteMaintenance &&
+    activeRemoteSources > 0 ? activeRemoteRooms : 0;
+  const remoteBuilderMinimum = permissions.remoteMaintenance
+    ? Math.min(activeRemoteRooms,
+      Math.max(0, state.remoteRoomsWithConstruction || 0)) : 0;
+  const remoteHaulerDesired = activeRemoteSources > 0
+    ? Math.max(remoteHaulerDemand, activeRemoteRooms,
+      Math.ceil(activeRemoteSources * Math.max(1,
+        (state.averageRemoteDistance || 25) / 25)))
+    : 0;
   const remote = {
     rooms: activeRemoteRooms,
-    miners: activeRemoteSources,
-    haulers: activeRemoteSources > 0
-      ? Math.max(activeRemoteRooms,
-        Math.ceil(activeRemoteSources * Math.max(1,
-          (state.averageRemoteDistance || 25) / 25)))
-      : 0,
-    builders: Math.max(0, state.remoteRoomsWithConstruction || 0)
+    minersMin: remoteMinerMinimum,
+    miners: permissions.remoteGrowth
+      ? remoteMinerDemand : remoteMinerMinimum,
+    haulersMin: remoteHaulerMinimum,
+    haulers: permissions.remoteGrowth
+      ? remoteHaulerDesired : remoteHaulerMinimum,
+    buildersMin: remoteBuilderMinimum,
+    builders: permissions.remoteGrowth
+      ? remoteBuilderDemand
+      : remoteBuilderMinimum
   };
 
   const roles = {
@@ -210,12 +278,15 @@ const derivePopulationPolicy = state => {
   else if (starved) mode = 'energy-starved';
 
   const totals = ['min', 'desired', 'max'].reduce((result, key) => {
+    const remoteTotal = key === 'min'
+      ? remote.minersMin + remote.haulersMin + remote.buildersMin
+      : remote.miners + remote.haulers + remote.builders;
     result[key] = Object.values(roles).reduce((sum, entry) =>
-      sum + entry[key], 0) + remote.miners + remote.haulers + remote.builders;
+      sum + entry[key], 0) + remoteTotal;
     return result;
   }, {});
 
-  return { mode, roles, remote, totals };
+  return { mode, health, permissions, budgets, roles, remote, totals };
 };
 
 module.exports = { derivePopulationPolicy };

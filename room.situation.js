@@ -25,6 +25,12 @@ const createRoomSituation = dependencies => {
   } = dependencies;
   const cache = {};
 
+  /**
+   * Measure a live room once per tick and adapt it to the pure colony policy.
+   * This is the only layer that should translate Screeps objects into policy
+   * inputs. The cached return value is shared by spawn, work, and reporting so
+   * every consumer sees the same decision snapshot.
+   */
   const getRoomSituation = room => {
     if (cache[room.name]) return cache[room.name];
     const sources = getRoomSources(room);
@@ -127,6 +133,23 @@ const createRoomSituation = dependencies => {
         Math.max(1, plan.remoteMinerTarget || 1));
     }, 0);
     const roomSpawns = room.find(FIND_MY_SPAWNS);
+    const remoteMinerDemand = activeRemotePlans.reduce((total, plan) => {
+      const needs = Array.isArray(plan.remoteWorkNeeds)
+        ? plan.remoteWorkNeeds : [];
+      return total + (needs.length
+        ? needs.reduce((sum, need) => sum +
+          Math.max(1, need.minMiners || 0), 0)
+        : Math.max(1, plan.remoteMinerTarget || 0));
+    }, 0);
+    const remoteHaulerDemand = activeRemotePlans.reduce((total, plan) =>
+      total + Math.max(1, plan.remoteHaulerTarget || 0), 0);
+    const remoteBuilderDemand = activeRemotePlans.reduce((total, plan) =>
+      total + Math.max(0, plan.remoteBuilderTarget || 0), 0);
+    const coreRoadTargets = [...roomSpawns,
+      ...(room.controller ? [room.controller] : []), ...sources];
+    const coreRoadAccessComplete = coreRoadTargets.every(target =>
+      structures.some(structure => structure.structureType === STRUCTURE_ROAD &&
+        target.pos.getRangeTo(structure) <= 1));
     const sourceDistances = sources.map(source => roomSpawns[0]
       ? roomSpawns[0].pos.getRangeTo(source) : 15);
     const maxWorkPerBody = getSourceBodyWorkCapacity(room);
@@ -225,8 +248,12 @@ const createRoomSituation = dependencies => {
         ? Math.max(...bufferRatios) - Math.min(...bufferRatios) : 0,
       activeRemoteRooms: activeRemotePlans.length,
       activeRemoteSources,
+      remoteMinerDemand,
+      remoteHaulerDemand,
+      remoteBuilderDemand,
       averageRemoteDistance: activeRemotePlans.length > 1 ? 40 : 25,
-      remoteRoomsWithConstruction
+      remoteRoomsWithConstruction,
+      coreRoadAccessComplete
     });
     const operational = getOperationalMetrics(room.memory);
     // Apply the last completed trend analysis before recording this sample so
@@ -289,12 +316,17 @@ const createRoomSituation = dependencies => {
         controllerBufferRatio,
         droppedEnergy,
         buildRemaining,
+        repairRemaining,
+        repairCritical: repairCrisis,
         controllerTicks: room.controller && room.controller.ticksToDowngrade
       }
     };
     room.memory.populationPolicy = {
       updated: Game.time,
       mode: policy.mode,
+      health: policy.health,
+      permissions: policy.permissions,
+      budgets: policy.budgets,
       roles: policy.roles,
       remote: policy.remote,
       totals: policy.totals

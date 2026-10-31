@@ -28,10 +28,19 @@ const createRcl5Infrastructure = ({
   const linkLimit = room => CONTROLLER_STRUCTURES[STRUCTURE_LINK] &&
     CONTROLLER_STRUCTURES[STRUCTURE_LINK][room.controller.level] || 0;
 
+  const getPrimarySpawn = room => room.find(FIND_MY_SPAWNS)
+    .sort((a, b) => a.id.localeCompare(b.id))[0] || null;
   const isSourceLink = (room, link) => getRoomSources(room).some(source =>
     source.pos.getRangeTo(link) <= 2);
-  const isHubLink = (room, link) => !isSourceLink(room, link) &&
-    room.controller && room.controller.pos.getRangeTo(link) <= 3;
+  const isSpawnLink = (room, link) => {
+    const spawn = getPrimarySpawn(room);
+    return Boolean(spawn && spawn.pos.getRangeTo(link) <= 2);
+  };
+  const isControllerLink = (room, link) => room.controller &&
+    room.controller.pos.getRangeTo(link) <= 3 && !isSpawnLink(room, link);
+  // Keep the old name for callers and rooms that already have a controller
+  // endpoint recorded as the network hub.
+  const isHubLink = isControllerLink;
   const getSourceLink = (room, source) => room.find(FIND_MY_STRUCTURES, {
     filter: structure => structure.structureType === STRUCTURE_LINK &&
       source.pos.getRangeTo(structure) <= 2
@@ -43,13 +52,14 @@ const createRcl5Infrastructure = ({
         room.controller.level < 5) return false;
     const links = structuresAndSites(room, STRUCTURE_LINK);
     if (links.length >= linkLimit(room)) return false;
-    const sources = getRoomSources(room);
     const terrain = room.getTerrain();
-    const plannedHub = links.some(link => isHubLink(room, link));
+    const spawn = getPrimarySpawn(room);
+    const plannedController = links.some(link => isControllerLink(room, link));
+    const plannedSpawn = links.some(link => isSpawnLink(room, link));
     let candidates = [];
     let purpose;
-    if (!plannedHub) {
-      purpose = 'hub';
+    if (!plannedController) {
+      purpose = 'controller';
       for (let x = room.controller.pos.x - 3;
         x <= room.controller.pos.x + 3; x++) {
         for (let y = room.controller.pos.y - 3;
@@ -57,7 +67,7 @@ const createRcl5Infrastructure = ({
           const controllerRange = room.controller.pos.getRangeTo(x, y);
           if (controllerRange < 1 || controllerRange > 3 ||
               !isOpen(room, x, y) || isNearExtensionCluster(room, x, y) ||
-              sources.some(source => source.pos.getRangeTo(x, y) <= 2)) {
+              spawn && spawn.pos.getRangeTo(x, y) <= 2) {
             continue;
           }
           const storageRange = room.storage
@@ -66,24 +76,21 @@ const createRcl5Infrastructure = ({
             (terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 10 : 0) });
         }
       }
-    } else {
-      const anchor = room.storage || room.find(FIND_MY_SPAWNS)[0] ||
-        room.controller;
-      const uncovered = sources.filter(source => !links.some(link =>
-        source.pos.getRangeTo(link) <= 2)).sort((a, b) =>
-        anchor.pos.getRangeTo(b) - anchor.pos.getRangeTo(a));
-      const source = uncovered[0];
-      if (!source) return false;
-      purpose = `source:${source.id}`;
-      for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-        for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-          if (x === source.pos.x && y === source.pos.y ||
+    } else if (!plannedSpawn && spawn) {
+      purpose = 'spawn';
+      for (let x = spawn.pos.x - 2; x <= spawn.pos.x + 2; x++) {
+        for (let y = spawn.pos.y - 2; y <= spawn.pos.y + 2; y++) {
+          const spawnRange = spawn.pos.getRangeTo(x, y);
+          if (spawnRange < 1 || spawnRange > 2 ||
+              room.controller.pos.getRangeTo(x, y) <= 3 ||
               !isOpen(room, x, y)) continue;
-          candidates.push({ x, y, score: anchor.pos.getRangeTo(x, y) +
+          const storageRange = room.storage
+            ? room.storage.pos.getRangeTo(x, y) : 10;
+          candidates.push({ x, y, score: spawnRange * 5 + storageRange +
             (terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 10 : 0) });
         }
       }
-    }
+    } else return false;
     candidates.sort((a, b) => a.score - b.score || a.x - b.x || a.y - b.y);
     for (const candidate of candidates) {
       if (room.createConstructionSite(candidate.x, candidate.y,
@@ -139,33 +146,42 @@ const createRcl5Infrastructure = ({
     const links = room.find(FIND_MY_STRUCTURES, {
       filter: structure => structure.structureType === STRUCTURE_LINK
     });
-    const hub = links.filter(link => isHubLink(room, link))
+    const controllerLink = links.filter(link => isControllerLink(room, link))
       .sort((a, b) => room.controller.pos.getRangeTo(a) -
         room.controller.pos.getRangeTo(b))[0];
-    if (!hub) return { hub: null, transfers: 0 };
+    const spawn = getPrimarySpawn(room);
+    const spawnLink = links.filter(link => isSpawnLink(room, link))
+      .sort((a, b) => spawn.pos.getRangeTo(a) -
+        spawn.pos.getRangeTo(b))[0];
+    if (!controllerLink || !spawnLink) {
+      return { controllerLink: controllerLink || null,
+        spawnLink: spawnLink || null, transfers: 0 };
+    }
     let transfers = 0;
-    for (const sourceLink of links.filter(link => isSourceLink(room, link))) {
-      if (sourceLink.cooldown > 0 || sourceLink.store[RESOURCE_ENERGY] < 200) {
-        continue;
-      }
-      const free = hub.store.getFreeCapacity(RESOURCE_ENERGY);
-      if (free < 200) break;
-      const amount = Math.min(sourceLink.store[RESOURCE_ENERGY], free);
-      if (amount <= 0) break;
-      if (sourceLink.transferEnergy(hub, amount) === OK) {
-        transfers++;
-        break;
+    let sender;
+    let receiver;
+    if (controllerLink.store[RESOURCE_ENERGY] < 400 &&
+        spawnLink.store[RESOURCE_ENERGY] >= 200) {
+      sender = spawnLink;
+      receiver = controllerLink;
+    }
+    if (sender && sender.cooldown === 0) {
+      const amount = Math.min(sender.store[RESOURCE_ENERGY],
+        receiver.store.getFreeCapacity(RESOURCE_ENERGY));
+      if (amount > 0 && sender.transferEnergy(receiver, amount) === OK) {
+        transfers = 1;
       }
     }
     room.memory.linkNetworkStatus = {
-      updated: Game.time, hub: hub.id,
-      sources: links.filter(link => isSourceLink(room, link)).map(link =>
-        link.id), transfers
+      updated: Game.time, controller: controllerLink.id,
+      spawn: spawnLink.id, transfers,
+      direction: sender && receiver ? `${sender.id}->${receiver.id}` : null
     };
-    return { hub, transfers };
+    return { controllerLink, spawnLink, transfers };
   };
 
-  return { isSourceLink, isHubLink, getSourceLink,
+  return { isSourceLink, isHubLink, isControllerLink, isSpawnLink,
+    getSourceLink,
     placeLinkSite, placeTowerSite, runLinks };
 };
 

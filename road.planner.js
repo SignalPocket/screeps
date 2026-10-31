@@ -261,9 +261,74 @@ const createRoadPlanner = ({
         uses[`${point.x}:${point.y}`] >= 2)
     })).filter(path => path.points.length > 0);
   };
+  const infrastructureRoadPathCache = {};
+  const getInfrastructureRoadPaths = room => {
+    if (infrastructureRoadPathCache[room.name]) {
+      return infrastructureRoadPathCache[room.name];
+    }
+    const structures = room.find(FIND_STRUCTURES);
+    const roads = structures.filter(structure =>
+      structure.structureType === STRUCTURE_ROAD);
+    const anchors = structures.filter(structure =>
+      structure.structureType !== STRUCTURE_ROAD);
+    const sources = getRoomSources(room);
+    const nearInfrastructure = position =>
+      sources.some(source => source.pos.getRangeTo(position) <= 2) ||
+      room.controller && room.controller.pos.getRangeTo(position) <= 4 ||
+      anchors.some(anchor => anchor.pos.getRangeTo(position) <= 1);
+    const remembered = room.memory.protectedInfrastructureRoadTiles || {};
+    const protectedTiles = {};
+    for (const road of roads) {
+      if (nearInfrastructure(road.pos)) {
+        protectedTiles[`${road.pos.x}:${road.pos.y}`] = Game.time;
+      }
+    }
+    for (const key of Object.keys(remembered)) {
+      const [x, y] = key.split(':').map(Number);
+      if (nearInfrastructure({ x, y })) protectedTiles[key] = remembered[key];
+    }
+    // A source tunnel is a road deliberately cut through a wall to add a
+    // mining station. Traffic history survives after the road decays, so it
+    // can recover the tile even when ordinary pathfinding no longer can.
+    const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
+    const terrain = room.getTerrain();
+    for (const [key, visits] of Object.entries(trafficTiles)) {
+      if (visits < 2) continue;
+      const [x, y] = key.split(':').map(Number);
+      if (terrain.get(x, y) === TERRAIN_MASK_WALL &&
+          sources.some(source => source.pos.getRangeTo(x, y) <= 1)) {
+        protectedTiles[key] = Game.time;
+      }
+    }
+    for (const plan of [room.memory.travelPathPlan, room.memory.roadPlan]) {
+      for (const path of plan && Array.isArray(plan.paths) ? plan.paths : []) {
+        for (const point of path.points || []) {
+          const key = `${point.x}:${point.y}`;
+          if (terrain.get(point.x, point.y) === TERRAIN_MASK_WALL &&
+              sources.some(source =>
+                source.pos.getRangeTo(point.x, point.y) <= 1)) {
+            protectedTiles[key] = Game.time;
+          }
+        }
+      }
+    }
+    room.memory.protectedInfrastructureRoadTiles = protectedTiles;
+    const paths = Object.keys(protectedTiles).length > 0 ? [{
+      label: 'protected-infrastructure-roads',
+      kinds: ['infrastructure'],
+      infrastructure: true,
+      points: Object.keys(protectedTiles).map(key => {
+        const [x, y] = key.split(':').map(Number);
+        return { x, y };
+      })
+    }] : [];
+    infrastructureRoadPathCache[room.name] = paths;
+    return paths;
+  };
   const isSingleLaneRoadPosition = (room, target) => {
     if (!target || !target.pos) return false;
-    return getConvergedTravelPaths(getImportantTravelPaths(room))
+    return [...getConvergedTravelPaths(getImportantTravelPaths(room)),
+      ...getInfrastructureRoadPaths(room)]
       .some(path => path.points.some(point =>
         point.x === target.pos.x && point.y === target.pos.y));
   };
@@ -272,11 +337,11 @@ const createRoadPlanner = ({
     if (heatmapRoadTileCache[room.name]) {
       return heatmapRoadTileCache[room.name];
     }
-    // Maintenance follows the converged important-place network. Old or
-    // incidental roads remain usable but do not keep consuming repair work.
+    // Maintain the converged network plus every road serving nearby room
+    // infrastructure. Open-field incidental roads can still age out.
     const tiles = new Set();
-    for (const path of getConvergedTravelPaths(
-      getImportantTravelPaths(room))) {
+    for (const path of [...getConvergedTravelPaths(
+      getImportantTravelPaths(room)), ...getInfrastructureRoadPaths(room)]) {
       for (const point of path.points) tiles.add(`${point.x}:${point.y}`);
     }
     heatmapRoadTileCache[room.name] = tiles;
@@ -491,7 +556,8 @@ const createRoadPlanner = ({
       if (x <= 0 || x >= 49 || y <= 0 || y >= 49 ||
           builtRoadTiles.has(key) || queuedRoadTiles.has(key) ||
           brigadeStopKeys.has(key) ||
-          terrain.get(x, y) === TERRAIN_MASK_WALL ||
+          terrain.get(x, y) === TERRAIN_MASK_WALL &&
+            !(room.memory.protectedInfrastructureRoadTiles || {})[key] ||
           room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
           room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
       const swampBonus = terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 50 : 0;
@@ -530,6 +596,7 @@ const createRoadPlanner = ({
     getControllerFanPaths,
     getInterRoomTravelPaths,
     getConvergedTravelPaths,
+    getInfrastructureRoadPaths,
     isSingleLaneRoadPosition,
     getHeatmapRoadTiles,
     isHeatmapRoadPosition,
