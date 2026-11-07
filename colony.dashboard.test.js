@@ -2,7 +2,7 @@
 
 const assert = require('assert');
 const { calculateStaffingDemand, getStaffingStatus, formatRoleEntry,
-  countBrigadeMembers } =
+  countBrigadeMembers, getDashboardVisualLines, formatDashboardConsole } =
   require('./colony.dashboard');
 
 const demand = calculateStaffingDemand({
@@ -49,5 +49,23 @@ assert.strictEqual(countBrigadeMembers([
   { memory: { role: 'controller-relay' } },
   { memory: { role: 'upgrader' } }
 ]), 2);
+
+const compactLines = getDashboardVisualLines({
+  creeps: 12, spawning: 1, needed: 3, totalEnergy: 12500,
+  readyEnergy: 800, readyCapacity: 1300, alerts: []
+}, { dashboard: 'W1N1 health steady' });
+assert.deepStrictEqual(compactLines, [
+  'COLONY · creeps 12 · spawn 1 · need 3',
+  'Energy 12.5k · ready 800/1300',
+  'W1N1 health steady',
+  'Alert: none'
+]);
+assert.ok(formatDashboardConsole({
+  localBuildTargets: 1, outpostBuildTargets: 2, buildRemaining: 400,
+  buildAssigned: 1, buildActive: 1, localFixTargets: 0,
+  outpostFixTargets: 1, repairEnergy: 1200, repairAssigned: 0,
+  repairActive: 0, emergencyRosters: [], roleTargets: {}, roleCounts: {},
+  roleUsableCounts: {}, roleCoverage: {}, roleStatuses: {}, healthSummaries: []
+}).includes('Repair L0/O1'), 'detail moves to the console formatter');
 
 console.log('colony dashboard scenarios passed');

@@ -610,27 +610,11 @@ assert.strictEqual(dashboardSnapshot.repairAssigned, 1);
 assert.strictEqual(dashboardSnapshot.repairActive, 1);
 dashboard.drawDashboard();
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'COLONY'));
+  call[1] === 'COLONY · creeps 3 · spawn 1 · need 4'));
 assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'MINER W>C'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'HAUL W+C'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'RC W>C'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'WORK W=C=M'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'Build L5/O2 | remain 1.5k | assigned 3 active 2'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'Repair L1/O2 | energy 500 | assigned 1 active 1'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LM 1/3 min 2' && call[4].color === '#ff5f78'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'LC 1/2 min 1' && call[4].color === '#ffd60a'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'UP 1/1' && call[4].color === '#30d158'));
-assert.ok(dashboardDraws.some(call => call[0] === 'text' &&
-  call[1] === 'BU-L 0/1' && call[4].color === '#ff5f78'));
+  call[1].startsWith('Energy 675 · ready ')));
+assert.strictEqual(dashboardDraws.filter(call => call[0] === 'text').length, 4,
+  'the room visual remains a four-line summary; staffing detail is console-only');
 
 const maintenanceMemory = {
   creeps: {
