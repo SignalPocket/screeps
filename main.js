@@ -3627,15 +3627,8 @@ module.exports.loop = function () {
     if (lane !== 'collect' && Array.isArray(creep.memory.energySources)) {
       sourceId = creep.memory.energySources[creep.memory.energySources.length - 1];
     }
-    const plannedCollectionSource = lane === 'collect' && sourceId
-      ? Game.getObjectById(sourceId) : null;
-    const currentCollectionSource = lane === 'collect' &&
-      creep.memory.workJob && creep.memory.workJob.lane === 'collect'
-      ? Game.getObjectById(creep.memory.workJob.sourceId) : null;
-    const rerouteCollection = plannedCollectionSource &&
-      currentCollectionSource && plannedCollectionSource.pos &&
-      currentCollectionSource.pos &&
-      plannedCollectionSource.pos.getRangeTo(currentCollectionSource) > 2;
+    // Source pressure is a proposal for the next trip, not permission to
+    // cancel a useful admitted pickup. workDispatch owns its completion.
     const restoreExtensionReserve = lane === 'refill-buffer' &&
       demandPlan.demand.extensionBufferStored <
         Math.min(500, demandPlan.demand.extensionBufferCapacity * 0.25) &&
@@ -3659,12 +3652,10 @@ module.exports.loop = function () {
         : creep.store[RESOURCE_ENERGY],
       priority: lanePriority(creep.room, demandPlan, lane),
       cancelCurrent: Boolean(creep.memory.waitState === 'blocked' ||
-        rerouteCollection || rerouteBuffer || rerouteRefill ||
+        rerouteBuffer || rerouteRefill ||
         restoreExtensionReserve || restoreSpawnNetwork),
       reason: rerouteRefill
         ? 'refill matcher selected a nearer or higher-priority target'
-        : rerouteCollection
-        ? 'assigned collection source changed rooms'
         : rerouteBuffer
           ? 'assigned controller buffer became invalid'
           : 'previous assignment completed or invalid'
@@ -3947,6 +3938,20 @@ module.exports.loop = function () {
       c.memory.refillPickupTarget||c.memory.withdrawTarget||
       c.memory.workJob?.sourceId,
     maxCollectors:2});
+  for (const creep of pickupParticipants) {
+    const job = workDispatch.bindPickup(creep, pickupPlan.jobs[creep.name]);
+    if (!job) continue;
+    const plan = roomDemandPlans[creep.room.name];
+    plan.collectionSources[creep.name] = job.sourceId;
+    const saved = creep.room.memory.demandPlan;
+    if (saved) {
+      saved.collectionSources[creep.name] = job.sourceId;
+      saved.jobs[creep.name] = { lane: job.lane, sourceId: job.sourceId,
+        targetId: job.targetId, amount: job.amount, priority: job.priority,
+        created: job.created };
+      saved.commitments[creep.name] = creep.memory.dispatchCommitment;
+    }
+  }
   for(const room of Object.values(Game.rooms).filter(r=>r.controller?.my)){
     room.memory.pickupReservations={tick:Game.time,jobs:Object.fromEntries(
       Object.entries(pickupPlan.jobs).filter(([name])=>Game.creeps[name].room.name===room.name)),
