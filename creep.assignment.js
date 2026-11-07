@@ -1,5 +1,14 @@
 'use strict';
 
+/**
+ * Remove memory that is incompatible with a creep's current durable role.
+ *
+ * Reassignment changes more than `role`: old source slots, builder missions,
+ * remote roster positions, task targets, and delivery commitments can all
+ * continue driving behavior. This reconciler clears only fields owned by a
+ * different role family and preserves fields that still describe the current
+ * assignment. It does not select the new role; planners do that first.
+ */
 const transientFields = [
   'task', 'taskTarget', 'lastTask', 'workJob', 'demandLane',
   'demandLaneSince', 'dispatchCommitment', 'withdrawTarget', 'supplyTarget',
@@ -17,7 +26,7 @@ const builderFields = [
 const remoteCommonFields = [
   'remoteHome', 'remoteRoom', 'remoteTeam', 'remoteDelivery', 'remoteRecall'
 ];
-const remoteScoutFields = ['remoteSlot', 'leftScoutSlot'];
+const remoteScoutFields = ['remoteSlot'];
 const remoteHaulerFields = [
   'remoteHaulerSlot', 'remoteDispatchRoom', 'remotePickupTarget',
   'remoteHaulReturning', 'remoteCargoOrigin', 'remoteCargoRemaining',
@@ -32,6 +41,9 @@ const clear = (memory, fields) => {
 const reconcileCreepAssignment = creep => {
   if (!creep || !creep.memory) return false;
   const memory = creep.memory;
+  // Pre-policy left-outpost identity is obsolete; remoteTeam + remoteSlot are
+  // now the shared identity for every outpost.
+  delete memory.leftScoutSlot;
   const role = memory.role;
   const changed = Boolean(memory.assignmentRole &&
     memory.assignmentRole !== role);
@@ -43,14 +55,23 @@ const reconcileCreepAssignment = creep => {
 
   const builderRole = role === 'builder';
   if (!builderRole) clear(memory, builderFields);
+  if (!builderRole) {
+    delete memory.assignmentBuilderMission;
+  } else if (memory.assignmentBuilderMission) {
+    // The durable staffing assignment owns the specialty. Dispatch may give a
+    // repair builder fallback build/upgrade work, but that must not silently
+    // turn it into a generic builder and reopen the same staffing slot.
+    memory.builderMission = memory.assignmentBuilderMission;
+  }
 
-  const remoteScout = role === 'remote-scout';
+  const remoteScout = role === 'remote-miner';
+  const remoteReserver = role === 'remote-reserver';
   const remoteHauler = role === 'remote-hauler';
   const remoteBuilder = builderRole && memory.builderScope === 'outpost';
   if (!remoteScout) clear(memory, remoteScoutFields);
   if (!remoteHauler) clear(memory, remoteHaulerFields);
   if (!remoteBuilder) clear(memory, remoteBuilderFields);
-  if (!remoteScout && !remoteHauler && !remoteBuilder) {
+  if (!remoteScout && !remoteHauler && !remoteBuilder && !remoteReserver) {
     clear(memory, remoteCommonFields);
   }
 

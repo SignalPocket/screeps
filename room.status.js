@@ -77,7 +77,8 @@ const deriveRoomStatus = state => {
     key = 'repair-crisis';
     label = 'Repair crisis';
     reasons.push(`${Math.round(state.repairRemaining || 0)} repair remaining`);
-  } else if (hasSpawn && reserve === 'surplus' && spawnFill >= 0.85) {
+  } else if (hasSpawn && reserve === 'surplus' && spawnFill >= 0.85 &&
+      (!state.policyHealth || state.policyHealth === 'surplus')) {
     key = 'energy-surplus';
     label = 'Energy surplus';
     reasons.push(`${storedEnergy}/${reserveTarget} reserve`);
@@ -112,6 +113,8 @@ const deriveRoomStatus = state => {
   return {
     key,
     label,
+    health: state.policyHealth || null,
+    mode: state.policyMode || null,
     score: clamp(score, 0, 100),
     reserve,
     harvest,

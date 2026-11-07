@@ -37,17 +37,13 @@ const createLandmarkFlags = ({
   };
   const recover = room => {
     const primaryCluster = flagPosition(room, 'EXT_PRIMARY');
-    const overflowCluster = flagPosition(room, 'EXT_OVERFLOW');
+    const retiredFlag = Game.flags[nameFor(room, 'EXT_OVERFLOW')];
+    if (retiredFlag && typeof retiredFlag.remove === 'function') retiredFlag.remove();
+    delete room.memory.extensionOverflowCluster;
     const storage = flagPosition(room, 'STORAGE');
     if (!room.memory.extensionCluster && primaryCluster) {
       room.memory.extensionCluster = {
         ...primaryCluster, version: 'low-traffic-v1',
-        recoveredFromFlag: Game.time
-      };
-    }
-    if (!room.memory.extensionOverflowCluster && overflowCluster) {
-      room.memory.extensionOverflowCluster = {
-        ...overflowCluster, version: 'overflow-v1',
         recoveredFromFlag: Game.time
       };
     }
@@ -78,7 +74,6 @@ const createLandmarkFlags = ({
         room.memory.controllerContainerPairPlan = {
           version: 2,
           mode: 'stationary-branch',
-          sacrificeClusterKey: 'overflow',
           primaryId: primaryContainer && primaryContainer.id,
           primaryX: primary.x,
           primaryY: primary.y,
@@ -120,10 +115,6 @@ const createLandmarkFlags = ({
       room.memory.extensionCluster && {
         key: 'EXT_PRIMARY', ...room.memory.extensionCluster,
         color: COLOR_YELLOW, secondaryColor: COLOR_GREEN
-      },
-      room.memory.extensionOverflowCluster && {
-        key: 'EXT_OVERFLOW', ...room.memory.extensionOverflowCluster,
-        color: COLOR_YELLOW, secondaryColor: COLOR_ORANGE
       },
       storagePoint && {
         key: 'STORAGE', x: storagePoint.x, y: storagePoint.y,

@@ -1,4 +1,6 @@
 'use strict';
+const { isBrigadePlanActive } = typeof Game === 'undefined'
+  ? require('./colony.operations') : require('colony.operations');
 
 // Assigns stable, unique standing tiles around each owned controller buffer.
 // Invalid saved stations are reconciled every tick instead of lingering in
@@ -35,7 +37,7 @@ const planControllerStations = ({ rooms, creeps, getRoomStructures,
       continue;
     }
     const terrain = room.getTerrain();
-    const brigadePlan = room.memory && room.memory.controllerBrigadePlan;
+    const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
     const brigadeStops = new Set([
       ...(brigadePlan && Array.isArray(brigadePlan.segments)
         ? brigadePlan.segments.flatMap(segment =>

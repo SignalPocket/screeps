@@ -37,6 +37,28 @@ const createOutpostPlanning = ({
     return survey.remoteWorkNeeds;
   };
 
+  const planLeftSurvey = room => {
+    const exits = Game.map.describeExits(room.name) || {};
+    const targetRoom = exits[LEFT];
+    if (!targetRoom) return null;
+    const survey = room.memory.leftSurvey || {
+      active: true,
+      started: Game.time
+    };
+    survey.active = true;
+    survey.targetRoom = targetRoom;
+    if (!survey.started) survey.started = Game.time;
+    const remoteRoom = Game.rooms[targetRoom];
+    refreshRemoteWorkNeeds(room, survey, remoteRoom,
+      true, true);
+    survey.remoteMinerTarget = getMinerTarget(survey, remoteRoom);
+    survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name, targetRoom);
+    survey.haulPlanUpdated = Game.time;
+    survey.remoteBuilderTarget = getRemoteBuilderTarget(remoteRoom);
+    room.memory.leftSurvey = survey;
+    return survey;
+  };
+
   const planSouthSurvey = room => {
     const exits = Game.map.describeExits(room.name) || {};
     const targetRoom = exits[BOTTOM];
@@ -49,14 +71,12 @@ const createOutpostPlanning = ({
     survey.targetRoom = targetRoom;
     const remoteRoom = Game.rooms[targetRoom];
     survey.remoteMinerTarget = getMinerTarget(survey, remoteRoom);
-    if (!Number.isInteger(survey.remoteHaulerTarget) ||
-        scheduledRoomTick(room, 25, 11)) {
-      survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name, targetRoom);
-    }
+    survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name, targetRoom);
+    survey.haulPlanUpdated = Game.time;
     survey.remoteBuilderTarget = getRemoteBuilderTarget(remoteRoom);
     survey.delivery = 's2';
     refreshRemoteWorkNeeds(room, survey, remoteRoom,
-      scheduledRoomTick(room, 25, 14), true);
+      true, true);
     room.memory.southSurvey = survey;
     return survey;
   };
@@ -80,12 +100,10 @@ const createOutpostPlanning = ({
     const remoteRoom = Game.rooms[targetRoom];
     survey.remoteMinerTarget = getMinerTarget(survey, remoteRoom);
     survey.remoteBuilderTarget = getRemoteBuilderTarget(remoteRoom);
-    if (!Number.isInteger(survey.remoteHaulerTarget) ||
-        scheduledRoomTick(room, 25, 17)) {
-      survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name, targetRoom);
-    }
+    survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name, targetRoom);
+    survey.haulPlanUpdated = Game.time;
     refreshRemoteWorkNeeds(room, survey, remoteRoom,
-      scheduledRoomTick(room, 25, 20), true);
+      true, true);
     room.memory.southwestSurvey = survey;
     return survey;
   };
@@ -95,6 +113,7 @@ const createOutpostPlanning = ({
     for (const room of rooms) {
       if (!room.controller || !room.controller.my) continue;
       planned[room.name] = {
+        left: planLeftSurvey(room),
         south: planSouthSurvey(room),
         southwest: planSouthwestSurvey(room)
       };
@@ -102,8 +121,8 @@ const createOutpostPlanning = ({
     return planned;
   };
 
-  return { getMinerTarget, refreshRemoteWorkNeeds, planSouthSurvey,
-    planSouthwestSurvey, planRegionalOutposts };
+  return { getMinerTarget, refreshRemoteWorkNeeds, planLeftSurvey,
+    planSouthSurvey, planSouthwestSurvey, planRegionalOutposts };
 };
 
 module.exports = { createOutpostPlanning };

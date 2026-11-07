@@ -1,5 +1,16 @@
 'use strict';
 
+/**
+ * Convert source geometry and regeneration into local mining demand.
+ *
+ * A source needs enough active WORK to consume its regeneration, but never
+ * more simultaneous bodies than usable adjacent stations. Completed tunnel
+ * roads can make an otherwise-walled station usable. Construction sites for
+ * blocking structures do not count as usable space.
+ *
+ * This module measures and records source demand. Source slot ownership and
+ * recovery are handled by source.assignment.js and source.recovery.js.
+ */
 const createSourceStaffing = ({
   Game,
   getRoomSources,
@@ -36,6 +47,8 @@ const createSourceStaffing = ({
     }
     return spots;
   };
+
+  const getSourceMinerMinimum = (room, source) => Math.min(1, getSourceSpotCount(room, source));
 
   const getSourceBodyWorkCapacity = room => {
     const moveParts = room.energyCapacityAvailable >= 350 ? 2 : 1;
@@ -118,7 +131,7 @@ const createSourceStaffing = ({
       const maximum = spots;
       const requiredWork = Math.ceil(source.energyCapacity /
         ENERGY_REGEN_TIME / HARVEST_POWER);
-      const efficientBodies = Math.max(1,
+      const efficientBodies = Math.max(Math.min(1, maximum),
         Math.ceil(requiredWork / maxWorkPerBody));
       const initialTarget = Math.min(maximum, efficientBodies);
       targets[source.id] = reviewSourceStaffing(stats, source, {
@@ -143,6 +156,7 @@ const createSourceStaffing = ({
     for (const creep of candidates) {
       const activeWork = creep.getActiveBodyparts(WORK);
       const hasWork = activeWork > 0;
+      if(hasWork&&['builder','upgrader'].includes(creep.memory.role))continue;
       const needsSourceWork = sourceWorkerCount < sourceWorkerLimit &&
         sourceWorkCount < sourceWorkTarget;
       if (creep.memory.sourceReplacement && hasWork && needsSourceWork) {
@@ -156,6 +170,11 @@ const createSourceStaffing = ({
         creep.memory.role = 'harvester';
         sourceWorkerCount++;
         sourceWorkCount += activeWork;
+      } else if (hasWork && creep.getActiveBodyparts(CARRY) < Math.max(2, activeWork * 2)) {
+        creep.memory.role='builder';
+        creep.memory.bodyType='worker';
+        creep.memory.builderScope='local';
+        creep.memory.builderMission='flexible';
       } else if (haulerCount < haulerTarget) {
         creep.memory.role = 'hauler';
         haulerCount++;
@@ -165,8 +184,16 @@ const createSourceStaffing = ({
         creep.memory.role = carryParts >= Math.max(2, workParts * 2)
           ? 'hauler' : 'builder';
         if (creep.memory.role === 'builder') {
-          creep.memory.builderScope = 'local';
-          creep.memory.builderMission = 'flexible';
+          // Being temporarily outside this tick's active roster is not a
+          // reason to erase an otherwise valid builder assignment. Preserve
+          // repair/tunnel ownership when the capability remains a builder;
+          // only fill defaults for genuinely unassigned legacy bodies.
+          if (!creep.memory.builderScope) {
+            creep.memory.builderScope = 'local';
+          }
+          if (!creep.memory.builderMission) {
+            creep.memory.builderMission = 'flexible';
+          }
         }
       } else {
         creep.memory.role = 'hauler';
@@ -177,6 +204,7 @@ const createSourceStaffing = ({
 
   return {
     getSourceSpotCount,
+    getSourceMinerMinimum,
     getSourceBodyWorkCapacity,
     reviewSourceStaffing,
     getSourceWorkerTargets,

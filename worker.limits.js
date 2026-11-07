@@ -16,12 +16,6 @@ const createWorkerLimits = ({
    */
   const getWorkerLimits = room => {
     if (cache[room.name]) return cache[room.name];
-    const savedPlan = room.memory.workerLimitsPlan;
-    if (savedPlan && savedPlan.result &&
-        Game.time - (savedPlan.updated || 0) < 10) {
-      cache[room.name] = savedPlan.result;
-      return savedPlan.result;
-    }
     // Count each usable source-adjacent tile once, assigning shared tiles to
     // their nearest source.
     const sources = getRoomSources(room);
@@ -68,25 +62,44 @@ const createWorkerLimits = ({
     const situation = getRoomSituation(room);
     const targets = situation.targets;
     const roles = situation.policy.roles;
-    const localWorkerMinimum = roles.source.min + roles.builder.min +
+    const policyLocalWorkerMinimum = roles.source.min + roles.builder.min +
       roles.repairBuilder.min + roles.upgrader.min + roles.hauler.min +
       roles.refiller.min + roles.rebalancer.min + roles.tunnelBuilder.min;
+    const defenseMinimum = roles.defender ? roles.defender.min : 0;
+    // An owned spawn room always budgets the invariant miner, upgrader,
+    // filler, and builder/fixer roster even when queue-derived policy puts a
+    // role (especially the idle builder/fixer) at zero for this tick.
+    const baselineWorkerMinimum = room.controller && room.controller.my
+      ? 4 : 0;
+    const localWorkerMinimum = Math.max(baselineWorkerMinimum,
+      policyLocalWorkerMinimum + defenseMinimum);
     const localWorkerDesired = roles.source.desired + targets.builder +
       targets.repairBuilder + targets.upgrader + targets.hauler +
       targets.refiller + targets.rebalancer + targets.tunnelBuilder;
+    const desiredDefense = roles.defender ? roles.defender.desired : 0;
     const remote = situation.policy.remote || {};
     const maintainRemotes = Boolean(situation.policy.permissions &&
       situation.policy.permissions.remoteMaintenance);
     const allowRemoteGrowth = Boolean(situation.policy.permissions &&
       situation.policy.permissions.remoteGrowth);
+    const allowRemoteHaulingRecovery = Boolean(
+      situation.policy.permissions &&
+      situation.policy.permissions.remoteHaulingRecovery);
     const remoteWorkerMinimum = (remote.minersMin || 0) +
-      (remote.haulersMin || 0) + (remote.buildersMin || 0);
+      (remote.haulersMin || 0) + (remote.buildersMin || 0) +
+      (remote.reserversMin || 0);
     const remoteWorkerDesired = (remote.miners || 0) +
-      (remote.haulers || 0) + (remote.builders || 0);
+      (remote.haulers || 0) + (remote.builders || 0) + (remote.reservers || 0);
     const minimumWorkerLimit = localWorkerMinimum + remoteWorkerMinimum;
     const desiredWorkerLimit = Math.max(minimumWorkerLimit,
-      localWorkerDesired + remoteWorkerDesired);
-    room.memory.workerTarget = desiredWorkerLimit;
+      localWorkerDesired + desiredDefense + remoteWorkerDesired);
+    const remoteHaulingRecoveryAllowance = allowRemoteHaulingRecovery
+      ? Math.max(0, (remote.haulers || 0) - (remote.haulersMin || 0)) : 0;
+    const workerLimit = situation.policy.permissions &&
+      situation.policy.permissions.optionalPopulation
+      ? desiredWorkerLimit
+      : minimumWorkerLimit + remoteHaulingRecoveryAllowance;
+    room.memory.workerTarget = workerLimit;
     room.memory.populationRoutingVersion = 'state-policy-v4';
     const congestionCount = getRoomCreeps(room).filter(creep =>
       (creep.memory.navStuck || 0) >= 2 &&
@@ -98,12 +111,17 @@ const createWorkerLimits = ({
       sourceWorkerTargetTotal,
       sourceSpotTotal,
       minerLimit,
+      baselineWorkerMinimum,
+      policyLocalWorkerMinimum,
       localWorkerMinimum,
       maintainRemotes,
       allowRemoteGrowth,
+      allowRemoteHaulingRecovery,
+      remoteHaulingRecoveryAllowance,
       remoteWorkerMinimum,
       minimumWorkerLimit,
-      workerLimit: desiredWorkerLimit
+      desiredWorkerLimit,
+      workerLimit
     };
     cache[room.name] = result;
     room.memory.workerLimitsPlan = { updated: Game.time, result };

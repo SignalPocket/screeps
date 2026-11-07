@@ -21,7 +21,8 @@ const orientPath = (points, start) => {
 
 const createControllerBrigadePlanner = dependencies => {
   const {
-    RoomPosition, LOOK_CONSTRUCTION_SITES, STRUCTURE_CONTAINER, STRUCTURE_ROAD,
+    RoomPosition, LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES,
+    OBSTACLE_OBJECT_TYPES, STRUCTURE_CONTAINER, STRUCTURE_LINK, STRUCTURE_ROAD,
     getRoomStructures, getContainerPurpose
   } = dependencies;
 
@@ -137,6 +138,12 @@ const createControllerBrigadePlanner = dependencies => {
         endpoint.object.pos.y === pair.secondaryY);
       const primary = endpoints.find(endpoint => endpoint !== secondary);
       if (primary && secondary) {
+        const controllerLink = getRoomStructures(room)
+          .filter(structure => structure.structureType === STRUCTURE_LINK &&
+            structure.pos.getRangeTo(room.controller) <= 3)
+          .sort((a, b) => a.pos.getRangeTo(primary.object) -
+            b.pos.getRangeTo(primary.object) ||
+            String(a.id).localeCompare(String(b.id)))[0];
         const branch = new RoomPosition(pair.branchX, pair.branchY, room.name);
         const directOptions = {
           ignoreCreeps: true,
@@ -153,26 +160,49 @@ const createControllerBrigadePlanner = dependencies => {
         }).map(compactPoint);
         const positions = [...trunk, ...tail].filter((point, index, all) =>
           index === 0 || key(point) !== key(all[index - 1]));
+        const occupiedKeys = new Set(positions.map(key));
+        const last = positions[positions.length - 1];
+        const linkSeat = controllerLink &&
+          positions.length < CONTROLLER_BRIGADE_SIZE && last
+          ? [-1, 0, 1].flatMap(dx => [-1, 0, 1].map(dy => ({
+            x: last.x + dx, y: last.y + dy
+          }))).filter(point =>
+            (point.x !== last.x || point.y !== last.y) &&
+            !occupiedKeys.has(key(point)) &&
+            range(point, controllerLink.pos) <= 1 &&
+            !room.lookForAt(LOOK_STRUCTURES, point.x, point.y)
+              .some(structure => structure.structureType !== STRUCTURE_ROAD))
+            .sort((a, b) => range(a, primary.object.pos) -
+              range(b, primary.object.pos) ||
+              range(a, controllerLink.pos) - range(b, controllerLink.pos) ||
+              a.x - b.x || a.y - b.y)[0] || null
+          : null;
+        const routePositions = linkSeat
+          ? [...positions, linkSeat] : positions;
         const branchIndex = positions.findIndex(point =>
           point.x === pair.branchX && point.y === pair.branchY);
-        if (positions.length >= 16 &&
-            positions.length <= CONTROLLER_BRIGADE_SIZE &&
+        const primarySlot = positions.length - 1;
+        const linkSlot = linkSeat ? routePositions.length - 1 : null;
+        if (routePositions.length >= 16 &&
+            routePositions.length <= CONTROLLER_BRIGADE_SIZE &&
             branchIndex >= 0 &&
-            range(positions[0], room.storage.pos) <= 1 &&
-            positions.every((point, index) => index === 0 ||
-              range(positions[index - 1], point) <= 1) &&
+            range(routePositions[0], room.storage.pos) <= 1 &&
+            routePositions.every((point, index) => index === 0 ||
+              range(routePositions[index - 1], point) <= 1) &&
             range(positions[positions.length - 1], primary.object.pos) <= 1) {
-          const segments = positions.map((point, slot) => ({
+          const segments = routePositions.map((point, slot) => ({
             slot,
             pipeline: 0,
             intake: slot === 0,
             upstreamSlot: slot === 0 ? null : slot - 1,
-            downstreamSlot: slot === positions.length - 1 ? null : slot + 1,
-            terminal: slot === positions.length - 1,
+            downstreamSlot: slot === routePositions.length - 1
+              ? null : slot + 1,
+            terminal: slot === routePositions.length - 1,
             stationary: true,
             destinationIds: [
               ...(slot === branchIndex ? [secondary.object.id] : []),
-              ...(slot === positions.length - 1 ? [primary.object.id] : [])
+              ...(slot === primarySlot ? [primary.object.id] : []),
+              ...(slot === linkSlot ? [controllerLink.id] : [])
             ],
             pickup: compactPoint(point),
             delivery: compactPoint(point),
@@ -185,21 +215,24 @@ const createControllerBrigadePlanner = dependencies => {
             roomName: room.name,
             storageId: room.storage.id,
             controllerBufferId: primary.object.id,
-            controllerBufferIds: [primary.object.id, secondary.object.id],
+            controllerBufferIds: [primary.object.id, secondary.object.id,
+              ...(controllerLink && linkSeat ? [controllerLink.id] : [])],
             provisional: false,
-            targetSize: positions.length,
-            activeSize: positions.length,
+            targetSize: routePositions.length,
+            activeSize: routePositions.length,
             stationary: true,
             branchSlot: branchIndex,
+            linkSlot,
             roadOnly: false,
-            routeLength: positions.length,
-            rightOfWay: positions.map(compactPoint),
-            boundaryIndexes: positions.map((point, index) => index),
+            routeLength: routePositions.length,
+            rightOfWay: routePositions.map(compactPoint),
+            boundaryIndexes: routePositions.map((point, index) => index),
             maxSegmentDistance: 0,
             pipelines: [{
               index: 0,
               storageId: room.storage.id,
-              destinationIds: [primary.object.id, secondary.object.id],
+              destinationIds: [primary.object.id, secondary.object.id,
+                ...(controllerLink && linkSeat ? [controllerLink.id] : [])],
               slots: segments.map(segment => segment.slot)
             }],
             segments

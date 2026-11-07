@@ -18,13 +18,15 @@ assert.strictEqual(promoted.memory.remoteRoom, undefined);
 assert.strictEqual(promoted.memory.task, undefined);
 
 const remoteMiner = { memory: {
-  role: 'remote-scout', assignmentRole: 'remote-scout',
+  role: 'remote-miner', assignmentRole: 'remote-miner',
   remoteHome: 'W1N1', remoteRoom: 'W1N2', remoteTeam: 'left',
-  remoteSlot: 1, remoteHaulerSlot: 1, remoteBuilderSlot: 1
+  remoteSlot: 1, leftScoutSlot: 1,
+  remoteHaulerSlot: 1, remoteBuilderSlot: 1
 } };
 assert.strictEqual(reconcileCreepAssignment(remoteMiner), false);
 assert.strictEqual(remoteMiner.memory.remoteRoom, 'W1N2');
 assert.strictEqual(remoteMiner.memory.remoteSlot, 1);
+assert.strictEqual(remoteMiner.memory.leftScoutSlot, undefined);
 assert.strictEqual(remoteMiner.memory.remoteHaulerSlot, undefined);
 assert.strictEqual(remoteMiner.memory.remoteBuilderSlot, undefined);
 
@@ -39,5 +41,15 @@ assert.strictEqual(sourceWorker.memory.sourceRecoveryPlanTick, 42);
 sourceWorker.memory.role = 'builder';
 reconcileCreepAssignment(sourceWorker);
 assert.strictEqual(sourceWorker.memory.sourceRecoveryPlanTick, undefined);
+
+const repairBuilder = { memory: {
+  role: 'builder', assignmentRole: 'builder', builderScope: 'local',
+  builderMission: 'flexible', assignmentBuilderMission: 'repair'
+} };
+reconcileCreepAssignment(repairBuilder);
+assert.strictEqual(repairBuilder.memory.builderMission, 'repair');
+repairBuilder.memory.role = 'hauler';
+reconcileCreepAssignment(repairBuilder);
+assert.strictEqual(repairBuilder.memory.assignmentBuilderMission, undefined);
 
 console.log('creep assignment scenarios passed');

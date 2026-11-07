@@ -8,8 +8,9 @@ const shortRoles = {
   rebalancer: 'RB',
   builder: 'BU',
   upgrader: 'UP',
-  'remote-scout': 'OP',
+  'remote-miner': 'OM',
   'remote-hauler': 'OC',
+  'remote-reserver': 'OR',
   'controller-relay': 'PR',
   claimer: 'CL',
   worker: 'W',
@@ -30,15 +31,17 @@ const shortTasks = {
   build: 'Build',
   'dig-road': 'Dig',
   repair: 'Fix',
+  'emergency-repair': 'Fix!',
   'supply-worker': 'Give',
   'await-supply': 'WaitE',
-  'remote-scout': 'Scout',
+  'remote-miner': 'Mine',
   'remote-harvest': 'Src',
   'remote-container': 'Cont',
   'remote-haul': 'RHaul',
   'remote-road': 'RBuild',
   'controller-relay': 'Power',
   claim: 'Claim',
+  reserve: 'Reserve',
   'expansion-build': 'Expand',
   'stage-supply': 'Stage',
   'stock-refill': 'StockSp',
@@ -51,12 +54,15 @@ const shortTasks = {
   'committed-buffer': 'StockRC',
   'committed-storage': 'Store',
   'committed-supply': 'Give',
-  standby: 'Wait',
+  standby: 'Blocked',
+  'wait-job': 'Blocked',
   withdraw: 'Get',
   store: 'Store',
   'store-storage': 'Store',
   recycle: 'Recycle'
 };
+
+const getWaitSpeech = memory => memory.waitState === 'parked' ? 'Park' : 'Blocked';
 
 const shortCreepName = name => name
   .replace(/^worker-/, '')
@@ -125,6 +131,7 @@ const createCreepReporting = ({ Game, getRoomSources,
 
 module.exports = {
   createCreepReporting,
+  getWaitSpeech,
   shortCreepName,
   shortRoles,
   shortTasks

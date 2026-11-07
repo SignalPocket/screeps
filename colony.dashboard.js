@@ -46,6 +46,9 @@ const formatRoleEntry = ({ role, count, usable, coverage, target, status }) => {
     aliveNote;
 };
 
+const countBrigadeMembers = creeps => creeps.filter(creep =>
+  creep.memory.role === 'controller-relay').length;
+
 const createColonyDashboard = ({
   Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
   buildRoomStaffingPlan,
@@ -252,6 +255,7 @@ const createColonyDashboard = ({
     const dashboard = {
       updated: Game.time,
       creeps: creeps.length,
+      brigadeMembers: countBrigadeMembers(creeps),
       spawning,
       needed,
       populationNeed: populationSpawnNeed,
@@ -296,7 +300,8 @@ const createColonyDashboard = ({
     Memory.colonyDashboard = dashboard;
     if (Game.time % 25 === 0) {
       console.log(`[${Game.time}] Colony | Creeps ${creeps.length} ` +
-        `(spawning ${spawning}, need ${needed}: ` +
+        `(brigade ${dashboard.brigadeMembers}, spawning ${spawning}, ` +
+        `need ${needed}: ` +
         `red ${minimumNeed}, yellow ${desiredNeed}, ` +
         `population ${populationSpawnNeed}` +
         `${spawnWaits.length ? `, wait ${spawnWaits.join(',')}` : ''}) | ` +
@@ -378,7 +383,8 @@ const createColonyDashboard = ({
         opacity: textOpacity
       });
       room.visual.text(
-        `Creeps ${dashboard.creeps} | spawn ${dashboard.spawning} | ` +
+        `Creeps ${dashboard.creeps} | Brigade ` +
+          `${dashboard.brigadeMembers || 0} | spawn ${dashboard.spawning} | ` +
           `need ${dashboard.needed} ` +
           `(R${dashboard.minimumNeed || 0} Y${dashboard.desiredNeed || 0} ` +
           `P${dashboard.populationNeed || 0})`,
@@ -481,5 +487,6 @@ const createColonyDashboard = ({
 
 module.exports = {
   calculateStaffingDemand, getStaffingStatus, formatRoleEntry,
+  countBrigadeMembers,
   createColonyDashboard
 };

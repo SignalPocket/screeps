@@ -47,7 +47,9 @@ const creeps = [
   make('refiller', { memory: { refillClusterId: 'spawn' } }),
   make('hauler'),
   make('upgrader', { work: 4 }),
-  make('remote-scout', { work: 2,
+  make('builder', { work: 2, memory: { builderScope: 'local',
+    builderMission: 'flexible' } }),
+  make('remote-miner', { work: 2,
     memory: { remoteRoom: 'W1N2', remoteSlot: 0 } }),
   ...Array.from({ length: 8 }, (_, index) => make('remote-hauler', {
     memory: { remoteRoom: 'W1N2', remoteHaulerSlot: index }
@@ -81,4 +83,79 @@ assert.strictEqual(missingOutpostCoverage.jobs.remoteHauler.count, 8);
 assert.strictEqual(missingOutpostCoverage.jobs.remoteHauler.coverageCount, 1);
 assert.strictEqual(missingOutpostCoverage.minimumGap.role, 'remoteHauler');
 
+const blockedRoutePriority = planner({
+  ...room,
+  memory: {
+    ...room.memory,
+    southSurvey: {
+      active: true, targetRoom: 'W1N3', remoteMinerTarget: 0,
+      remoteHaulerTarget: 2, remoteBuilderTarget: 3,
+      deliveryPolicy: { blocked: true }
+    }
+  }
+}, creeps, {
+  ...policy,
+  remote: { ...policy.remote, minersMin: 1, miners: 1,
+    haulersMin: 2, haulers: 7, buildersMin: 3, builders: 3 }
+});
+assert.strictEqual(blockedRoutePriority.minimumGap.role, 'remoteHauler',
+  'a blocked outpost without a carrier makes hauling the central prerequisite');
+
 console.log('staffing plan scenarios passed');
+const coreGap=planner(room,creeps,{...policy,roles:{...policy.roles,rebalancer:role(1),upgrader:role(2)}});
+assert.strictEqual(coreGap.minimumGap.role,'upgrader','an empty optional balancer slot cannot hide the second required upgrader');
+
+const rebalancerBeforeRemote = planner(room, creeps, {
+  ...policy,
+  roles: { ...policy.roles, rebalancer: role(1) },
+  remote: { ...policy.remote, haulersMin: 2, haulers: 5 }
+});
+assert.strictEqual(rebalancerBeforeRemote.minimumGap.role, 'rebalancer',
+  'a required rebalancer is restored before a remote roster gap');
+
+const remoteBuilderCreeps = [
+  ...creeps,
+  make('builder', { work: 2, memory: { builderScope: 'outpost',
+    remoteRoom: 'W1N2', remoteBuilderSlot: 0 } }),
+  make('builder', { work: 2, memory: { builderScope: 'outpost',
+    remoteRoom: 'W1N2', remoteBuilderSlot: 1 } })
+];
+const remoteBuilderPlan = planner({
+  ...room,
+  memory: { leftSurvey: { ...room.memory.leftSurvey,
+    remoteBuilderTarget: 3 } }
+}, remoteBuilderCreeps, {
+  ...policy,
+  remote: { ...policy.remote, buildersMin: 3, builders: 3 }
+});
+assert.strictEqual(remoteBuilderPlan.jobs.remoteBuilder.count, 2);
+assert.strictEqual(remoteBuilderPlan.jobs.remoteBuilder.coverageCount, 2,
+  'remote builder minimum counts covered physical slots, not rooms');
+assert.strictEqual(remoteBuilderPlan.minimumGap.role, 'remoteBuilder');
+
+const bootstrapPolicy = {
+  roles: {
+    source: role(2), refiller: role(2), hauler: role(1),
+    rebalancer: role(), upgrader: role(2), builder: role(),
+    repairBuilder: role(), tunnelBuilder: role()
+  },
+  remote: {}
+};
+const minerOnly = [make('harvester', {
+  work: 3, memory: { preferredSource: 's1' }
+})];
+const minerPlan = planner(room, minerOnly, bootstrapPolicy);
+assert.strictEqual(minerPlan.baselineGap.key, 'upgrader');
+assert.strictEqual(minerPlan.minimumGap.role, 'upgrader',
+  'a second miner and filler minimum cannot preempt the baseline upgrader');
+
+const throughFiller = [
+  ...minerOnly,
+  make('upgrader', { work: 1 }),
+  make('refiller', { memory: { refillClusterId: 'spawn' } })
+];
+const builderFloor = planner(room, throughFiller, bootstrapPolicy);
+assert.strictEqual(builderFloor.jobs.builder.min, 0);
+assert.strictEqual(builderFloor.baselineGap.key, 'builderFixer');
+assert.strictEqual(builderFloor.minimumGap.role, 'builder',
+  'builder/fixer remains a baseline job even with no current queue');

@@ -1,7 +1,32 @@
 'use strict';
+const { isBrigadePlanActive } = typeof Game === 'undefined'
+  ? require('./colony.operations') : require('colony.operations');
+const { laneCost } = typeof Game==='undefined' ? require('./road.network') : require('road.network');
 
+const BRIGADE_BYPASS_COST = 50;
+
+// A brigade lane is a right-of-way, not a room divider. Price it high enough
+// that ordinary workers take a nearby side route, while leaving PathFinder an
+// escape when structures or terrain make crossing the saved lane unavoidable.
+// Occupied relay tiles are blocked separately below during stuck recovery.
+const applyBrigadeBypassCost = (costs, x, y) => {
+  const currentCost = costs.get(x, y);
+  if (currentCost < 255) costs.set(x, y,
+    Math.max(currentCost, BRIGADE_BYPASS_COST));
+};
+
+/**
+ * Move creeps without letting every caller invent different terrain rules.
+ *
+ * The service builds one room cost model per tick, retains useful cached paths,
+ * reserves next steps to reduce collisions, and invalidates a route when a
+ * creep is stuck or oscillating. Cost 1 is a strategic/preferred road, cost 2
+ * is another road, cost 4 is plain terrain, and less desirable legal terrain
+ * costs more. Brigade seats and right-of-way receive special protection.
+ */
 const createMovementService = options => {
-  const { Game, Room, FIND_STRUCTURES, FIND_MY_CREEPS, STRUCTURE_ROAD,
+  const { Game, Room, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES,
+    FIND_MY_CREEPS, STRUCTURE_ROAD, STRUCTURE_EXTENSION,
     OK, ERR_INVALID_TARGET } = options;
   const movementReservations = {};
   const movementRoomCache = {};
@@ -20,7 +45,7 @@ const createMovementService = options => {
     }
     const preferredRoadTiles = new Set(Object.entries(preferredUses)
       .filter(([, uses]) => uses >= 2).map(([key]) => key));
-    const brigadePlan = room.memory.controllerBrigadePlan;
+    const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
     const brigadeRightOfWay = new Set([
       ...(brigadePlan && Array.isArray(brigadePlan.segments)
         ? brigadePlan.segments.flatMap(segment =>
@@ -35,8 +60,19 @@ const createMovementService = options => {
       y: road.pos.y,
       preferred: preferredRoadTiles.has(`${road.pos.x}:${road.pos.y}`)
     }));
+    // Construction sites are normally traversable. Keep extension sites in
+    // the shared room model so every creep prices them exactly like ordinary
+    // plain terrain instead of avoiding the future extension footprint.
+    // Completed extensions are intentionally absent: the engine blocks them.
+    const extensionSites = FIND_MY_CONSTRUCTION_SITES !== undefined &&
+      STRUCTURE_EXTENSION !== undefined
+      ? room.find(FIND_MY_CONSTRUCTION_SITES, {
+        filter: site => site.structureType === STRUCTURE_EXTENSION
+      }).map(site => ({ x: site.pos.x, y: site.pos.y }))
+      : [];
     const cached = {
       roads,
+      extensionSites,
       roadTiles: new Set(roads.map(road => `${road.x}:${road.y}`)),
       preferredRoadTiles,
       brigadeRightOfWay,
@@ -48,6 +84,7 @@ const createMovementService = options => {
         stationary: other.memory.role === 'miner' ||
           other.memory.role === 'harvester' ||
           other.memory.role === 'upgrader' ||
+          other.memory.role === 'controller-relay' ||
           other.memory.task === 'remote-harvest'
       }))
     };
@@ -81,11 +118,11 @@ const createMovementService = options => {
     const position = target.pos || target;
     if (!position) return ERR_INVALID_TARGET;
     const targetRoomName = position.roomName || creep.room.name;
-    const effectiveRange = targetRoomName === creep.room.name ? range : 0;
+    const effectiveRange = range;
     if (targetRoomName === creep.room.name &&
         creep.pos.getRangeTo(position) <= effectiveRange) return OK;
-    if (creep.memory.navCostVersion !== 'planned-roads-v6') {
-      creep.memory.navCostVersion = 'planned-roads-v6';
+    if (creep.memory.navCostVersion !== 'brigade-bypass-v10') {
+      creep.memory.navCostVersion = 'brigade-bypass-v10';
       delete creep.memory._move;
       delete creep.memory.navGoal;
     }
@@ -112,12 +149,12 @@ const createMovementService = options => {
       range: effectiveRange,
       reusePath: recalculate ? 0 : routeReuse,
       ignoreCreeps: !recalculate,
-      // Roads should win over a modest shortcut, while still allowing a
-      // clearly shorter off-road route. This avoids both road avoidance and
-      // long ornamental detours.
-      plainCost: direct && movementOptions.preferRoads ? 2 : direct ? 1 : 3,
-      swampCost: direct && movementOptions.preferRoads ? 10 : direct ? 5 : 12,
-      maxOps: 2000,
+      // The normal hierarchy is preferred road 1, ordinary road 2, plain 4,
+      // swamp 20. Direct positioning without road preference remains an
+      // explicit exception for seating a creep on an exact working tile.
+      plainCost: direct && !movementOptions.preferRoads ? 1 : 4,
+      swampCost: direct && !movementOptions.preferRoads ? 5 : 20,
+      maxOps: movementOptions.maxOps || 2000,
       costCallback: (roomName, costs) => {
         if (!Game.rooms[roomName]) return costs;
         const roomCache = getMovementRoomCache(roomName);
@@ -129,6 +166,28 @@ const createMovementService = options => {
           costs.set(road.x, road.y,
             direct && movementOptions.preferRoads ? 1
               : road.preferred ? 1 : 2);
+        }
+        for (const site of roomCache ? roomCache.extensionSites : []) {
+          const currentCost = costs.get(site.x, site.y);
+          if (currentCost < 255 &&
+              !roomCache.roadTiles.has(`${site.x}:${site.y}`)) {
+            costs.set(site.x, site.y, 4);
+          }
+        }
+
+        if (!direct && roomCache && Game.rooms[roomName].memory.roadNetworkPlan) {
+          let heading={dx:Math.sign(position.x-creep.pos.x),dy:Math.sign(position.y-creep.pos.y)};
+          if (targetRoomName!==roomName) {
+            const exits=Game.map.describeExits(roomName)||{};
+            const exit=Object.keys(exits).find(k=>exits[k]===targetRoomName);
+            if(exit)heading={dx:exit==='3'?1:exit==='7'?-1:0,
+              dy:exit==='5'?1:exit==='1'?-1:0};
+          }
+          for(const [key,lane] of Object.entries(Game.rooms[roomName].memory.roadNetworkPlan.directions)){
+            if(!roomCache.roadTiles.has(key)||!roomCache.roadTiles.has(lane.peer))continue;
+            const cost=laneCost(lane,heading,true);
+            if(cost!==null){const [x,y]=key.split(':').map(Number);if(costs.get(x,y)<255)costs.set(x,y,cost);}
+          }
         }
         if (movementOptions.roadOnly) {
           for (let x = 1; x <= 48; x++) {
@@ -142,7 +201,7 @@ const createMovementService = options => {
         if (creep.memory.role !== 'controller-relay') {
           for (const key of roomCache ? roomCache.brigadeRightOfWay : []) {
             const [x, y] = key.split(':').map(Number);
-            costs.set(x, y, 255);
+            applyBrigadeBypassCost(costs, x, y);
           }
         }
         const reservations = movementReservations[roomName] || {};
@@ -191,4 +250,5 @@ const createMovementService = options => {
     movementReservations };
 };
 
-module.exports = { createMovementService };
+module.exports = { createMovementService, applyBrigadeBypassCost,
+  BRIGADE_BYPASS_COST };

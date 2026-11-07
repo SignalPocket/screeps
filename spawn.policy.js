@@ -10,15 +10,17 @@ const createSpawnPolicy = ({
   minSpawnChargeWait = 3,
   emergencyBodyEnergyRatio = 0.5,
   recoveryBodyEnergyRatio = 0.65,
-  minimumRecoveryBodyEnergy = 300
+  minimumRecoveryBodyEnergy = 300,
+  maximumBodyEnergy = 700,
+  productiveMinerMaximumBodyEnergy = 800
 }) => {
   const dedicatedRoles = new Set([
-    'remote-scout', 'remote-hauler', 'refiller', 'rebalancer', 'claimer',
-    'controller-relay'
+    'remote-miner', 'remote-hauler', 'refiller', 'rebalancer', 'claimer',
+    'controller-relay', 'remote-reserver', 'defender'
   ]);
   const fullBodyRoles = new Set([
     'miner', 'harvester', 'hauler', 'refiller', 'rebalancer', 'upgrader',
-    'builder', 'remote-scout', 'remote-hauler', 'claimer'
+    'builder', 'remote-miner', 'remote-hauler', 'remote-reserver', 'claimer', 'defender'
   ]);
 
   const getSpawnChargeWaitLimit = (current, target) => {
@@ -69,7 +71,8 @@ const createSpawnPolicy = ({
           ? creep.getActiveBodyparts(CARRY) > 0
           : hasWorkParts(creep)));
     const needsWorker = Boolean(assignment && !hasCapableIdleWorker &&
-      workers.length < workerLimit);
+      (workers.length < workerLimit || assignment.emergencyDefense ||
+        assignment.emergencyPresence));
     if (!needsWorker) {
       clearSpawnWait(spawn.room);
       return { needsWorker: false, body: null };
@@ -95,6 +98,7 @@ const createSpawnPolicy = ({
         creep.memory.role === 'harvester') &&
       (creep.spawning || creep.getActiveBodyparts(WORK) > 0)).length;
     const emergency = workers.length === 0 || sourceWorkerCount === 0 ||
+      Boolean(assignment.emergencyPresence) ||
       Boolean(assignment.minimumGap && staffingCurrent === 0) ||
       (spawn.room.controller &&
         spawn.room.controller.ticksToDowngrade < 1000);
@@ -105,28 +109,67 @@ const createSpawnPolicy = ({
     const refillerWaitExpired = assignment.role === 'refiller' &&
       assignment.refillerFallbackAllowed !== false &&
       waited >= refillerMaxChargeWait;
-    const chargeComplete = energyFull || emergency ||
-      (assignment.minimumEnergy && spawn.room.energyAvailable >=
-        assignment.minimumEnergy) || refillerWaitExpired ||
-      waited >= waitLimit ||
+    const bodyType = assignment.spawnBodyRole || assignment.bodyType ||
+      assignment.role;
+    const productiveMiner = ['miner', 'harvester'].includes(bodyType) &&
+      assignment.miningProduction > 0;
+    const operationEnergy = assignment.role === 'upgrader' && assignment.operationWork
+      ? assignment.operationWork * 100 + 100 + Math.ceil(assignment.operationWork / 4) * 50
+      : assignment.role === 'remote-reserver' ? 1300 : 0;
+    const assignmentBodyEnergyCeiling = operationEnergy || (productiveMiner
+      ? productiveMinerMaximumBodyEnergy : maximumBodyEnergy);
+    // Legacy planners may still describe the pre-cap ideal body. A request
+    // must never wait for more energy than the body factory is allowed to
+    // spend on one creep.
+    const effectiveMinimumEnergy = assignment.minimumEnergy
+      ? Math.min(assignment.minimumEnergy, assignmentBodyEnergyCeiling) : 0;
+    const minimumEnergyMet = !effectiveMinimumEnergy ||
+      spawn.room.energyAvailable >= effectiveMinimumEnergy;
+    const maximumAllowedBodyFunded = spawn.room.energyAvailable >=
+      assignmentBodyEnergyCeiling;
+    // minimumEnergy is a fallback floor, not an immediate launch threshold.
+    // Healthy rooms first let their extension network charge; only emergency
+    // coverage bypasses the wait. Once the wait expires, still refuse a body
+    // below the assignment's functional minimum.
+    const fallbackWaitExpired = refillerWaitExpired || waited >= waitLimit ||
       (!fullBodyRoles.has(assignment.role) && waited >= 25);
-    const bodyEnergy = getSpawnBodyEnergyBudget(staffingCurrent,
+    const chargeComplete = energyFull || maximumAllowedBodyFunded || emergency ||
+      minimumEnergyMet && fallbackWaitExpired;
+    const maximize = Boolean(assignment.qualityFor) || !emergency && staffingCurrent > 0 &&
+      staffingTarget > 0 && staffingTarget <= 2;
+    const bodyEnergy = maximize
+      ? Math.min(spawn.room.energyAvailable, spawn.room.energyCapacityAvailable)
+      : getSpawnBodyEnergyBudget(staffingCurrent,
       staffingTarget,
       spawn.room.energyAvailable, spawn.room.energyCapacityAvailable,
       emergency);
-    const bodyType = assignment.spawnBodyRole || assignment.bodyType ||
-      assignment.role;
-    const candidateBody = chargeComplete
-      ? buildBody(bodyType, bodyEnergy) ||
-        buildBody(bodyType, spawn.room.energyAvailable)
+    const bodyOptions = { maximize,
+      workLimit: assignment.workLimit || assignment.requiredWork,
+      carryParts: assignment.carryParts,
+      miningProduction: assignment.miningProduction,
+      operationWork: assignment.operationWork };
+    let candidateBody = chargeComplete
+      ? buildBody(bodyType, bodyEnergy, bodyOptions) ||
+        buildBody(bodyType, spawn.room.energyAvailable, bodyOptions)
       : null;
+    const maximumBody = assignment.requiredWork
+      ? buildBody(bodyType, assignmentBodyEnergyCeiling,
+        { ...bodyOptions, maximize: true }) : null;
+    const maximumWork = maximumBody
+      ? maximumBody.filter(part => part === WORK).length : 0;
+    const effectiveRequiredWork = assignment.requiredWork
+      ? Math.min(assignment.requiredWork, maximumWork) : 0;
+    if (candidateBody && (['remote-miner', 'harvester', 'miner', 'upgrader', 'builder'].includes(assignment.role)||assignment.qualityFor) &&
+        effectiveRequiredWork && candidateBody.filter(part => part === WORK).length <
+          effectiveRequiredWork) candidateBody = null;
     const mobileWorkRole = assignment.role === 'builder';
     const workParts = candidateBody
       ? candidateBody.filter(part => part === WORK).length : 0;
     const moveParts = candidateBody
       ? candidateBody.filter(part => part === MOVE).length : 0;
     const nonMoveParts = candidateBody ? candidateBody.length - moveParts : 0;
-    const builderFallbackAllowed = emergency || waited >= waitLimit;
+    const builderFallbackAllowed = emergency || maximumAllowedBodyFunded ||
+      waited >= waitLimit;
     const body = candidateBody && mobileWorkRole &&
       (workParts < 4 || moveParts * 2 < nonMoveParts) &&
       !builderFallbackAllowed

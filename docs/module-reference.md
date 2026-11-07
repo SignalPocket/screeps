@@ -10,13 +10,15 @@ Node without the game runtime.
   runs room/creep loops, and executes remaining inline behavior.
 - `memory.maintenance.js`: expires dead creep and stale navigation,
   commitment, and room state.
-- `room.index.js`: per-tick cached sources, structures, sites, creeps, and slow
+- `room.index.js`: the single per-tick room scan, with shared sources,
+  structures, by-type buckets, sites, creeps, tombstones, and 10-tick slow
   work inventory.
 
 ## Policy, stages, and health
 
 - `colony.policy.js`: pure authoritative staffing, health, permission, and
   budget derivation.
+- `cpu.policy.js`: pure CPU-bucket mode and slow-planning permission.
 - `room.situation.js`: live room observation adapter and policy cache.
 - `room.scaling.js`: capacity-relative energy, reserve, and backlog scaling.
 - `room.stages.js`: immutable RCL 0-8 goals, logic, construction, and gates.
@@ -34,7 +36,8 @@ Node without the game runtime.
 - `staffing.minimums.js`: deterministic minimum-gap selector.
 - `minimum.spawn.js`: local minimum gap to spawn assignment.
 - `worker.limits.js`: minimum/desired total population from policy.
-- `population.control.js`: brigade-aware cap and bounded retirements.
+- `population.control.js`: auxiliary-aware cap, transition allowance, and
+  bounded retirements.
 - `body.archetypes.js`: role-to-capability family mapping and roster shortages.
 - `body.factory.js`: energy-budgeted Screeps body construction and body labels.
 - `spawn.policy.js`: cap enforcement, charge wait, emergency budget, and final
@@ -55,10 +58,13 @@ Node without the game runtime.
 - `refill.dispatch.js`: unique spawn/extension refill matching.
 - `refill.management.js`: refill-cluster ownership and specialist lifecycle.
 - `energy.phase.js`: spawn-charge versus normal-work hysteresis.
+- `energy.store-registry.js`: remembered room inventory of containers and
+  storage, their purposes, and legal remote-cargo handoff status.
 - `work.dispatch.js`: unique build, repair, and upgrade assignments.
 - `construction.priority.js`: link/container/extension/road priority and site
   crew demand.
-- `salvage.dispatch.js`: unique dropped-resource, ruin, and tombstone claims.
+- `salvage.dispatch.js`: unique routine salvage claims plus shared post-battle
+  Invader tombstone recovery sized to remaining loot and collector capacity.
 - `resource.reservations.js`: per-tick resource/capacity ledger.
 - `task.reservations.js`: exclusive/shared task target claims.
 - `creep.routing.js`: bounded local routing and rebalancer helpers.
@@ -94,9 +100,14 @@ Node without the game runtime.
 - `outpost.status.js`: remote production and backlog status.
 - `remote.hauling.js`: lane readiness, route throughput, carrier target, and
   dispatch ranking.
-- `remote.roster.js`: stable carrier room/slot ownership and surplus aging.
+- `remote.spawn.js`: policy-bounded minimum and desired lane selection.
+- `remote.recovery.js`: policy-bounded reuse of local surplus for missing
+  remote source and maintenance lanes.
+- `remote.roster.js`: policy-bounded carrier room/slot ownership and surplus
+  aging, with first-lane coverage before additional slots.
 - `remote.corridors.js`: inter-room route and road planning.
-- `expansion.planner.js`: claim target scoring and state progression.
+- `expansion.planner.js`: claim target scoring and policy-gated state
+  progression.
 
 ## Defense, dashboards, and reporting
 

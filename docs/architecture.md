@@ -27,6 +27,8 @@ colony.policy.js <---------- room.trends.js
           v
 staffing.plan.js + worker.limits.js + body.archetypes.js
           |
+          +------ population.control.js: auxiliary transition allowance
+          |
           v
 spawn selection / assignment planners / infrastructure planners
           |
@@ -89,6 +91,8 @@ adapter such as `applyTrendAdjustments`.
 - `forceSpawn` changes charge timing; it does not bypass population policy.
 - Existing plans do not grant themselves permanent priority. Brigade,
   construction, remote growth, and expansion re-enter through current policy.
+- CPU recovery suppresses slow planning, drawing, and metrics before it
+  suppresses survival execution.
 - Remote minimums preserve established income; remote desired staffing grows
   only when the RCL, roads, and economic health allow it.
 - One target has one owner unless a subsystem explicitly supports shared work.
@@ -108,3 +112,7 @@ adapter such as `applyTrendAdjustments`.
 - Some infrastructure placement is stage-aware but not yet expressed as a
   generic policy budget. New infrastructure must not add another independent
   affordability rule.
+- RCL 6 industry and most RCL 7-8 mature-room structures remain declarative
+  stage intent only. Expansion gating is active at RCL 7; terminal, laboratory,
+  mineral, factory, observer, power, and final-defense planners are not yet
+  implemented.

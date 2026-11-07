@@ -1,3 +1,5 @@
+const { getRoadBacklog } = typeof Game === 'undefined'
+  ? require('./road.backlog') : require('road.backlog');
 'use strict';
 
 const { derivePopulationPolicy } = require('colony.policy');
@@ -5,19 +7,33 @@ const { createBodyFactory } = require('body.factory');
 const { createResourceReservations } = require('resource.reservations');
 const { createRoomIndex } = require('room.index');
 const { createMovementService } = require('movement.service');
+const { createRoadNetwork } = require('road.network');
+const { drawRoadNetwork } = require('road.visuals');
 const { createCreepLifecycle } = require('creep.lifecycle');
-const { createCreepReporting, shortCreepName, shortRoles, shortTasks } =
+const { createCreepReporting, getWaitSpeech, shortCreepName, shortRoles, shortTasks } =
   require('creep.reporting');
 const { createSourceStaffing } = require('source.staffing');
 const { createRoomStrategy } = require('room.strategy');
 const { createSourcePositions } = require('source.positions');
 const { deriveRoomStatus } = require('room.status');
 const { createOutpostStatus } = require('outpost.status');
+const { observeOutpostExport } = require('outpost.exports');
+const { observeHaulTrip } = require('logistics.capacity');
+const { harvestBatchFits, harvestSafely } = require('source.harvest');
+const {planControllerRelief,reconcileControllerRelief,enforceUpgraderLimit}=require('role.capacity');
+const {networkRecoveryNeeded,homePickupCandidates}=require('home.energy');
+const {allocateBalancedWork}=require('work.balance');
+const {planRepairSupply,exportableEnergy,runOutpostRepair,protectRepairAssignments,planRepairRelief}=require('repair.supply');
+const {dispatchEmergencyRepairs}=require('outpost.rescue');
+const {observeLabor,reconcileLaborBody,runBudgetedWork,runBudgetedUpgrade,selectUpgradeBudget,workRate,countForRate,profileRate,settle}=require('labor.capacity');
 const { createRoomSituation } = require('room.situation');
 const { createWorkerLimits } = require('worker.limits');
 const { getRoomStagePlan } = require('room.stages');
-const { createRemoteHauling, isRoomBorder } = require('remote.hauling');
+const { createRemoteHauling, isRoomBorder, selectHomeDeliveryTarget,
+  shouldProbeRemoteVision } =
+  require('remote.hauling');
 const { createEnergyPhase } = require('energy.phase');
+const { createEnergyStoreRegistry } = require('energy.store-registry');
 const { createRoadPlanner } = require('road.planner');
 const { createInfrastructurePlanner } = require('infrastructure.planner');
 const { createLandmarkFlags } = require('landmark.flags');
@@ -30,34 +46,60 @@ const { summarizeRoomHealth } = require('health.reporting');
 const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
+const { deriveCpuPolicy } = require('cpu.policy');
+const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
+  require('creep.execution-order');
+const { getOperationScope, retireCompletedPush, isBrigadePlanActive,
+  finalizeOperationPolicy, adoptBalancers, adoptDefenders, reactivateDefenders,
+  adoptSurplusHaulerForLink } =
+  require('colony.operations');
+const { planReservationSpawn, runReservation } = require('remote.reservation');
+const { classifyColonyScenarios, reconcileScenarioRecords } =
+  require('colony.scenarios');
+const { applyScenarioPolicy } = require('scenario.policy');
 const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('source.collection');
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
+const { authorizeSpawnAssignment } = require('spawn.authority');
 const { createTaskReservations } = require('task.reservations');
-const { createWorkDispatch } = require('work.dispatch');
+const { createWorkDispatch, collectPartialHauler, recoverBlockedWork } = require('work.dispatch');
+const { planPickupJobs } = require('pickup.jobs');
 const { planRefillTargets } = require('refill.dispatch');
 const { planControllerStations } = require('controller.stations');
 const { CONTROLLER_BRIGADE_ROLE, CONTROLLER_BRIGADE_SIZE,
   CONTROLLER_BRIGADE_PLAN_VERSION,
   CONTROLLER_BRIGADE_REPLACEMENT_LEAD,
   createControllerBrigade } = require('controller.brigade');
-const { evaluateControllerBrigadeReadiness } =
+const { evaluateControllerBrigadeReadiness,
+  selectControllerBrigadeReplacementMode,
+  shouldRestoreBrigadeBeforeRemoteDefense,
+  shouldDeferRemoteDefenseForHomeRecovery } =
   require('controller.brigade.readiness');
 const { planSalvageAssignments } = require('salvage.dispatch');
 const { planSourceRecovery } = require('source.recovery');
 const { planSourceAssignments } = require('source.assignment');
 const { createConstructionPriority } = require('construction.priority');
-const { getPopulationLimit, selectRetirementCandidates } =
+const { getPopulationLimit, getCapabilityTransitionAllowance,
+  getRequiredPopulationTransitionAllowance, selectRetirementCandidates } =
   require('population.control');
-const { runTowers } = require('tower.control');
+const { selectHealingTower, runTowers } = require('tower.control');
+const { selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+  collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
+  getOutpostPresenceGap, selectDefenderGarrison,
+  createDefenseController } =
+  require('defense.control');
 const { createOutpostPlanning } = require('outpost.planning');
-const { reconcileRemoteHaulerRosters } = require('remote.roster');
+const { reconcileRemoteHaulerRosters, reconcileRemoteMinerRosters } =
+  require('remote.roster');
 const { createExpansionPlanner } = require('expansion.planner');
 const { createRemoteCorridorPlanner } = require('remote.corridors');
 const { createRcl5Infrastructure } = require('rcl5.infrastructure');
 const { createStaffingPlanner } = require('staffing.plan');
 const { createMinimumSpawnPlanner } = require('minimum.spawn');
+const { selectBalancedRecoveryRequest } = require('recovery.balance');
+const { createRemoteSpawnPlanner } = require('remote.spawn');
+const { planRemoteRecovery } = require('remote.recovery');
 const { createBuilderRoster } = require('builder.roster');
 const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
   deriveBodyTargets, buildBodyRoster, canBodyTypeRunLane } =
@@ -66,23 +108,60 @@ const { reconcileCreepAssignments } = require('creep.assignment');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget,
-  selectRebalanceTarget, isRebalanceReviewDue, deliverStagedEnergy } =
+  selectRebalanceTarget, isRebalanceReviewDue,
+  selectLogisticsReliefWorkers, selectBufferLane, getBrigadeIntakeDemand,
+  deliverStagedEnergy } =
   require('creep.routing');
 
-const { workerCost, buildBody, getBodyCode } = createBodyFactory({
+const { workerCost, routineBodyEnergyCap, buildBody, getBodyCode } = createBodyFactory({
   WORK, CARRY, MOVE, ATTACK, RANGED_ATTACK, HEAL, CLAIM, TOUGH,
   BODYPART_COST
 });
 
-// A state-driven colony: one room policy owns population decisions while role
-// code executes the resulting jobs.
+/**
+ * Run one complete colony control cycle.
+ *
+ * The order matters:
+ *   1. normalize memory and bodies;
+ *   2. observe each room and derive one population policy;
+ *   3. plan staffing, spawning, remote work, infrastructure, and exact jobs;
+ *   4. execute towers, brigade relays, logistics, and WORK actions;
+ *   5. record health, dashboard, and human-readable task evidence.
+ *
+ * Policy decides how much work is authorized. Group planners decide who owns
+ * each lane and object. The per-creep executor below carries out that plan and
+ * may only use bounded fallback work when its planned object becomes invalid.
+ * See docs/runtime-walkthrough.md for the narrative version of this loop.
+ */
 module.exports.loop = function () {
   if (!Memory.creeps) Memory.creeps = {};
   const cpuStart = Game.cpu && typeof Game.cpu.getUsed === 'function'
     ? Game.cpu.getUsed() : null;
-
+  const cpuPolicy = deriveCpuPolicy(Game.cpu && Game.cpu.bucket);
+  const allowSlowPlanning = cpuPolicy.allowSlowPlanning;
+  Memory.cpuPolicy = { updated: Game.time, ...cpuPolicy };
+  // The local engine is terminating the script after the bucket reaches zero,
+  // which prevents even the recovery scheduler from running. Yield before any
+  // broad scans at the last 250 bucket points so a later tick can resume the
+  // normal recovery policy instead of extending an empty-bucket outage.
+  if (cpuPolicy.mode === 'recovery' && Game.cpu.bucket < 250) return;
+  const warEvents = collectFriendlyDamageEvents(Object.values(Game.creeps));
+  updateWarState(Memory, Game.time, warEvents);
+  retireCompletedPush(Game);
+  for (const creep of Object.values(Game.creeps)) {
+    if (creep.memory.role === 'remote-scout') {
+      creep.memory.role = 'remote-miner';
+      creep.memory.birthRole = creep.memory.birthRole === 'remote-scout'
+        ? 'remote-miner' : creep.memory.birthRole;
+      creep.memory.assignmentRole = 'remote-miner';
+    }
+    observeOutpostExport({ tick: Game.time, roomName: creep.room.name,
+      energy: creep.store[RESOURCE_ENERGY] || 0, memory: creep.memory,
+      homeMemory: Memory.rooms && Memory.rooms[
+        creep.memory.remoteHome || creep.memory.home] });
+  }
   // Outpost staffing is derived from visible sources, construction, route
-  // distance, and container pressure. Unseen discovery starts with one scout.
+  // distance, and container pressure. Unseen discovery starts with one miner.
   const showTrafficHeatmap = false;
   // Recovery favors getting a functional body onto the map. The adaptive
   // wait still gives healthy rooms time to charge larger bodies, but a deep
@@ -105,26 +184,45 @@ module.exports.loop = function () {
     (Game.time + roomScheduleOffset(room.name) + phase) % interval === 0;
   const scheduledGlobalTick = (interval, phase = 0) =>
     (Game.time + phase) % interval === 0;
-  const { getRoomSources, getRoomStructures, getRoomSites, getRoomCreeps,
-    getSlowWorkInventory } = createRoomIndex({ Game, FIND_SOURCES,
-    FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS });
+  const { getRoomSources, getRoomStructures, getRoomStructuresByType,
+    getRoomSites, getRoomSitesByType, getRoomCreeps,
+    getRoomTombstones, getSlowWorkInventory } = createRoomIndex({ Game,
+    FIND_SOURCES, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS,
+    FIND_TOMBSTONES });
+  observeLabor({Game,getStructures:getRoomStructures,resource:RESOURCE_ENERGY});
+  // Spawn, extension, and tower membership is stable for this tick. Build one
+  // shared list from the room index and let every filler read live capacity
+  // from the same objects instead of repeating structure searches.
+  const roomRefillStructureLists = {};
+  const getRoomRefillStructures = room => {
+    if (!roomRefillStructureLists[room.name]) {
+      roomRefillStructureLists[room.name] = [
+        ...getRoomStructuresByType(room, STRUCTURE_TOWER),
+        ...getRoomStructuresByType(room, STRUCTURE_SPAWN),
+        ...getRoomStructuresByType(room, STRUCTURE_EXTENSION)
+      ].filter(structure => structure.my);
+    }
+    return roomRefillStructureLists[room.name];
+  };
   const landmarkFlags = createLandmarkFlags({
     Game, FIND_SOURCES, FIND_STRUCTURES, STRUCTURE_CONTAINER,
     COLOR_BLUE, COLOR_CYAN, COLOR_GREEN, COLOR_YELLOW, COLOR_ORANGE,
     COLOR_PURPLE, COLOR_WHITE
   });
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    if (!room.memory.landmarkFlags ||
-        scheduledRoomTick(room, 100, 11)) landmarkFlags.reconcile(room);
-    else landmarkFlags.recover(room);
+  if (allowSlowPlanning) {
+    for (const room of Object.values(Game.rooms)) {
+      if (!room.controller || !room.controller.my) continue;
+      if (!room.memory.landmarkFlags ||
+          scheduledRoomTick(room, 100, 11)) landmarkFlags.reconcile(room);
+      else landmarkFlags.recover(room);
+    }
   }
   const { refreshRoomOrdinals, getRoomOrdinal, getBirthName } =
     createCreepNaming({ Game, Memory, getRoomSources });
   if (!Memory.roomOrdinals || scheduledGlobalTick(100, 7)) {
     refreshRoomOrdinals();
   }
-  const { getSourceSpotCount, getSourceBodyWorkCapacity,
+  const { getSourceSpotCount, getSourceMinerMinimum, getSourceBodyWorkCapacity,
     reviewSourceStaffing, getSourceWorkerTargets, assignUnallocatedRoles } =
     createSourceStaffing({
     Game, getRoomSources, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
@@ -154,13 +252,18 @@ module.exports.loop = function () {
     FIND_MY_CONSTRUCTION_SITES
   });
   const { moveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
-    FIND_MY_CREEPS, STRUCTURE_ROAD, OK, ERR_INVALID_TARGET });
+    FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS, STRUCTURE_ROAD,
+    STRUCTURE_EXTENSION, OK, ERR_INVALID_TARGET });
+  const { findFleeStep } = createDefenseController({
+    PathFinder, FIND_STRUCTURES, FIND_CREEPS, OBSTACLE_OBJECT_TYPES,
+    STRUCTURE_ROAD, STRUCTURE_RAMPART
+  });
   const { hasWorkParts, hasRoadMobility, hasBuilderBody,
     getRemoteReplacementLead,
     hasRemoteReplacementLife, hasLocalReplacementLife } =
     createCreepLifecycle({ Game, WORK, MOVE, CREEP_SPAWN_TIME });
   const { buildRoomStaffingPlan } = createStaffingPlanner({
-    isBuilder, isLocalBuilder, hasWorkParts,
+    Game, isBuilder, isLocalBuilder, hasWorkParts,
     hasLocalReplacementLife, hasRemoteReplacementLife, getRoomSources
   });
   const { planMinimumSpawn } = createMinimumSpawnPlanner({
@@ -169,7 +272,7 @@ module.exports.loop = function () {
   const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
     createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
   logDeadCreeps(Memory.creeps);
-  reconcileBodyTypes(Object.values(Game.creeps), { WORK, CARRY, CLAIM });
+  reconcileBodyTypes(Object.values(Game.creeps), { WORK, CARRY, CLAIM, ATTACK });
   // Brigade slot identity is permanent for this experiment. Generic role
   // balancing must not absorb a tiny relay body into the ordinary hauler pool.
   for (const creep of Object.values(Game.creeps)) {
@@ -188,26 +291,51 @@ module.exports.loop = function () {
     creep.memory.preferredSource = creep.memory.sourceReserve;
   }
   reconcileCreepAssignments(Object.values(Game.creeps));
+  for(const creep of Object.values(Game.creeps))reconcileLaborBody(creep);
   const towerStatuses = runTowers({
     rooms: Object.values(Game.rooms), RESOURCE_ENERGY, FIND_MY_STRUCTURES,
     FIND_HOSTILE_CREEPS, FIND_MY_CREEPS, FIND_STRUCTURES, STRUCTURE_TOWER,
     STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_WALL, STRUCTURE_RAMPART,
     ATTACK, RANGED_ATTACK, HEAL, WORK, CLAIM
   });
+  const getDefenseThreats = homeRoomName => {
+    const home = Game.rooms[homeRoomName];
+    const roomNames = getDefenseRoomNames(homeRoomName,
+      home && home.memory, Object.values(Game.creeps));
+    const threats = [...roomNames].flatMap(roomName => {
+      const room = Game.rooms[roomName];
+      return room ? room.find(FIND_HOSTILE_CREEPS).map(creep => ({
+        creep, roomName, homeRoomName
+      })) : [];
+    });
+    updateWarState(Memory, Game.time, threats.map(threat => ({
+      hostile: true, roomName: threat.roomName,
+      homeRoomName: threat.homeRoomName
+    })));
+    return threats;
+  };
+  const postBattleSalvageRooms = new Set(Object.values(Game.rooms)
+    .filter(room => {
+      const status = towerStatuses[room.name];
+      if (status && status.hostileCount > 0) return false;
+      return getRoomTombstones(room).some(tombstone => {
+        const fallen = tombstone.creep;
+        const owner = fallen && fallen.owner && fallen.owner.username;
+        const name = fallen && fallen.name || '';
+        return owner === 'Invader' || /^invader_/i.test(name);
+      });
+    }).map(room => room.name));
   const getRefillPriority = (room, structure, creep) => {
-    const underAttack = towerStatuses[room.name] &&
-      towerStatuses[room.name].hostileCount > 0;
-    if (structure.structureType === STRUCTURE_TOWER) return underAttack ? 0 : 2;
-    if (creep && creep.memory.role === 'refiller') {
-      if (structure.structureType === STRUCTURE_EXTENSION) {
-        return underAttack ? 1 : 0;
-      }
-      if (structure.structureType === STRUCTURE_SPAWN) {
-        return underAttack ? 2 : 1;
-      }
+    if (structure.structureType === STRUCTURE_TOWER) {
+      const capacity = structure.store.getCapacity(RESOURCE_ENERGY) || 1;
+      // Every incomplete tower outranks the spawn network. Within that tier,
+      // send energy to the emptiest tower first so one charged tower cannot
+      // hide an empty partner after an attack.
+      return structure.store[RESOURCE_ENERGY] / capacity;
     }
-    if (structure.structureType === STRUCTURE_SPAWN) return underAttack ? 1 : 0;
-    return underAttack ? 2 : 1;
+    // Spawn and extensions form one energy network. Once tower emergencies
+    // are satisfied, distance—not structure type—selects the next target.
+    return 1;
   };
   const { reconcileBuilderRosters } = createBuilderRoster({
     Game, normalizeBuilderMemory, hasBuilderBody, isOutpostBuilder
@@ -230,7 +358,7 @@ module.exports.loop = function () {
       `room ${maintenanceStats.staleRoomState}`);
   }
   const { getRoomSituation } = createRoomSituation({
-    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources,
+    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources, buildBody,
     getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
     getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
     isMaintainedRoad: (room, structure) =>
@@ -244,14 +372,75 @@ module.exports.loop = function () {
     RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
     OBSTACLE_OBJECT_TYPES, FIND_DROPPED_RESOURCES,
     FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, FIND_MY_SPAWNS,
-    ENERGY_REGEN_TIME, HARVEST_POWER
+    ENERGY_REGEN_TIME, HARVEST_POWER, CREEP_SPAWN_TIME
   });
   const getBuilderTarget = room => getRoomSituation(room).targets.builder;
   const isControllerBrigadeBudgeted = room => {
-    const policy = getRoomSituation(room).policy;
     const readiness = room.memory.controllerBrigadeReadiness;
-    return Boolean(policy.permissions &&
-      policy.permissions.controllerBrigade && readiness && readiness.ready);
+    if (readiness && readiness.replacementMode === 'maintenance') return true;
+    if (!isBrigadePlanActive(room)) return false;
+    const policy = getRoomSituation(room).policy;
+    return Boolean(readiness &&
+      (policy.permissions && policy.permissions.controllerBrigade &&
+        readiness.ready || readiness.replacementMode === 'maintenance'));
+  };
+  const getActiveControllerBrigadeCount = (room, workers) =>
+    (workers || Object.values(Game.creeps)).filter(creep =>
+      creep.memory.home === room.name &&
+      creep.memory.role === CONTROLLER_BRIGADE_ROLE).length;
+  const getPopulationTransitionAllowance = (room, workers,
+    knownWorkerLimit) => {
+    const roomWorkers = (workers || Object.values(Game.creeps)).filter(creep =>
+      creep.memory.home === room.name);
+    const situation = getRoomSituation(room);
+    const remote = situation.policy.remote || {};
+    const remoteBudget = (remote.miners || 0) + (remote.haulers || 0) +
+      (remote.builders || 0) + (remote.reservers || 0);
+    const activeRemote = roomWorkers.filter(creep =>
+      creep.memory.role === 'remote-miner' ||
+      creep.memory.role === 'remote-hauler' ||
+      creep.memory.role === 'remote-reserver' || isOutpostBuilder(creep)).length;
+    const retiring = roomWorkers.filter(creep =>
+      creep.memory.staffingRetire || creep.memory.role === 'retire').length;
+    const activeExpansion = roomWorkers.filter(isExpansionBuilder).length +
+      roomWorkers.filter(creep => creep.memory.role === 'claimer' &&
+        creep.memory.expansionTarget).length;
+    const expansion = room.memory.expansionPlan;
+    let expansionTarget = 0;
+    if (expansion && expansion.status === 'claim-ready' &&
+        situation.policy.permissions.expansion) expansionTarget = 1;
+    if (expansion && expansion.status === 'bootstrap' &&
+        situation.policy.permissions.expansionMaintenance) {
+      expansionTarget = Math.max(1, Math.min(3,
+        Math.ceil(room.energyCapacityAvailable / 600)));
+    }
+    const staffingPlan = buildRoomStaffingPlan(room, roomWorkers,
+      situation.policy);
+    const recoveryTargets = {};
+    if (situation.policy.permissions &&
+        situation.policy.permissions.remoteHaulingRecovery) {
+      recoveryTargets.remoteHauler = situation.policy.remote.haulers;
+    }
+    const ordinaryCapabilityTransition = getCapabilityTransitionAllowance(
+      staffingPlan.jobs, recoveryTargets, 4);
+    const baselineCapabilityTransition = staffingPlan.baseline
+      ? Object.values(staffingPlan.baseline.coverage)
+        .filter(count => count < 1).length : 0;
+    const operationWork = situation.policy.operations && situation.policy.operations.upgradePush
+      ? situation.policy.operations.upgradeWork : 0;
+    const qualityAllowance = operationWork && (roomWorkers.some(c => c.memory.qualityFor) ||
+      planControllerRelief({ room, workers: roomWorkers, viable: hasLocalReplacementLife,
+        operationWork })) ? 1 : 0;
+    const capabilityTransition = Math.max(ordinaryCapabilityTransition,
+      baselineCapabilityTransition) + qualityAllowance;
+    const retainedAllowance = Math.max(0, activeRemote - remoteBudget) +
+      retiring + Math.max(activeExpansion, expansionTarget);
+    const workerLimit = knownWorkerLimit == null
+      ? getWorkerLimits(room).workerLimit : knownWorkerLimit;
+    const corePopulation = Math.max(0, roomWorkers.length -
+      getActiveControllerBrigadeCount(room, roomWorkers));
+    return getRequiredPopulationTransitionAllowance(workerLimit,
+      corePopulation, capabilityTransition, retainedAllowance);
   };
   const { getWorkerLimits } = createWorkerLimits({
     Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
@@ -266,7 +455,12 @@ module.exports.loop = function () {
     const expansion = room.memory.expansionPlan;
     const allowRemoteGrowth = Boolean(situation.policy.permissions &&
       situation.policy.permissions.remoteGrowth);
-    const claimerTarget = expansion && expansion.status === 'claim-ready'
+    const allowRemoteHaulingRecovery = Boolean(
+      situation.policy.permissions &&
+      situation.policy.permissions.remoteHaulingRecovery);
+    const claimerTarget = situation.policy.permissions &&
+      situation.policy.permissions.expansion && expansion &&
+      expansion.status === 'claim-ready'
       ? 1 : 0;
     const targets = deriveBodyTargets({
       localMinerMin: jobs.source.min,
@@ -274,7 +468,7 @@ module.exports.loop = function () {
       refillerMin: jobs.refiller.min,
       refillerDesired: jobs.refiller.desired,
       remoteCarrierMin: jobs.remoteHauler.min,
-      remoteCarrierDesired: allowRemoteGrowth
+      remoteCarrierDesired: allowRemoteGrowth || allowRemoteHaulingRecovery
         ? jobs.remoteHauler.desired : jobs.remoteHauler.min,
       haulerMin: jobs.hauler.min,
       haulerDesired: jobs.hauler.desired,
@@ -320,12 +514,20 @@ module.exports.loop = function () {
     createRemoteHauling({
       Game, PathFinder, buildBody, FIND_SOURCES, FIND_STRUCTURES,
       FIND_MY_SPAWNS, STRUCTURE_CONTAINER, RESOURCE_ENERGY, CARRY,
-      CARRY_CAPACITY, ENERGY_REGEN_TIME
+      CARRY_CAPACITY, ENERGY_REGEN_TIME, hasRemoteReplacementLife
+    });
+  const { getPlans: getRemoteSpawnPlans, planMinimumRemoteSpawn,
+    planRemoteGrowthSpawn, planRemoteMinerReplacement } =
+    createRemoteSpawnPlanner({
+      isOutpostBuilder, hasRemoteReplacementLife,
+      getRemoteHaulReadiness, getRemoteReplacementLead,
+      BODYPART_COST, WORK, CARRY, MOVE
     });
   const { updateEnergyWorkPhase } = createEnergyPhase({ Game, workerCost });
   const { getImportantRoadPaths, isSingleLaneRoadPosition,
     getImportantTravelPaths, getInterRoomTravelPaths,
     getConvergedTravelPaths, getControllerFanPaths,
+    getInfrastructureServicePaths,
     getInfrastructureRoadPaths,
     getHeatmapRoadTiles, isHeatmapRoadPosition,
     updateTrafficHeatmap,
@@ -335,6 +537,7 @@ module.exports.loop = function () {
     Game, RoomPosition, scheduledRoomTick, getRoomSources, getRoomCreeps,
     showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
     FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+    STRUCTURE_LINK, STRUCTURE_STORAGE, STRUCTURE_TOWER, STRUCTURE_RAMPART,
     LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
   });
@@ -342,7 +545,7 @@ module.exports.loop = function () {
     getContainerPurpose, refreshContainerPurposes,
     isExtensionRefillBuffer, placeSourceContainerSite,
     manageExtensionContainer, manageControllerContainer,
-    placeBorderRelaySite,
+    placeBorderRelaySite, placeOutpostBorderCacheSite,
     isRetiringContainer } = createInfrastructurePlanner({
     Game, RoomPosition, getRoomSources, isSingleLaneRoadPosition,
     CONTROLLER_STRUCTURES, STRUCTURE_EXTENSION, STRUCTURE_CONTAINER,
@@ -351,12 +554,19 @@ module.exports.loop = function () {
     TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, LOOK_CREEPS, RESOURCE_ENERGY, OK
   });
+  const { getRegistry: getEnergyStoreRegistry,
+    getRemoteDeliveryStores } = createEnergyStoreRegistry({
+      Game, getRoomSources, getRoomStructures, getContainerPurpose,
+      STRUCTURE_CONTAINER, STRUCTURE_STORAGE
+    });
   const { getMissingSlot: getMissingControllerBrigadeSlot,
+    reconcileRealOverlaps: reconcileControllerBrigadeOverlaps,
+    reconcileSubstitutes: reconcileControllerBrigadeSubstitutes,
     buildPlan: buildControllerBrigadePlan,
     run: runControllerBrigade } = createControllerBrigade({
     Game, RoomPosition, RESOURCE_ENERGY, OK, ERR_NOT_IN_RANGE,
     LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES, OBSTACLE_OBJECT_TYPES,
-    STRUCTURE_CONTAINER,
+    STRUCTURE_CONTAINER, STRUCTURE_LINK,
     STRUCTURE_ROAD, TERRAIN_MASK_WALL, getRoomStructures,
     getContainerPurpose, moveCreep
   });
@@ -394,11 +604,16 @@ module.exports.loop = function () {
     return controllerBrigadePlans[room.name];
   };
   const { getSourceLink, isControllerLink: isRcl5ControllerLink,
-    isSpawnLink: isRcl5SpawnLink, placeLinkSite, placeTowerSite, runLinks } =
+    isExtensionLink: isRcl5ExtensionLink,
+    placeLinkSite, placeTowerSite, runLinks,
+    selectControllerLinkHandoff, selectControllerLinkFeed } =
     createRcl5Infrastructure({
-      Game, getRoomSources, CONTROLLER_STRUCTURES,
-      STRUCTURE_LINK, STRUCTURE_TOWER, STRUCTURE_ROAD, STRUCTURE_RAMPART,
-      FIND_MY_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS,
+      Game, getRoomSources, getRoomStructures, getRoomStructuresByType,
+      getRoomSitesByType, getContainerPurpose, CONTROLLER_STRUCTURES,
+      STRUCTURE_LINK, STRUCTURE_TOWER, STRUCTURE_CONTAINER, STRUCTURE_ROAD,
+      STRUCTURE_RAMPART,
+      FIND_STRUCTURES, FIND_MY_STRUCTURES, FIND_MY_CONSTRUCTION_SITES,
+      FIND_MY_SPAWNS,
       TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
       LOOK_CONSTRUCTION_SITES, RESOURCE_ENERGY, OK
     });
@@ -411,9 +626,48 @@ module.exports.loop = function () {
     createOutpostMaintenance({ STRUCTURE_CONTAINER, STRUCTURE_ROAD });
   const getRemoteBuilderTarget = remoteRoom => {
     if (!remoteRoom) return 0;
-    const sites = remoteRoom.find(FIND_MY_CONSTRUCTION_SITES).length;
-    return getOutpostBuilderTarget(getRoomStructures(remoteRoom), sites);
+    const structures = getRoomStructures(remoteRoom);
+    const sites = remoteRoom.find(FIND_MY_CONSTRUCTION_SITES);
+    const backlog = getRoadBacklog(remoteRoom.memory.roadNetworkPlan,
+      structures, sites);
+    remoteRoom.memory.roadBacklog = { ...backlog, updated: Game.time };
+    const plannedWork = remoteRoom.memory.deliveryPolicy?.blocked ? 0 :
+      sites.length + backlog.unqueued;
+    const old=remoteRoom.memory.builderCapacityPlan;
+    const activeRepairCrew=Object.values(Game.creeps).filter(c=>c.memory.emergencyRepairRoom===remoteRoom.name).length;
+    const criticalDamage=activeRepairCrew>0 || structures.some(s=>s.structureType===STRUCTURE_CONTAINER&&s.hits<s.hitsMax*.25);
+    if(old && Game.time-old.updated<20){if(criticalDamage)old.desired=Math.max(2,old.desired);return old.desired;}
+    const owners=Object.values(Game.rooms).filter(r=>r.controller?.my);
+    const home=owners.find(r=>[r.memory.leftSurvey,r.memory.southSurvey,r.memory.southwestSurvey]
+      .some(plan=>plan?.targetRoom===remoteRoom.name));
+    const candidates=Object.values(Game.creeps).filter(c=>c.memory.role==='builder' &&
+      c.memory.builderScope==='outpost'&&c.memory.remoteRoom===remoteRoom.name&&
+      !c.spawning&&hasRemoteReplacementLife(c));
+    const maintenance=planRepairSupply({structures,production:getRoomSources(remoteRoom).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)});
+    const power=maintenance.backlog>0?1:5;
+    const rates=candidates.map(c=>{
+      const estimate=workRate(c.getActiveBodyparts(WORK),c.store.getCapacity(RESOURCE_ENERGY),power,12);
+      return Math.min(estimate,profileRate(c,'remoteBuilder:'+remoteRoom.name,home?.memory.laborStats,estimate).rate);
+    });
+    const future=buildBody('worker',home?.energyCapacityAvailable||800)||[];
+    const futureRate=workRate(future.filter(p=>p===WORK).length,future.filter(p=>p===CARRY).length*50,power,12);
+    const repairEnergy=structures.filter(isOutpostRepairTarget).reduce((sum,s)=>sum+
+      Math.max(0,s.hitsMax*.8-s.hits)/100,0);
+    const remaining=sites.reduce((sum,s)=>sum+Math.max(0,s.progressTotal-s.progress),0)+
+      (remoteRoom.memory.deliveryPolicy?.blocked?0:backlog.unqueuedBuildLowerBound||0);
+    const production=getRoomSources(remoteRoom).reduce((sum,source)=>sum+source.energyCapacity/ENERGY_REGEN_TIME,0);
+    const energyBudget=Math.max(.5,production*.25);
+    const requiredRate=maintenance.rate+(maintenance.backlog>production*100?0:Math.min(energyBudget,remaining/3000));
+    const wanted=countForRate(requiredRate,rates,futureRate,4);
+    const stable=settle(old,wanted,Game.time,criticalDamage?2:plannedWork>0||repairEnergy>0?1:0);
+    remoteRoom.memory.builderCapacityPlan={...stable,updated:Game.time,requiredRate,energyBudget,futureRate,rates};
+    return stable.desired;
   };
+  protectRepairAssignments({Game,getStructures:getRoomStructures});
+  reconcileControllerRelief({Game,isRoadMobile:hasRoadMobility});
+  enforceUpgraderLimit({Game,isRoadMobile:hasRoadMobility,
+    getLimit:room=>getRoomSituation(room).policy.roles.upgrader.desired});
+  dispatchEmergencyRepairs({Game,getStructures:getRoomStructures,isRoadMobile:hasRoadMobility,resource:RESOURCE_ENERGY});
   const { refreshRemoteWorkNeeds, planRegionalOutposts } =
     createOutpostPlanning({
       Game, getRemoteBuilderTarget, getRemoteHaulerTarget,
@@ -421,7 +675,7 @@ module.exports.loop = function () {
       ENERGY_REGEN_TIME, HARVEST_POWER
     });
   const { updateExpansionPlan } = createExpansionPlanner({
-    Game, getRoomSources, FIND_STRUCTURES, FIND_MY_SPAWNS,
+    Game, getRoomSources, getRoomSituation, FIND_STRUCTURES, FIND_MY_SPAWNS,
     FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, STRUCTURE_CONTAINER,
     STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
@@ -443,7 +697,117 @@ module.exports.loop = function () {
   const getDesiredSourceWorkerLimit = (room, population) => {
     return getRoomSituation(room).targets.source;
   };
-  const getSpawnAssignment = (room, workers, bodyRosterPlan) => {
+  const publishRoomScenarios = (room, situation, staffingPlan) => {
+    const previousScenarios = room.memory.scenarioRecords &&
+      room.memory.scenarioRecords.active || [];
+    const towerStatus = towerStatuses[room.name] || {};
+    const previouslyUnderAttack = previousScenarios.some(scenario =>
+      scenario.key === 'active-attack' ||
+      scenario.key === 'post-attack-recovery');
+    const towers = getRoomStructures(room).filter(structure =>
+      structure.my && structure.structureType === STRUCTURE_TOWER);
+    const towerReserveDeficit = (towerStatus.hostileCount > 0 ||
+      previouslyUnderAttack) && towers.some(tower => {
+      const capacity = tower.store.getCapacity(RESOURCE_ENERGY) || 1;
+      return tower.store[RESOURCE_ENERGY] < capacity * 0.5;
+    });
+    const recoveryEvidence = towerStatus.mode === 'heal' ||
+      towerReserveDeficit || postBattleSalvageRooms.has(room.name) ||
+      situation.signals.repairCritical;
+    const candidates = classifyColonyScenarios({
+      hostileCount: towerStatus.hostileCount || 0,
+      cpuMode: cpuPolicy.mode,
+      cpuBucket: cpuPolicy.bucket,
+      spawnCapacityOverloaded: Boolean(
+        situation.policy.spawnCapacity?.overloaded),
+      minimumSpawnLoad: situation.policy.spawnCapacity?.minimumLoad,
+      spawnBudget: situation.policy.spawnCapacity?.budget,
+      baselineGap: staffingPlan.baselineGap,
+      initialBootstrap: Boolean(staffingPlan.baselineGap &&
+        room.controller && room.controller.my &&
+        room.controller.level <= 2 &&
+        room.find(FIND_MY_SPAWNS).length > 0),
+      postAttackRecovery: towerStatus.hostileCount === 0 &&
+        previouslyUnderAttack && recoveryEvidence,
+      woundedFriendly: towerStatus.mode === 'heal',
+      towerReserveDeficit,
+      salvageAvailable: postBattleSalvageRooms.has(room.name),
+      controllerSupplyDeficit:
+        situation.signals.controllerTicks < 3000 ||
+        situation.signals.controllerBufferCapacity > 0 &&
+        situation.signals.controllerBufferRatio < 0.1,
+      controllerTicks: situation.signals.controllerTicks,
+      refillDeficit: situation.signals.energyRatio < 0.75 &&
+        (situation.signals.bufferRatio > 0.1 ||
+          situation.signals.droppedEnergy > 0),
+      energyRatio: situation.signals.energyRatio,
+      sourceBufferOverflow: situation.signals.bufferRatio >= 0.85,
+      bufferRatio: situation.signals.bufferRatio,
+      repairCritical: situation.signals.repairCritical,
+      repairRemaining: situation.signals.repairRemaining,
+      buildRemaining: situation.signals.buildRemaining,
+      remoteBacklog: situation.signals.remoteBacklog,
+      remoteBlockedRooms: situation.signals.remoteBlockedRooms,
+      remoteRosterGap: situation.signals.remoteRosterGap,
+      remoteHaulerShortfall: situation.signals.remoteHaulerShortfall,
+      operationalSamples: situation.signals.operationalSamples,
+      taskFlips: situation.signals.taskFlips,
+      roleChanges: situation.signals.roleChanges,
+      stuckTicks: situation.signals.stuckTicks
+    });
+    const records = reconcileScenarioRecords(previousScenarios, candidates,
+      Game.time);
+    room.memory.scenarioRecords = {
+      version: 1, updated: Game.time, active: records
+    };
+    situation.scenarios = records;
+    applyScenarioPolicy(situation.policy, records);
+    finalizeOperationPolicy(situation.policy, room, Game);
+    adoptBalancers(room, Game, situation.policy);
+    adoptSurplusHaulerForLink(room, Game, situation.policy);
+    situation.mode = situation.policy.mode;
+    situation.targets = Object.fromEntries(Object.entries(
+      situation.policy.roles).map(([key, role]) => [key, role.desired]));
+    situation.status.health = situation.policy.health;
+    situation.status.mode = situation.policy.mode;
+    situation.status.scenarios = records.map(record => record.key);
+    situation.status.conditionLabel = situation.status.label;
+    if (situation.status.key === 'energy-surplus' &&
+        situation.policy.health !== 'surplus') {
+      situation.status.key = `policy-${situation.policy.health}`;
+      situation.status.label = situation.policy.health[0].toUpperCase() +
+        situation.policy.health.slice(1);
+    }
+    situation.status.label = `${situation.policy.health[0].toUpperCase()}${
+      situation.policy.health.slice(1)} · ${situation.status.conditionLabel}`;
+    room.memory.populationPolicy = {
+      updated: Game.time, mode: situation.policy.mode,
+      health: situation.policy.health,
+      permissions: situation.policy.permissions,
+      budgets: situation.policy.budgets,
+      roles: situation.policy.roles,
+      remote: situation.policy.remote,
+      totals: situation.policy.totals,
+      spawnCapacity: situation.policy.spawnCapacity,
+      scenarioDecision: situation.policy.scenarioDecision
+    };
+    room.memory.roomStatus = { updated: Game.time, ...situation.status };
+    room.memory.roomDecision = {
+      version: 1, updated: Game.time,
+      health: situation.policy.health,
+      mode: situation.policy.mode,
+      scenarios: records,
+      permissions: situation.policy.permissions,
+      roles: situation.policy.roles,
+      remote: situation.policy.remote,
+      totals: situation.policy.totals,
+      spawnCapacity: situation.policy.spawnCapacity,
+      scenarioDecision: situation.policy.scenarioDecision
+    };
+    staffingPlan.scenarios = records;
+    return records;
+  };
+  const getSpawnAssignment = (room, workers) => {
     // The power line is an upgrade-season optimization, not core staffing.
     // Construction, repair, and essential economy jobs keep spawn priority
     // until only small cleanup backlogs remain.
@@ -452,90 +816,131 @@ module.exports.loop = function () {
       spawnSituation.policy);
     const brigadeReadiness = evaluateControllerBrigadeReadiness(
       spawnSituation, staffingPlan);
-    const establishedBrigade = Boolean(room.memory.controllerBrigadePlan) &&
-      (workers.some(creep =>
-        creep.memory.role === CONTROLLER_BRIGADE_ROLE) ||
-        Boolean(room.memory.controllerBrigadeStats));
+    const savedBrigadePlan = room.memory.controllerBrigadePlan;
+    const activeBrigadeCount = workers.filter(creep =>
+      creep.memory.role === CONTROLLER_BRIGADE_ROLE).length;
+    if (room.memory.defenderSpawnQueuedTick === Game.time) return null;
+    const defenseThreats = getDefenseThreats(room.name);
+    const defenders = workers.filter(creep =>
+      creep.memory.role === 'defender');
+    const target = selectUndefendedThreat(defenseThreats, defenders, {
+      HEAL, RANGED_ATTACK, ATTACK, WORK, CLAIM
+    });
+    const defenderCoverage = target ? workers.filter(creep =>
+      creep.memory.role === 'defender' &&
+      (creep.memory.defenseTargetRoom || room.name) ===
+        target.roomName).length : 0;
+    const restoringBeforeRemoteDefense = target &&
+      shouldRestoreBrigadeBeforeRemoteDefense({
+        homeRoom: room.name,
+        threatRoom: target.roomName,
+        activeCount: activeBrigadeCount,
+        targetCount: savedBrigadePlan && savedBrigadePlan.segments
+          ? savedBrigadePlan.segments.length : 0,
+        maintenanceReady: brigadeReadiness.maintenanceReady
+      });
+    const homeRecoveryBeforeRemoteDefense = target &&
+      shouldDeferRemoteDefenseForHomeRecovery({
+        homeRoom: room.name,
+        threatRoom: target.roomName,
+        maintenanceReady: brigadeReadiness.maintenanceReady
+      });
+    if (target && needsEmergencyDefender(1, defenderCoverage) &&
+        !restoringBeforeRemoteDefense &&
+        !homeRecoveryBeforeRemoteDefense) {
+      return {
+        role: 'defender', forceSpawn: true, emergencyDefense: true,
+        minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
+        staffingCurrent: 0, staffingTarget: 1, minimumGap: true,
+        defenseTargetRoom: target.roomName
+      };
+    }
+    if (!Object.values(Game.creeps).some(creep =>
+      creep.room.name === room.name)) {
+      return {
+        role: 'builder', builderScope: 'local',
+        builderMission: 'repair', forceSpawn: true,
+        emergencyPresence: true,
+        minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
+        staffingCurrent: 0, staffingTarget: 1,
+        minimumGap: true
+      };
+    }
+    staffingPlan.scenarios = spawnSituation.scenarios || [];
+    const establishedBrigade = Boolean(savedBrigadePlan &&
+      Array.isArray(savedBrigadePlan.segments) &&
+      savedBrigadePlan.segments.length > 0);
+    const brigadePermitted = Boolean(spawnSituation.policy.permissions &&
+      spawnSituation.policy.permissions.controllerBrigade);
+    const replacementMode = selectControllerBrigadeReplacementMode({
+      permitted: brigadePermitted,
+      ready: brigadeReadiness.ready,
+      maintenanceReady: brigadeReadiness.maintenanceReady,
+      established: establishedBrigade,
+      activeCount: activeBrigadeCount,
+      operationActive: room.memory.controllerBrigadeOperation?.active === true,
+      rcl: room.controller ? room.controller.level : 0
+    });
     room.memory.controllerBrigadeReadiness = {
       ...brigadeReadiness,
-      maintaining: establishedBrigade,
+      established: establishedBrigade,
+      maintaining: activeBrigadeCount > 0,
+      activeCount: activeBrigadeCount,
+      targetCount: savedBrigadePlan && savedBrigadePlan.segments
+        ? savedBrigadePlan.segments.length : 0,
+      replacementMode,
       updated: Game.time
     };
-    // The physical plan may persist, but replacement is a policy decision.
-    // An old plan must not bypass current staffing or reserve health.
-    const controllerBrigadePlan = brigadeReadiness.ready &&
-      spawnSituation.policy.permissions &&
-      spawnSituation.policy.permissions.controllerBrigade
+    // A new line still requires full readiness. Once established, the
+    // stationary line may rebuild after core energy staffing recovers because
+    // a partial line cannot deliver anything to its controller endpoint.
+    const controllerBrigadePlan = replacementMode === 'maintenance' ||
+      isBrigadePlanActive(room) && replacementMode !== 'paused'
       ? getControllerBrigadePlan(room) : null;
+    if (controllerBrigadePlan) {
+      const rosterChanges = reconcileControllerBrigadeOverlaps(
+        room.name, controllerBrigadePlan);
+      if (rosterChanges.reassigned.length || rosterChanges.released.length) {
+        console.log(`[${Game.time}] ${room.name} brigade roster | ` +
+          `moved ${rosterChanges.reassigned.length}, ` +
+          `released ${rosterChanges.released.length}`);
+      }
+    }
     const controllerRelaySlot = controllerBrigadePlan &&
       getMissingControllerBrigadeSlot(workers, room.name,
         controllerBrigadePlan.segments.length,
         controllerBrigadePlan.stationary
           ? CONTROLLER_BRIGADE_REPLACEMENT_LEAD : 0);
-    if (Number.isInteger(controllerRelaySlot)) {
-      return {
+    const controllerRelayRequest = Number.isInteger(controllerRelaySlot)
+      ? {
         role: CONTROLLER_BRIGADE_ROLE,
         controllerRelaySlot,
+        brigadeMaintenance: replacementMode === 'maintenance',
         spawnBodyRole: CONTROLLER_BRIGADE_ROLE,
         forceSpawn: true,
         minimumEnergy: 2 * BODYPART_COST[CARRY] + BODYPART_COST[MOVE],
         staffingCurrent: workers.filter(creep =>
           creep.memory.role === CONTROLLER_BRIGADE_ROLE).length,
         staffingTarget: controllerBrigadePlan.segments.length
-      };
-    }
+      } : null;
     // Keep the core room productive before assigning optional remote labor.
     const situationTargets = spawnSituation.targets;
+    const maintainRemotes = Boolean(spawnSituation.policy.permissions &&
+      spawnSituation.policy.permissions.remoteMaintenance);
     const allowRemoteGrowth = Boolean(spawnSituation.policy.permissions &&
       spawnSituation.policy.permissions.remoteGrowth);
-    const localMiningLimits = getWorkerLimits(room);
+    const allowRemoteHaulingRecovery = Boolean(
+      spawnSituation.policy.permissions &&
+      spawnSituation.policy.permissions.remoteHaulingRecovery);
     const recoveryEnergy = scaleEnergyBudget(
       room.energyCapacityAvailable, 0.5);
     const standardEnergy = scaleEnergyBudget(
       room.energyCapacityAvailable, 0.65);
     const qualityEnergy = scaleEnergyBudget(
       room.energyCapacityAvailable, 0.9);
-    // In a spawn-energy emergency, a missing filler is the first recovery
-    // role. Without one, every other minimum can be spawned only by luck as
-    // energy trickles into the network. Accept the smallest functional body
-    // now; desired staffing can replace it with a stronger specialist later.
-    const emergencyRefillClusters = getRefillClusters(room);
-    const emergencyRefillCluster = emergencyRefillClusters.find(cluster =>
-      cluster.fillsSpawn) || emergencyRefillClusters[0];
-    const hasEmergencyRefiller = workers.some(creep =>
-      creep.memory.role === 'refiller' && hasLocalReplacementLife(creep));
-    if (!hasEmergencyRefiller && emergencyRefillCluster) {
-      return {
-        role: 'refiller',
-        forceSpawn: true,
-        refillClusterId: emergencyRefillCluster.id,
-        refillClusterX: emergencyRefillCluster.x,
-        refillClusterY: emergencyRefillCluster.y,
-        refillSpawnOwner: Boolean(emergencyRefillCluster.fillsSpawn),
-        refillerFallbackAllowed: true,
-        minimumEnergy: room.energyAvailable < workerCost
-          ? BODYPART_COST[CARRY] + BODYPART_COST[MOVE]
-          : recoveryEnergy
-      };
-    }
     const viableUpgraders = workers.filter(creep =>
       creep.memory.role === 'upgrader' && hasLocalReplacementLife(creep) &&
       creep.getActiveBodyparts(WORK) > 0);
-    // The controller must always have one working specialist before any
-    // optional logistics role is added. Body quality is a desired-staffing
-    // concern, not a minimum-coverage gate: during recovery, repeatedly
-    // rejecting affordable 1-WORK upgraders starves every later minimum role.
-    if (viableUpgraders.length === 0) {
-      const activeUpgrader = workers.some(creep =>
-        creep.memory.role === 'upgrader' &&
-        creep.getActiveBodyparts(WORK) > 0);
-      return {
-        role: 'upgrader',
-        forceSpawn: true,
-        minimumEnergy: activeUpgrader
-          ? standardEnergy : recoveryEnergy
-      };
-    }
     // Once that safety floor exists, establish the exclusive room refiller
     // before adding more upgraders or replacing secondary source positions.
     const refillClusters = getRefillClusters(room);
@@ -561,23 +966,122 @@ module.exports.loop = function () {
     const refillerMinimumEnergy = Math.max(recoveryEnergy,
       getRefillerCarryFloor(room) / CARRY_CAPACITY *
         (BODYPART_COST[CARRY] + BODYPART_COST[MOVE]));
-    // Income stations come first: fill every currently usable source position
-    // before considering role conversions for secondary work.
+    // Exact source coverage is checked after the authoritative minimum plan.
+    // Otherwise this local adapter can repeatedly preempt a missing refiller
+    // even though the room-wide roster already has ample mining bodies.
     const uncoveredLocalSource = getRoomSources(room).find(source => {
       const requiredWork = Math.ceil(source.energyCapacity /
         ENERGY_REGEN_TIME / HARVEST_POWER);
       const assigned = workers.filter(creep =>
-        creep.memory.role === 'harvester' &&
+        (creep.memory.role === 'harvester' ||
+          creep.memory.role === 'miner') &&
         (creep.memory.preferredSource === source.id ||
+          creep.memory.minerSource === source.id ||
           creep.memory.harvestSource === source.id ||
           creep.memory.sourceReplacement === source.id ||
           creep.memory.sourceReserve === source.id) &&
-        (creep.spawning || creep.ticksToLive >
-          creep.body.length * CREEP_SPAWN_TIME + 25));
+        (creep.spawning || hasLocalReplacementLife(creep)));
       const assignedWork = assigned.reduce((total, creep) =>
         total + creep.getActiveBodyparts(WORK), 0);
+      // One 800-energy productive miner is intentionally sufficient. Do not
+      // turn historical tile/headcount observations into extra source bodies
+      // when the assigned WORK already covers regeneration.
       return assignedWork < requiredWork;
     });
+    // An established stationary line is atomic. Once the source floor plus
+    // one filler, hauler, upgrader and rebalancer are covered, finish its
+    // maintenance pass before optional builder, repair and tunnel staffing.
+    // New brigade creation still remains behind the complete local minimum.
+    const brigadeCoreGap = ['source', 'refiller', 'hauler', 'upgrader',
+      'rebalancer'].some(key => {
+      const job = staffingPlan.jobs && staffingPlan.jobs[key];
+      if (!job || job.min <= 0) return false;
+      const required = key === 'source' ? job.min : 1;
+      return job.coverageCount < required;
+    });
+    if (replacementMode === 'maintenance' && controllerRelayRequest &&
+        !brigadeCoreGap) return controllerRelayRequest;
+    // Complete every policy-owned local minimum before considering remote
+    // replacement, remote recovery, remote growth, or new brigade work. The
+    // old ordering protected only a one-hauler emergency floor, allowing
+    // remote bodies to jump missing 1/2 hauler and 0/1 rebalancer slots.
+    const minimumPlan = planMinimumSpawn({
+      room, workers, staffingPlan,
+      replacementCluster, recoveryEnergy, standardEnergy,
+      refillerMinimumEnergy
+    });
+    const minimumGap = minimumPlan.gap;
+    const viableLocalHaulers = minimumPlan.haulers;
+    if (minimumPlan.handled) return minimumPlan.request;
+    const urgentReservationRequest = planReservationSpawn({ room, workers,
+      policy: spawnSituation.policy, staffingPlan, Game, urgentOnly: true });
+    if (urgentReservationRequest) return urgentReservationRequest;
+    const outpostPresence = getOutpostPresenceGap(room.name, room.memory,
+      Object.values(Game.creeps));
+    if (outpostPresence) {
+      const survey = outpostPresence.survey;
+      return {
+        role: 'remote-miner',
+        remoteRoom: survey.targetRoom,
+        remoteSlot: 0,
+        remoteTeam: outpostPresence.team,
+        remoteDelivery: outpostPresence.delivery,
+        forceSpawn: true,
+        emergencyPresence: true,
+        minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
+        staffingCurrent: 0, staffingTarget: 1,
+        minimumGap: true
+      };
+    }
+    const reservationRequest = planReservationSpawn({ room, workers,
+      policy: spawnSituation.policy, staffingPlan, Game });
+    if (reservationRequest) return reservationRequest;
+    // Established export capacity precedes extra construction staffing once
+    // the home income, refilling and controller survival floor are covered.
+    const coreIncomeGap = uncoveredLocalSource || staffingPlan.emergency.missing
+      .some(entry => ['source', 'refiller', 'hauler', 'upgrader'].includes(entry.key));
+    // An established stationary brigade is one atomic home supply line. Once
+    // local survival jobs are covered, repair that line before remote roster
+    // maintenance; otherwise a zero-member line can remain selected for
+    // maintenance while remote replacements consume every spawn cycle.
+    if (!coreIncomeGap && replacementMode === 'maintenance' &&
+        controllerRelayRequest) return controllerRelayRequest;
+    const remoteMinimumRequest = !coreIncomeGap
+      ? planMinimumRemoteSpawn({
+        room, workers, staffingPlan, maintainRemotes
+      }) : null;
+    const remoteMinimumGap = staffingPlan.minimumGap ||
+      staffingPlan.ordinaryMinimumGap;
+    const remoteMinimumJob = remoteMinimumGap && staffingPlan.jobs &&
+      staffingPlan.jobs[remoteMinimumGap.role];
+    // Restore one owner to a completely empty remote capability before
+    // protecting an aging body in another lane. Four miners and zero
+    // carriers still produce zero delivered energy. Once every minimum lane
+    // has an owner, due miner replacement again protects funded production.
+    if (remoteMinimumRequest && remoteMinimumJob &&
+        remoteMinimumJob.coverageCount === 0) return remoteMinimumRequest;
+    const expiringRemoteMiner = !coreIncomeGap && planRemoteMinerReplacement({
+      room, workers, maintainRemotes });
+    if (expiringRemoteMiner) return expiringRemoteMiner;
+    if (remoteMinimumRequest) return remoteMinimumRequest;
+    const repairRelief=!coreIncomeGap&&planRepairRelief({room,workers,rooms:Game.rooms,viable:hasRemoteReplacementLife});
+    if(repairRelief)return repairRelief;
+    const controllerRelief=!coreIncomeGap&&planControllerRelief({room,workers,viable:hasLocalReplacementLife,
+      operationWork:spawnSituation.policy.operations?.upgradePush?spawnSituation.policy.operations.upgradeWork:0});
+    if(controllerRelief)return controllerRelief;
+    const missingCoreBuilder=staffingPlan.jobs?.builder &&
+      staffingPlan.jobs.builder.coverageCount<staffingPlan.jobs.builder.min;
+    const missingCoreUpgrader=staffingPlan.jobs?.upgrader &&
+      staffingPlan.jobs.upgrader.coverageCount<staffingPlan.jobs.upgrader.min;
+    // This bounded push outranks desired remote growth, never core/minimum
+    // coverage or due income replacement. Its full roster is budgeted above.
+    if (spawnSituation.policy.operations?.upgradePush && controllerRelayRequest) return controllerRelayRequest;
+    const establishedHaulRequest = allowRemoteHaulingRecovery && !coreIncomeGap && !missingCoreBuilder && !missingCoreUpgrader
+      ? planRemoteGrowthSpawn({ room, workers, staffingPlan,
+        allowRemoteGrowth: false, allowRemoteHaulingRecovery: true }) : null;
+    if (establishedHaulRequest) return establishedHaulRequest;
+    // All policy minimums are covered. Only now repair a genuine per-source
+    // WORK hole that aggregate headcount could not reveal.
     if (uncoveredLocalSource) {
       return {
         role: 'harvester',
@@ -588,193 +1092,34 @@ module.exports.loop = function () {
           BODYPART_COST[CARRY] + BODYPART_COST[MOVE]
       };
     }
-    // Minimum staffing is a protected tier. Rank simultaneous deficits by
-    // coverage so a completely absent job (0/1 builders) is restored before
-    // topping up a partially covered one (1/2 haulers). Desired staffing is
-    // evaluated only after no role remains below its minimum.
-    const emergencyHaulerGap = staffingPlan.emergency.missing
-      .some(entry => entry.key === 'hauler');
-    if (emergencyHaulerGap) {
-      return {
-        role: 'hauler', forceSpawn: true, minimumEnergy: recoveryEnergy
-      };
-    }
-    const minimumPlan = planMinimumSpawn({
-      room, workers, staffingPlan,
-      replacementCluster, recoveryEnergy, standardEnergy,
-      refillerMinimumEnergy
-    });
-    const minimumGap = minimumPlan.gap;
-    const viableLocalHaulers = minimumPlan.haulers;
-    if (minimumPlan.handled) return minimumPlan.request;
-    // Damaged outpost containers can erase the remote economy entirely. Once
-    // home income and its dedicated refill specialist are safe, restore one
-    // maintainer before remote carrier replacement churn can starve repairs.
-    const maintenanceSurveys = [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom && entry.survey.remoteBuilderTarget > 0);
-    const missingMaintainer = maintenanceSurveys.map(entry => {
-      const assigned = workers.filter(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === entry.survey.targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedSlots = new Set(assigned.map(creep =>
-        creep.memory.remoteBuilderSlot));
-      const missingSlot = [...Array(
-        entry.survey.remoteBuilderTarget).keys()]
-        .find(slot => !usedSlots.has(slot));
-      return { ...entry, missingSlot };
-    }).find(entry => Number.isInteger(entry.missingSlot));
-    if (missingMaintainer) {
-      return {
-        role: 'builder',
-        builderScope: 'outpost',
-        builderMission: 'maintenance',
-        remoteRoom: missingMaintainer.survey.targetRoom,
-        remoteBuilderSlot: missingMaintainer.missingSlot,
-        remoteTeam: missingMaintainer.team,
-        remoteDelivery: missingMaintainer.delivery,
-        forceSpawn: true
-      };
-    }
-    // A producing outpost with no carrier is an income outage, not optional
-    // expansion. Guarantee one viable carrier per ready source lane before
-    // surplus upgrading, balancing, or construction.
-    const essentialRemotePlans = [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom);
-    for (const entry of essentialRemotePlans) {
-      const needs = Array.isArray(entry.survey.remoteWorkNeeds) &&
-        entry.survey.remoteWorkNeeds.length
-        ? entry.survey.remoteWorkNeeds
-        : [{ slot: 0 }];
-      for (const need of needs) {
-        const readiness = getRemoteHaulReadiness(
-          entry.survey.targetRoom, need.slot);
-        if (!readiness.ready) continue;
-        const covered = workers.some(creep =>
-          creep.memory.role === 'remote-hauler' &&
-          creep.memory.remoteRoom === entry.survey.targetRoom &&
-          creep.memory.remoteHaulerSlot === need.slot &&
-          hasRemoteReplacementLife(creep));
-        if (!covered) {
-          return {
-            role: 'remote-hauler',
-            remoteRoom: entry.survey.targetRoom,
-            remoteHaulerSlot: need.slot,
-            remoteTeam: entry.team,
-            remoteDelivery: entry.delivery,
-            forceSpawn: true,
-            minimumEnergy: Math.min(300, room.energyCapacityAvailable)
-          };
-        }
+    // Policy decides the aggregate remote minimum. Survey memory is used only
+    // to map that gap to one concrete room and lane.
+    // When established outposts are already blocked by full containers, add
+    // their measured carrier surge before restoring more remote production.
+    // Local minimum staffing above remains protected.
+    const remoteHaulRecoveryRequest = allowRemoteHaulingRecovery
+      ? planRemoteGrowthSpawn({
+        room, workers, staffingPlan, allowRemoteGrowth: false,
+        allowRemoteHaulingRecovery: true
+      }) : null;
+    const recoveryLastServed = room.memory.recoveryBalance &&
+      room.memory.recoveryBalance.lastServed || {};
+    const balancedRecoveryRequest = selectBalancedRecoveryRequest([
+      {
+        key: 'remote-haul', request: remoteHaulRecoveryRequest,
+        current: staffingPlan.jobs.remoteHauler.count,
+        target: staffingPlan.jobs.remoteHauler.desired,
+        priority: 0
+      },
+      {
+        key: 'brigade', request: controllerRelayRequest,
+        current: activeBrigadeCount,
+        target: controllerBrigadePlan
+          ? controllerBrigadePlan.segments.length : 0,
+        priority: 1
       }
-    }
-    // Once each ready lane has a carrier, restore the WORK required at every
-    // active remote source before adding surplus upgrading or support roles.
-    const remotePlans = [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom);
-    for (const entry of remotePlans) {
-      const survey = entry.survey;
-      const remoteWorkers = workers.filter(creep =>
-        creep.memory.role === 'remote-scout' &&
-        creep.memory.remoteRoom === survey.targetRoom);
-      const needs = Array.isArray(survey.remoteWorkNeeds) &&
-        survey.remoteWorkNeeds.length > 0
-        ? survey.remoteWorkNeeds
-        : [...Array(survey.remoteMinerTarget || 1).keys()].map(slot => ({
-          slot,
-          minMiners: 1,
-          requiredWork: 1
-        }));
-      for (const need of needs) {
-        const assigned = remoteWorkers.filter(creep =>
-          creep.memory.remoteSlot === need.slot &&
-          (creep.spawning ||
-            creep.ticksToLive > getRemoteReplacementLead(creep)));
-        const assignedWork = assigned.reduce((total, creep) => total +
-          creep.body.filter(part => part.type === WORK && part.hits > 0).length,
-        0);
-        if (assigned.length === 0 ||
-            assignedWork < Math.max(1, need.requiredWork || 0)) {
-          return {
-            role: 'remote-scout',
-            remoteRoom: survey.targetRoom,
-            remoteSlot: need.slot,
-            remoteTeam: entry.team,
-            remoteDelivery: entry.delivery,
-            forceSpawn: true,
-            minimumEnergy: Math.min(room.energyCapacityAvailable,
-              Math.min(3, Math.max(1, need.requiredWork || 1)) *
-                BODYPART_COST[WORK] + BODYPART_COST[CARRY] +
-                2 * BODYPART_COST[MOVE])
-          };
-        }
-      }
-    }
-    // Balancing is valuable, but an absent remote miner or carrier is a full
-    // production outage. Restore every active outpost lane before waiting for
-    // the large, optional balancing body to charge.
-    if (minimumGap && minimumGap.role === 'rebalancer') {
-      return {
-        role: 'rebalancer',
-        forceSpawn: true,
-        minimumEnergy: standardEnergy
-      };
-    }
-    // Job coverage can look complete while the colony is still missing a
-    // minimum viable body family (for example, a WORK-heavy creep temporarily
-    // filling a haul job). Enforce the red body roster before yellow desired
-    // staffing so repurposing cannot hide a structural shortage.
-    const bodyGap = bodyRosterPlan && bodyRosterPlan.next;
-    if (bodyGap && bodyGap.count < bodyGap.min) {
-      if (bodyGap.type === BODY_TYPES.MINER) {
-        const source = getRoomSources(room).sort((a, b) => {
-          const workAt = candidate => workers.filter(creep =>
-            (creep.memory.preferredSource === candidate.id ||
-              creep.memory.harvestSource === candidate.id ||
-              creep.memory.sourceReplacement === candidate.id ||
-              creep.memory.sourceReserve === candidate.id) &&
-            hasLocalReplacementLife(creep)).reduce((sum, creep) =>
-            sum + creep.getActiveBodyparts(WORK), 0);
-          return workAt(a) - workAt(b);
-        })[0];
-        return { role: 'harvester', preferredSource: source,
-          bodyType: BODY_TYPES.MINER, forceSpawn: true,
-          bodyRosterMinimumGap: true };
-      }
-      if (bodyGap.type === BODY_TYPES.HAULER) {
-        return { role: 'hauler', bodyType: BODY_TYPES.HAULER,
-          forceSpawn: true, bodyRosterMinimumGap: true };
-      }
-      if (bodyGap.type === BODY_TYPES.CONTROLLER) {
-        return { role: 'upgrader', bodyType: BODY_TYPES.CONTROLLER,
-          forceSpawn: true, bodyRosterMinimumGap: true };
-      }
-      if (bodyGap.type === BODY_TYPES.WORKER) {
-        return { role: 'builder', builderScope: 'local',
-          builderMission: 'flexible', bodyType: BODY_TYPES.WORKER,
-          forceSpawn: true, bodyRosterMinimumGap: true };
-      }
-      if (bodyGap.type === BODY_TYPES.FIELD) {
-        const plan = remotePlans[0];
-        if (plan) return { role: 'remote-scout',
-          remoteRoom: plan.survey.targetRoom, remoteSlot: 0,
-          remoteTeam: plan.team, remoteDelivery: plan.delivery,
-          bodyType: BODY_TYPES.FIELD, forceSpawn: true,
-          bodyRosterMinimumGap: true };
-      }
-    }
+    ], recoveryLastServed);
+    if (balancedRecoveryRequest) return balancedRecoveryRequest;
     // Every local and remote minimum above is now covered. Only now may the
     // spawn fill yellow, desired staffing for the room.
     if (!emergencyRefillerGap &&
@@ -840,9 +1185,8 @@ module.exports.loop = function () {
         minimumEnergy: standardEnergy
       };
     }
-    const pendingContainer = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_CONTAINER
-    })[0];
+    const pendingContainer = getRoomSitesByType(
+      room, STRUCTURE_CONTAINER)[0];
     const viableContainerBuilder = workers.some(creep =>
         isLocalBuilder(creep) && hasBuilderBody(creep) &&
       hasLocalReplacementLife(creep));
@@ -859,94 +1203,6 @@ module.exports.loop = function () {
       }
       return null;
     }
-    const southwestSurvey = room.memory.southwestSurvey;
-    if (southwestSurvey && southwestSurvey.active &&
-        southwestSurvey.targetRoom && !workers.some(creep =>
-          creep.memory.role === 'remote-scout' &&
-          creep.memory.remoteRoom === southwestSurvey.targetRoom)) {
-      return {
-        role: 'remote-scout',
-        remoteRoom: southwestSurvey.targetRoom,
-        remoteSlot: 0,
-        remoteTeam: 'southwest',
-        forceSpawn: true
-      };
-    }
-    if (southwestSurvey && southwestSurvey.active &&
-        southwestSurvey.targetRoom) {
-      const southwestMiners = workers.filter(creep =>
-        creep.memory.role === 'remote-scout' &&
-        creep.memory.remoteRoom === southwestSurvey.targetRoom);
-      const missingNeed = (southwestSurvey.remoteWorkNeeds || [])
-        .find(need => {
-          const assigned = southwestMiners.filter(creep =>
-            creep.memory.remoteSlot === need.slot);
-          const assignedWork = assigned.reduce((total, creep) => total +
-            creep.getActiveBodyparts(WORK), 0);
-          return assigned.length < need.minMiners ||
-            assignedWork < need.requiredWork;
-        });
-      if (missingNeed) {
-        return {
-          role: 'remote-scout',
-          remoteRoom: southwestSurvey.targetRoom,
-          remoteSlot: missingNeed.slot,
-          remoteTeam: 'southwest',
-          forceSpawn: true
-        };
-      }
-      if (Game.rooms[southwestSurvey.targetRoom] && !workers.some(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === southwestSurvey.targetRoom)) {
-        return {
-          role: 'builder',
-          builderScope: 'outpost',
-          builderMission: 'maintenance',
-          remoteRoom: southwestSurvey.targetRoom,
-          remoteBuilderSlot: 0,
-          remoteTeam: 'southwest',
-          forceSpawn: true
-        };
-      }
-    }
-    // Once the home carrier floor is secure, balance ready remote hauling
-    // lanes before secondary local role conversions can pause spawning.
-    const remoteHaulerPlans = (allowRemoteGrowth ? [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ] : []).filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom)
-      .map(entry => {
-        const target = entry.survey.remoteHaulerTarget ||
-          Math.max(1, (entry.survey.remoteWorkNeeds || []).length);
-        const assigned = workers.filter(creep =>
-          creep.memory.role === 'remote-hauler' &&
-          creep.memory.remoteRoom === entry.survey.targetRoom &&
-          hasRemoteReplacementLife(creep));
-        const usedSlots = new Set(assigned.map(creep =>
-          creep.memory.remoteHaulerSlot));
-        const slot = [...Array(target).keys()].find(candidate =>
-          !usedSlots.has(candidate) &&
-          getRemoteHaulReadiness(entry.survey.targetRoom, candidate).ready);
-        return { ...entry, target, assigned: assigned.length, slot };
-      })
-      .filter(entry => Number.isInteger(entry.slot))
-      .sort((a, b) => a.assigned / a.target - b.assigned / b.target);
-    if (remoteHaulerPlans.length) {
-      const plan = remoteHaulerPlans[0];
-      return {
-        role: 'remote-hauler',
-        remoteRoom: plan.survey.targetRoom,
-        remoteHaulerSlot: plan.slot,
-        remoteTeam: plan.team,
-        remoteDelivery: plan.delivery,
-        forceSpawn: true
-      };
-    }
-    // Home-room income is the first staffing floor. Restore enough viable
-    // WORK at every local source before sending emergency replacements to an
-    // outpost; optional extra local source positions are handled later.
     const viableBuilders = workers.filter(creep => isLocalBuilder(creep) &&
       creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep) &&
       hasLocalReplacementLife(creep));
@@ -967,69 +1223,21 @@ module.exports.loop = function () {
         minimumEnergy: standardEnergy
       };
     }
-    // Assess each source by active WORK, not occupied tiles. One strong miner
-    // may cover the source while a surplus S2 body drains its full container.
-    const understaffedLocalSource = getRoomSources(room).find(source => {
-      const requiredWork = Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER);
-      const assignedWork = workers.filter(creep =>
-        (creep.memory.role === 'miner' || creep.memory.role === 'harvester') &&
-        (creep.memory.minerSource === source.id ||
-          creep.memory.preferredSource === source.id ||
-          creep.memory.harvestSource === source.id ||
-          creep.memory.sourceReplacement === source.id ||
-          creep.memory.sourceReserve === source.id) &&
-        (creep.spawning || creep.ticksToLive >
-          creep.body.length * CREEP_SPAWN_TIME + 25))
-        .reduce((total, creep) => total + creep.getActiveBodyparts(WORK), 0);
-      return assignedWork < requiredWork;
+    // Desired remote growth is also aggregate-policy bounded; the planner
+    // selects only the least-covered eligible lane within that gap.
+    const remoteGrowthRequest = planRemoteGrowthSpawn({
+      room, workers, staffingPlan, allowRemoteGrowth,
+      allowRemoteHaulingRecovery
     });
-    if (understaffedLocalSource) {
-      const assignedCount = workers.filter(creep =>
-        (creep.memory.role === 'miner' || creep.memory.role === 'harvester') &&
-        (creep.memory.minerSource === understaffedLocalSource.id ||
-          creep.memory.preferredSource === understaffedLocalSource.id ||
-          creep.memory.harvestSource === understaffedLocalSource.id)).length;
-      const container = understaffedLocalSource.pos.findInRange(
-        FIND_STRUCTURES, 1, {
-          filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-            !isRetiringContainer(room, structure)
-        })[0];
-      const station = container && findMinerStation(room,
-        understaffedLocalSource, container, {});
-      if (assignedCount === 0 && container && station) {
-        return { role: 'harvester', preferredSource: understaffedLocalSource };
-      }
-      return { role: 'harvester', preferredSource: understaffedLocalSource };
-    }
-    const maxWorkPerSourceBody = getSourceBodyWorkCapacity(room);
-    const underworkedLocalSource = getRoomSources(room).find(source => {
-      const requiredWork = Math.min(Math.ceil(source.energyCapacity /
-        ENERGY_REGEN_TIME / HARVEST_POWER),
-      (localMiningLimits.sourceWorkerTargets[source.id] || 0) *
-        maxWorkPerSourceBody);
-      const assignedWork = workers.filter(creep =>
-        (creep.memory.role === 'miner' || creep.memory.role === 'harvester') &&
-        (creep.memory.minerSource === source.id ||
-          creep.memory.preferredSource === source.id ||
-          creep.memory.harvestSource === source.id ||
-          creep.memory.sourceReplacement === source.id ||
-          creep.memory.sourceReserve === source.id) &&
-        (creep.spawning || creep.ticksToLive >
-          creep.body.length * CREEP_SPAWN_TIME + 25))
-        .reduce((total, creep) => total + creep.getActiveBodyparts(WORK), 0);
-      return assignedWork < requiredWork;
-    });
-    if (underworkedLocalSource) {
-      return {
-        role: 'harvester',
-        preferredSource: underworkedLocalSource,
-        forceSpawn: true
-      };
-    }
+    if (remoteGrowthRequest) return remoteGrowthRequest;
     const expansion = room.memory.expansionPlan;
+    const expansionAllowed = Boolean(spawnSituation.policy.permissions &&
+      spawnSituation.policy.permissions.expansion);
+    const expansionMaintenanceAllowed = Boolean(
+      spawnSituation.policy.permissions &&
+      spawnSituation.policy.permissions.expansionMaintenance);
     if (expansion && expansion.targetRoom) {
-      if (expansion.status === 'claim-ready' &&
+      if (expansionAllowed && expansion.status === 'claim-ready' &&
           !workers.some(creep => creep.memory.role === 'claimer' &&
             creep.memory.expansionTarget === expansion.targetRoom)) {
         return {
@@ -1038,7 +1246,7 @@ module.exports.loop = function () {
           forceSpawn: true
         };
       }
-      if (expansion.status === 'bootstrap') {
+      if (expansionMaintenanceAllowed && expansion.status === 'bootstrap') {
         const pioneers = workers.filter(creep =>
           isExpansionBuilder(creep) &&
           creep.memory.expansionTarget === expansion.targetRoom);
@@ -1055,281 +1263,9 @@ module.exports.loop = function () {
         }
       }
     }
-    const survey = room.memory.leftSurvey;
-    if (survey && survey.active && survey.targetRoom) {
-      const scouts = workers.filter(creep =>
-        creep.memory.role === 'remote-scout' &&
-        creep.memory.remoteRoom === survey.targetRoom);
-      const scoutTarget = survey.remoteMinerTarget ||
-        Math.max(1, (survey.remoteWorkNeeds || []).length);
-      if (scouts.length < scoutTarget) {
-        const usedSlots = new Set(scouts.map(creep =>
-          creep.memory.remoteSlot));
-        const remoteSlot = [...Array(scoutTarget).keys()]
-          .find(slot => !usedSlots.has(slot));
-        return {
-          role: 'remote-scout',
-          remoteRoom: survey.targetRoom,
-          remoteSlot,
-          remoteTeam: 'left'
-        };
-      }
-      const remoteHaulers = workers.filter(creep =>
-        creep.memory.role === 'remote-hauler' &&
-        creep.memory.remoteRoom === survey.targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedSlots = new Set(remoteHaulers.map(creep =>
-        creep.memory.remoteHaulerSlot));
-      const remoteHaulerSlot = [...Array(survey.remoteHaulerTarget ||
-        Math.max(1, (survey.remoteWorkNeeds || []).length)).keys()]
-        .find(slot => !usedSlots.has(slot) &&
-          getRemoteHaulReadiness(survey.targetRoom, slot).ready);
-      if (Number.isInteger(remoteHaulerSlot)) {
-        return {
-          role: 'remote-hauler',
-          remoteRoom: survey.targetRoom,
-          remoteHaulerSlot,
-          remoteTeam: 'left'
-        };
-      }
-      const remoteBuilders = workers.filter(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === survey.targetRoom);
-      if (remoteBuilders.length < (survey.remoteBuilderTarget || 0)) {
-        const usedSlots = new Set(remoteBuilders.map(creep =>
-          creep.memory.remoteBuilderSlot));
-        const remoteBuilderSlot = [...Array(survey.remoteBuilderTarget || 0).keys()]
-          .find(slot => !usedSlots.has(slot));
-        return {
-          role: 'builder',
-          builderScope: 'outpost',
-          builderMission: 'maintenance',
-          remoteRoom: survey.targetRoom,
-          remoteBuilderSlot,
-          remoteTeam: 'left'
-        };
-      }
-      for (const need of survey.remoteWorkNeeds || []) {
-        const assignedScouts = scouts.filter(creep =>
-          creep.memory.remoteSlot === need.slot);
-        const assignedWork = assignedScouts.reduce((total, creep) =>
-          total + creep.body.filter(part => part.type === WORK &&
-            part.hits > 0).length, 0);
-        if (assignedScouts.length < need.minMiners ||
-            assignedWork < need.requiredWork) {
-          return {
-            role: 'remote-scout',
-            remoteRoom: survey.targetRoom,
-            remoteSlot: need.slot,
-            remoteTeam: 'left'
-          };
-        }
-      }
-    }
-    const southSurvey = room.memory.southSurvey;
-    if (southSurvey && southSurvey.active && southSurvey.targetRoom) {
-      const southMiners = workers.filter(creep =>
-        creep.memory.role === 'remote-scout' &&
-        creep.memory.remoteRoom === southSurvey.targetRoom);
-      for (const need of southSurvey.remoteWorkNeeds ||
-        [{ slot: 0, minMiners: 1, requiredWork: 1 }]) {
-        const assigned = southMiners.filter(creep =>
-          creep.memory.remoteSlot === need.slot);
-        const assignedWork = assigned.reduce((total, creep) => total +
-          creep.body.filter(part => part.type === WORK && part.hits > 0).length,
-        0);
-        if (assigned.length < need.minMiners ||
-            assignedWork < need.requiredWork) {
-          return {
-            role: 'remote-scout',
-            remoteRoom: southSurvey.targetRoom,
-            remoteSlot: need.slot,
-            remoteTeam: 'south',
-            remoteDelivery: 's2'
-          };
-        }
-      }
-      const southBuilders = workers.filter(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === southSurvey.targetRoom);
-      if (southBuilders.length < (southSurvey.remoteBuilderTarget || 0)) {
-        const usedSlots = new Set(southBuilders.map(creep =>
-          creep.memory.remoteBuilderSlot));
-        const remoteBuilderSlot = [...Array(
-          southSurvey.remoteBuilderTarget || 0).keys()]
-          .find(slot => !usedSlots.has(slot));
-        return {
-          role: 'builder',
-          builderScope: 'outpost',
-          builderMission: 'maintenance',
-          remoteRoom: southSurvey.targetRoom,
-          remoteBuilderSlot,
-          remoteTeam: 'south',
-          remoteDelivery: 's2'
-        };
-      }
-      const southHaulers = workers.filter(creep =>
-        creep.memory.role === 'remote-hauler' &&
-        creep.memory.remoteRoom === southSurvey.targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedHaulerSlots = new Set(southHaulers.map(creep =>
-        creep.memory.remoteHaulerSlot));
-      const remoteHaulerSlot = [...Array(southSurvey.remoteHaulerTarget ||
-        Math.max(1, (southSurvey.remoteWorkNeeds || []).length)).keys()]
-        .find(slot => !usedHaulerSlots.has(slot) &&
-          getRemoteHaulReadiness(southSurvey.targetRoom, slot).ready);
-      if (Number.isInteger(remoteHaulerSlot)) {
-        return {
-          role: 'remote-hauler',
-          remoteRoom: southSurvey.targetRoom,
-          remoteHaulerSlot,
-          remoteTeam: 'south',
-          remoteDelivery: 's2'
-        };
-      }
-    }
-    if (southwestSurvey && southwestSurvey.active &&
-        southwestSurvey.targetRoom) {
-      const southwestMiners = workers.filter(creep =>
-        creep.memory.role === 'remote-scout' &&
-        creep.memory.remoteRoom === southwestSurvey.targetRoom);
-      for (const need of southwestSurvey.remoteWorkNeeds ||
-        [{ slot: 0, minMiners: 1, requiredWork: 1 }]) {
-        const assigned = southwestMiners.filter(creep =>
-          creep.memory.remoteSlot === need.slot);
-        const assignedWork = assigned.reduce((total, creep) => total +
-          creep.body.filter(part => part.type === WORK && part.hits > 0).length,
-        0);
-        if (assigned.length < need.minMiners ||
-            assignedWork < need.requiredWork) {
-          return {
-            role: 'remote-scout',
-            remoteRoom: southwestSurvey.targetRoom,
-            remoteSlot: need.slot,
-            remoteTeam: 'southwest',
-            forceSpawn: true
-          };
-        }
-      }
-      const southwestBuilders = workers.filter(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === southwestSurvey.targetRoom);
-      if (southwestBuilders.length <
-          (southwestSurvey.remoteBuilderTarget || 0)) {
-        const usedSlots = new Set(southwestBuilders.map(creep =>
-          creep.memory.remoteBuilderSlot));
-        const remoteBuilderSlot = [...Array(
-          southwestSurvey.remoteBuilderTarget || 0).keys()]
-          .find(slot => !usedSlots.has(slot));
-        return {
-          role: 'builder',
-          builderScope: 'outpost',
-          builderMission: 'maintenance',
-          remoteRoom: southwestSurvey.targetRoom,
-          remoteBuilderSlot,
-          remoteTeam: 'southwest',
-          forceSpawn: true
-        };
-      }
-      const southwestHaulers = workers.filter(creep =>
-        creep.memory.role === 'remote-hauler' &&
-        creep.memory.remoteRoom === southwestSurvey.targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedHaulerSlots = new Set(southwestHaulers.map(creep =>
-        creep.memory.remoteHaulerSlot));
-      const remoteHaulerSlot = [...Array(
-        southwestSurvey.remoteHaulerTarget || Math.max(1,
-          (southwestSurvey.remoteWorkNeeds || []).length)).keys()]
-        .find(slot => !usedHaulerSlots.has(slot) &&
-          getRemoteHaulReadiness(southwestSurvey.targetRoom, slot).ready);
-      if (Number.isInteger(remoteHaulerSlot)) {
-        return {
-          role: 'remote-hauler',
-          remoteRoom: southwestSurvey.targetRoom,
-          remoteHaulerSlot,
-          remoteTeam: 'southwest',
-          forceSpawn: true
-        };
-      }
-    }
-    const situation = getRoomSituation(room);
-    const builderTarget = getBuilderTarget(room) +
-      situation.targets.repairBuilder;
-    const builderCount = workers.filter(creep => isLocalBuilder(creep) &&
-      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep)).length;
-    if (builderCount < builderTarget) {
-      const availableBuilder = workers.find(creep => !creep.spawning &&
-        (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
-        hasBuilderBody(creep));
-      return availableBuilder ? null : {
-        role: 'builder', builderScope: 'local', builderMission: 'flexible'
-      };
-    }
-    if (Number.isInteger(room.memory.containerHaulerPendingTarget) &&
-        workers.length < room.memory.containerHaulerPendingTarget) {
-      return { role: 'hauler' };
-    }
-
-    const sourceContainers = getRoomSources(room).map(source => ({
-      source,
-      container: source.pos.findInRange(FIND_STRUCTURES, 1, {
-        filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
-          !isRetiringContainer(room, structure)
-      })[0]
-    })).filter(entry => entry.container).map(entry => ({
-      ...entry,
-      station: findMinerStation(room, entry.source, entry.container, {})
-    }));
-    const minerLimit = getDesiredSourceWorkerLimit(room, workers.length);
-    const sourceWorkerCount = workers.filter(creep =>
-      creep.memory.role === 'miner' || creep.memory.role === 'harvester' ||
-        creep.memory.role === 'rebalancer' &&
-          creep.memory.rebalancerSource).length;
-    const missingSource = sourceContainers.find(entry =>
-      entry.station &&
-      !workers.some(creep => creep.memory.minerSource === entry.source.id));
-    if (missingSource && sourceWorkerCount < minerLimit) {
-      const availableMiner = workers.find(creep => !creep.spawning &&
-        (creep.memory.role === 'worker' || creep.memory.role === 'harvester'));
-      if (availableMiner) return null;
-      return {
-        role: 'harvester',
-        preferredSource: missingSource.source
-      };
-    }
-    const availableHarvester = workers.some(creep => !creep.spawning &&
-      creep.memory.role === 'worker');
-    if (sourceWorkerCount < minerLimit) {
-      return availableHarvester ? null : { role: 'harvester' };
-    }
-    const desiredBodyGap = bodyRosterPlan && bodyRosterPlan.next;
-    if (desiredBodyGap && desiredBodyGap.count < desiredBodyGap.desired) {
-      if (desiredBodyGap.type === BODY_TYPES.HAULER) {
-        return { role: 'hauler', bodyType: BODY_TYPES.HAULER,
-          forceSpawn: true, bodyRosterDesiredGap: true };
-      }
-      if (desiredBodyGap.type === BODY_TYPES.CONTROLLER) {
-        return { role: 'upgrader', bodyType: BODY_TYPES.CONTROLLER,
-          forceSpawn: true, bodyRosterDesiredGap: true };
-      }
-      if (desiredBodyGap.type === BODY_TYPES.WORKER) {
-        return { role: 'builder', builderScope: 'local',
-          builderMission: 'flexible', bodyType: BODY_TYPES.WORKER,
-          forceSpawn: true, bodyRosterDesiredGap: true };
-      }
-      if (desiredBodyGap.type === BODY_TYPES.FIELD) {
-        const plan = remotePlans[0];
-        if (plan) return { role: 'remote-scout',
-          remoteRoom: plan.survey.targetRoom, remoteSlot: 0,
-          remoteTeam: plan.team, remoteDelivery: plan.delivery,
-          bodyType: BODY_TYPES.FIELD, forceSpawn: true,
-          bodyRosterDesiredGap: true };
-      }
-    }
-    const haulerTarget = getRoomSituation(room).targets.hauler;
-    const haulerCount = workers.filter(creep =>
-      creep.memory.role === 'hauler').length;
-    return { role: haulerCount < haulerTarget ? 'hauler' : 'worker' };
+    // No explicit authorized gap means no spawn request. Population budget is
+    // a ceiling, never a reason to invent an unowned generic worker.
+    return null;
   };
 
   const releaseSurplusRebalancers = (room, workers) => {
@@ -1370,179 +1306,26 @@ module.exports.loop = function () {
     return surplus;
   };
 
-  // Once S1 is depleted before regeneration, permanently open remote
-  // harvesting in the adjacent room on the left with one S1 harvester and one
-  // additional mobile harvester.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my) continue;
-    const exits = Game.map.describeExits(room.name) || {};
-    const targetRoom = exits[LEFT];
-    const source1 = getRoomSources(room)[0];
-    if (!targetRoom || !source1) continue;
-    for (const orphan of Object.values(Game.creeps).filter(creep =>
-      creep.memory.home === room.name &&
-      creep.memory.role === 'remote-scout' &&
-      creep.memory.remoteRoom === targetRoom &&
-      !Number.isInteger(creep.memory.leftScoutSlot))) {
-      orphan.memory.role = 'harvester';
-      orphan.memory.preferredSource = source1.id;
-      delete orphan.memory.remoteRoom;
-      delete orphan.memory.remoteSlot;
-    }
-    if (room.memory.eastSurvey) delete room.memory.eastSurvey;
-    const survey = room.memory.leftSurvey || {
-      targetRoom,
-      active: true,
-      expandedPopulation: false
-    };
-    survey.targetRoom = targetRoom;
-    // The western room is now a permanent outpost, not a conditional scout
-    // experiment. Do not let an old activation flag silently remove it from
-    // staffing and replacement calculations.
-    survey.active = true;
-    if (!survey.started) survey.started = Game.time;
-    const visibleLeftRoom = Game.rooms[targetRoom];
-    survey.remoteMinerTarget = Array.isArray(survey.remoteWorkNeeds) &&
-      survey.remoteWorkNeeds.length
-      ? survey.remoteWorkNeeds.reduce((total, need) => total +
-        Math.max(1, need.minMiners || 0), 0)
-      : visibleLeftRoom ? visibleLeftRoom.find(FIND_SOURCES).length : 1;
-    if (!Number.isInteger(survey.remoteHaulerTarget) ||
-        scheduledRoomTick(room, 25, 4)) {
-      survey.remoteHaulerTarget = getRemoteHaulerTarget(room.name,
-        targetRoom);
-    }
-    survey.remoteBuilderTarget = getRemoteBuilderTarget(visibleLeftRoom);
-    room.memory.leftSurvey = survey;
-    const homeCreeps = Object.values(Game.creeps).filter(creep =>
-      creep.memory.home === room.name);
-    let firstScout = homeCreeps.find(creep =>
-      creep.memory.leftScoutSlot === 0);
-    if (!firstScout && source1.energy === 0 &&
-        source1.ticksToRegeneration > 0) {
-      firstScout = homeCreeps.filter(creep => !creep.spawning &&
-        creep.memory.role === 'harvester' &&
-        creep.memory.preferredSource === source1.id)
-        .sort((a, b) => b.ticksToLive - a.ticksToLive)[0];
-      if (firstScout) firstScout.memory.leftScoutSlot = 0;
-    }
-    if (!survey.active && firstScout && source1.energy === 0 &&
-        source1.ticksToRegeneration > 0) {
-      survey.active = true;
-      survey.started = Game.time;
-      console.log(`[${Game.time}] ${room.name} drains S1 before regeneration; ` +
-        `permanent left harvesting -> ${targetRoom}`);
-    }
-    if (survey.active) {
-      for (const scout of homeCreeps.filter(creep =>
-        Number.isInteger(creep.memory.leftScoutSlot))) {
-        scout.memory.role = 'remote-scout';
-        scout.memory.remoteHome = room.name;
-        scout.memory.remoteRoom = targetRoom;
-        scout.memory.remoteTeam = 'left';
-        scout.memory.remoteSlot = scout.memory.leftScoutSlot;
-        delete scout.memory.sourceReplacement;
-        delete scout.memory.remoteRecall;
-        delete scout.memory.preferredSource;
-        delete scout.memory.harvestSource;
-        delete scout.memory.harvestX;
-        delete scout.memory.harvestY;
-      }
-      const remoteHaulers = homeCreeps.filter(creep =>
-        creep.memory.role === 'remote-hauler' &&
-        creep.memory.remoteRoom === targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedHaulerSlots = new Set(remoteHaulers.map(creep =>
-        creep.memory.remoteHaulerSlot));
-      const surplusHaulers = homeCreeps.filter(creep =>
-        creep.memory.role === 'hauler' && !creep.spawning)
-        .sort((a, b) => b.ticksToLive - a.ticksToLive)
-        .slice(getRoomSituation(room).targets.hauler);
-      for (const slot of [...Array(survey.remoteHaulerTarget ||
-        Math.max(1, (survey.remoteWorkNeeds || []).length)).keys()].filter(candidate =>
-        getRemoteHaulReadiness(targetRoom, candidate).ready)) {
-        if (usedHaulerSlots.has(slot)) continue;
-        const hauler = surplusHaulers.shift();
-        if (!hauler) break;
-        hauler.memory.role = 'remote-hauler';
-        hauler.memory.remoteHome = room.name;
-        hauler.memory.remoteRoom = targetRoom;
-        hauler.memory.remoteTeam = 'left';
-        hauler.memory.remoteHaulerSlot = slot;
-        delete hauler.memory.refillTarget;
-        delete hauler.memory.withdrawTarget;
-        delete hauler.memory.supplyTarget;
-        usedHaulerSlots.add(slot);
-        console.log(`[${Game.time}] ${hauler.name} assigned remote haul ` +
-          `${targetRoom} source ${slot + 1}`);
-      }
-      const markedRemoteBuilders = homeCreeps.filter(creep =>
-        Number.isInteger(creep.memory.remoteBuilderSlot) &&
-        creep.memory.remoteRoom === targetRoom)
-        .sort((a, b) => a.name.localeCompare(b.name));
-      for (let index = 0;
-        index < Math.min(survey.remoteBuilderTarget || 0,
-          markedRemoteBuilders.length);
-        index++) {
-        const builder = markedRemoteBuilders[index];
-        builder.memory.role = 'builder';
-        builder.memory.builderScope = 'outpost';
-        builder.memory.builderMission = 'maintenance';
-        builder.memory.remoteHome = room.name;
-        builder.memory.remoteRoom = targetRoom;
-        builder.memory.remoteTeam = 'left';
-        builder.memory.remoteBuilderSlot = index;
-      }
-      if (firstScout && !survey.expandedPopulation) {
-        room.memory.workerTarget = Math.max(room.memory.workerTarget || 0,
-          homeCreeps.length + 1);
-        survey.expandedPopulation = true;
-      }
-      const missingRemoteBuilders = Math.max(0,
-        (survey.remoteBuilderTarget || 0) -
-        homeCreeps.filter(creep =>
-          isOutpostBuilder(creep) &&
-          creep.memory.remoteRoom === targetRoom).length);
-      if (missingRemoteBuilders > 0) {
-        room.memory.workerTarget = Math.max(room.memory.workerTarget || 0,
-          homeCreeps.length + missingRemoteBuilders);
-      }
-      const remoteRoom = Game.rooms[targetRoom];
-      if (remoteRoom) {
-        const refreshStaffing = !Array.isArray(survey.remoteWorkNeeds) ||
-          scheduledRoomTick(room, 25, 7);
-        refreshRemoteWorkNeeds(room, survey, remoteRoom, refreshStaffing);
-        const remoteMiners = homeCreeps.filter(creep =>
-          Number.isInteger(creep.memory.remoteSlot) &&
-          creep.memory.remoteRoom === targetRoom);
-        const missingRemoteMiners = survey.remoteWorkNeeds.reduce((total, need) => {
-          const assigned = remoteMiners.filter(creep =>
-            creep.memory.remoteSlot === need.slot);
-          const assignedWork = assigned.reduce((work, creep) =>
-            work + creep.body.filter(part => part.type === WORK &&
-              part.hits > 0).length, 0);
-          const missingForCount = Math.max(0,
-            need.minMiners - assigned.length);
-          const missingForWork = assignedWork < need.requiredWork ? 1 : 0;
-          return total + Math.max(missingForCount, missingForWork);
-        }, 0);
-        if (missingRemoteMiners > 0) {
-          room.memory.workerTarget = Math.max(room.memory.workerTarget || 0,
-            homeCreeps.length + missingRemoteMiners + missingRemoteBuilders);
-        }
-      }
-    }
+  // All three established outposts share one demand planner. Survey memory
+  // records measured lanes; it never mutates creep roles or population caps.
+  // Retain distinct route/delivery metadata while deriving every outpost's
+  // source, carrier, and maintenance demand through the shared planner.
+  for (const creep of Object.values(Game.creeps)) {
+    const home = Game.rooms[creep.memory.remoteHome || creep.memory.home];
+    observeHaulTrip({ creep, homeMemory: home && home.memory, tick: Game.time,
+      resource: RESOURCE_ENERGY });
   }
-
-  // The southern and diagonal outposts share source-work planning while
-  // retaining their distinct route and delivery policies.
   const visibleRooms = Object.values(Game.rooms);
   const ownedVisibleRooms = visibleRooms.filter(room =>
     room.controller && room.controller.my);
   const outpostPlansDue = ownedVisibleRooms.filter(room =>
-    !room.memory.southSurvey || !room.memory.southwestSurvey ||
-    scheduledRoomTick(room, 25, 9));
-  if (outpostPlansDue.length > 0) planRegionalOutposts(outpostPlansDue);
+    !room.memory.leftSurvey || !room.memory.southSurvey ||
+    !room.memory.southwestSurvey ||
+    Game.time - (room.memory.outpostPlanningUpdated || 0) >= 20);
+  if (allowSlowPlanning && outpostPlansDue.length > 0) {
+    planRegionalOutposts(outpostPlansDue);
+    for (const room of outpostPlansDue) room.memory.outpostPlanningUpdated = Game.time;
+  }
 
   // Remote-hauler identity is a roster assignment, not a live dispatch
   // decision. Reconcile existing bodies only when the desired roster changes;
@@ -1550,23 +1333,46 @@ module.exports.loop = function () {
   const remoteRostersDue = ownedVisibleRooms.filter(room =>
     !room.memory.remoteHaulerRosterSignature ||
     scheduledRoomTick(room, 10, 6));
-  if (remoteRostersDue.length > 0) {
+  if (allowSlowPlanning && remoteRostersDue.length > 0) {
     reconcileRemoteHaulerRosters({
       rooms: remoteRostersDue, creeps: Object.values(Game.creeps),
-      Game, RESOURCE_ENERGY
+      Game, RESOURCE_ENERGY,
+      getRemoteHaulerBudget: room =>
+        getRoomSituation(room).policy.remote.haulers
     });
+  }
+  const remoteMinerRosterResults = allowSlowPlanning
+    ? reconcileRemoteMinerRosters({
+      rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
+      getReplacementLead: getRemoteReplacementLead,
+      getWork: creep => creep.getActiveBodyparts(WORK)
+    }) : {};
+  for (const [roomName, result] of Object.entries(
+    remoteMinerRosterResults)) {
+    if (!result.retired.length) continue;
+    console.log(`[${Game.time}] ${roomName} remote miner roster | ` +
+      `${result.assigned}/${result.needed} slots, ` +
+      `${result.overlaps} replacement overlap, ` +
+      `${result.retired.length} duplicate retired`);
   }
 
   // Select a prepared outpost, wait for a GCL slot, then bootstrap its spawn.
   const primarySpawn = Object.values(Game.spawns)
     .sort((a, b) => a.name.localeCompare(b.name))[0];
-  if (!primarySpawn || !primarySpawn.room.memory.expansionPlan ||
-      scheduledGlobalTick(50, 13)) {
+  if (allowSlowPlanning && (!primarySpawn ||
+      !primarySpawn.room.memory.expansionPlan ||
+      scheduledGlobalTick(50, 13))) {
     updateExpansionPlan();
   }
 
   // Plan all remote road corridors and expose at most five sites per route.
-  planRemoteCorridors(Object.values(Game.rooms));
+  if (allowSlowPlanning) planRemoteCorridors(Object.values(Game.rooms));
+  if (allowSlowPlanning && scheduledGlobalTick(50, 17)) {
+    createRoadNetwork({Game,FIND_STRUCTURES,FIND_MY_CONSTRUCTION_SITES,
+      LOOK_STRUCTURES,LOOK_CONSTRUCTION_SITES,OBSTACLE_OBJECT_TYPES,OK}).run();
+  }
+
+  if (allowSlowPlanning) drawRoadNetwork({Game,RoomPosition});
 
   // Reopen failed mining lanes with bodies that already exist before asking
   // the spawn for another replacement. Only builder capacity above the local
@@ -1589,7 +1395,8 @@ module.exports.loop = function () {
     if (!room.controller || !room.controller.my) continue;
     const homeWorkers = Object.values(Game.creeps).filter(creep =>
       creep.memory.home === room.name);
-    const policyRoles = getRoomSituation(room).policy.roles;
+    const roomPolicy = getRoomSituation(room).policy;
+    const policyRoles = roomPolicy.roles;
     const builderCandidates = homeWorkers.filter(creep =>
       !creep.spawning && creep.room.name === room.name &&
       isLocalBuilder(creep) && !isBuilder(creep, 'local', 'tunnel') &&
@@ -1623,6 +1430,7 @@ module.exports.loop = function () {
       sources: getRoomSources(room), workers: homeWorkers, surplus,
       requiredWork: source => Math.ceil(source.energyCapacity /
         ENERGY_REGEN_TIME / HARVEST_POWER),
+      minWorkers: source => getSourceMinerMinimum(room, source),
       maxWorkers: source =>
         getWorkerLimits(room).sourceSpotCounts[source.id] || 0,
       getWork: worker => worker.getActiveBodyparts(WORK),
@@ -1665,102 +1473,66 @@ module.exports.loop = function () {
     }
     surplus = recoveryPlan.remainingSurplus;
 
-    const recoveryPlans = [
-      { survey: room.memory.leftSurvey, team: 'left' },
-      { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
-      { survey: room.memory.southwestSurvey, team: 'southwest' }
-    ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom);
-    for (const entry of recoveryPlans) {
-      const survey = entry.survey;
-      const needs = Array.isArray(survey.remoteWorkNeeds) &&
-        survey.remoteWorkNeeds.length > 0
-        ? survey.remoteWorkNeeds
-        : [...Array(survey.remoteMinerTarget || 1).keys()].map(slot => ({
-          slot, minMiners: 1, requiredWork: 1
-        }));
-      for (const need of needs) {
-        const assigned = homeWorkers.filter(creep =>
-          creep.memory.role === 'remote-scout' &&
-          creep.memory.remoteRoom === survey.targetRoom &&
-          creep.memory.remoteSlot === need.slot &&
-          (creep.spawning || (creep.ticksToLive || 0) >
-            getRemoteReplacementLead(creep)));
-        let assignedCount = assigned.length;
-        let assignedWork = assigned.reduce((total, creep) => total +
-          creep.getActiveBodyparts(WORK), 0);
-        while ((assignedCount < Math.max(1, need.minMiners || 0) ||
-            assignedWork < Math.max(1, need.requiredWork || 0)) &&
-            surplus.length > 0) {
-          const worker = takeSurplus();
-          clearRecoveryAssignment(worker);
-          worker.memory.role = 'remote-scout';
-          worker.memory.remoteHome = room.name;
-          worker.memory.remoteRoom = survey.targetRoom;
-          worker.memory.remoteSlot = need.slot;
-          worker.memory.remoteTeam = entry.team;
-          worker.memory.remoteDelivery = entry.delivery;
-          if (entry.team === 'left') worker.memory.leftScoutSlot = need.slot;
-          else delete worker.memory.leftScoutSlot;
-          delete worker.memory.preferredSource;
-          delete worker.memory.sourceReplacement;
-          delete worker.memory.sourceReserve;
-          delete worker.memory.harvestSource;
-          delete worker.memory.remoteRecall;
-          assignedCount++;
-          assignedWork += worker.getActiveBodyparts(WORK);
-          console.log(`[${Game.time}] ${worker.name} local surplus -> ` +
-            `${survey.targetRoom} source ${need.slot + 1} recovery`);
-        }
-      }
-
-      const builderTarget = Math.max(survey.remoteBuilderTarget || 0,
-        getRemoteBuilderTarget(Game.rooms[survey.targetRoom]));
-      const assignedBuilders = homeWorkers.filter(creep =>
-        isOutpostBuilder(creep) &&
-        creep.memory.remoteRoom === survey.targetRoom &&
-        hasRemoteReplacementLife(creep));
-      const usedSlots = new Set(assignedBuilders.map(creep =>
-        creep.memory.remoteBuilderSlot));
-      for (let slot = 0; slot < builderTarget && surplus.length > 0; slot++) {
-        if (usedSlots.has(slot)) continue;
-        const worker = takeSurplus();
-        clearRecoveryAssignment(worker);
+    const maintainRemoteRecovery = Boolean(roomPolicy.permissions &&
+      roomPolicy.permissions.remoteMaintenance);
+    const spareLocalCarriers = homeWorkers.filter(worker => !worker.spawning &&
+      worker.room.name === room.name && worker.memory.role === 'hauler' &&
+      worker.getActiveBodyparts(WORK) === 0 && hasRemoteReplacementLife(worker))
+      .sort((a, b) => b.getActiveBodyparts(CARRY) - a.getActiveBodyparts(CARRY) ||
+        (b.ticksToLive || 0) - (a.ticksToLive || 0))
+      .slice(Math.max(policyRoles.hauler.min, policyRoles.hauler.desired));
+    const remoteRecovery = planRemoteRecovery({
+      plans: maintainRemoteRecovery ? getRemoteSpawnPlans(room) : [],
+      workers: homeWorkers,
+      surplus,
+      haulerSurplus: spareLocalCarriers,
+      minerBudget: roomPolicy.remote && roomPolicy.remote.minersMin || 0,
+      haulerBudget: roomPolicy.permissions.remoteHaulingRecovery &&
+        roomPolicy.remote ? roomPolicy.remote.haulers : 0,
+      builderBudget: roomPolicy.remote && roomPolicy.remote.buildersMin || 0,
+      getWork: worker => worker.getActiveBodyparts(WORK),
+      getCarry: worker => worker.getActiveBodyparts(CARRY),
+      isRemoteViable: worker => worker.spawning ||
+        hasRemoteReplacementLife(worker),
+      isOutpostBuilder,
+      getRemoteBuilderTarget: targetRoom =>
+        getRemoteBuilderTarget(Game.rooms[targetRoom])
+    });
+    for (const assignment of remoteRecovery.assignments) {
+      const { worker, entry } = assignment;
+      clearRecoveryAssignment(worker);
+      worker.memory.remoteHome = room.name;
+      worker.memory.remoteRoom = entry.survey.targetRoom;
+      worker.memory.remoteTeam = entry.team;
+      worker.memory.remoteDelivery = entry.delivery;
+      delete worker.memory.preferredSource;
+      delete worker.memory.sourceReplacement;
+      delete worker.memory.sourceReserve;
+      delete worker.memory.harvestSource;
+      if (assignment.kind === 'hauler') {
+        worker.memory.role = 'remote-hauler';
+        worker.memory.bodyType = BODY_TYPES.HAULER;
+        worker.memory.remoteHaulerSlot = assignment.slot;
+        delete worker.memory.remoteRecall;
+        console.log(`[${Game.time}] ${worker.name} local surplus -> ` +
+          `${entry.survey.targetRoom} carrier ${assignment.slot + 1} ` +
+          'recovery');
+      } else if (assignment.kind === 'miner') {
+        worker.memory.role = 'remote-miner';
+        worker.memory.remoteSlot = assignment.need.slot;
+        delete worker.memory.remoteRecall;
+        console.log(`[${Game.time}] ${worker.name} local surplus -> ` +
+          `${entry.survey.targetRoom} source ` +
+          `${assignment.need.slot + 1} recovery`);
+      } else {
         worker.memory.role = 'builder';
         worker.memory.builderScope = 'outpost';
         worker.memory.builderMission = 'maintenance';
-        worker.memory.remoteHome = room.name;
-        worker.memory.remoteRoom = survey.targetRoom;
-        worker.memory.remoteBuilderSlot = slot;
-        worker.memory.remoteTeam = entry.team;
-        worker.memory.remoteDelivery = entry.delivery;
-        delete worker.memory.preferredSource;
-        delete worker.memory.sourceReplacement;
-        delete worker.memory.sourceReserve;
-        delete worker.memory.harvestSource;
+        worker.memory.remoteBuilderSlot = assignment.slot;
         console.log(`[${Game.time}] ${worker.name} local surplus -> ` +
-          `${survey.targetRoom} maintenance recovery`);
+          `${entry.survey.targetRoom} maintenance recovery`);
       }
     }
-  }
-
-  // The S2 wall tunnel is the one RCL2 road exception. Add one dedicated
-  // tunnel builder without consuming population reserved for the room.
-  for (const room of Object.values(Game.rooms)) {
-    if (!room.controller || !room.controller.my ||
-        room.memory.s2DiggerRequested) continue;
-    const tunnelSite = getSource2TunnelSite(room);
-    if (!tunnelSite) continue;
-    const currentPopulation = Object.values(Game.creeps).filter(creep =>
-      creep.memory.home === room.name).length;
-    room.memory.workerTarget = Math.max(room.memory.workerTarget || 0,
-      currentPopulation + 1);
-    room.memory.s2DiggerRequested = {
-      tick: Game.time,
-      siteId: tunnelSite.id
-    };
-    console.log(`[${Game.time}] ${room.name} S2 tunnel builder requested ` +
-      `for tunnel ${tunnelSite.pos.x},${tunnelSite.pos.y}`);
   }
 
   const spawnGroups = {};
@@ -1772,7 +1544,14 @@ module.exports.loop = function () {
   for (const [roomName, spawns] of Object.entries(spawnGroups)) {
     spawns.sort((a, b) => a.name.localeCompare(b.name));
     const room = Game.rooms[roomName];
+    room.memory.spawnLoopTrace = { tick: Game.time, stage: 'planning' };
     updateEnergyWorkPhase(room);
+    const roomWorkers = Object.values(Game.creeps).filter(creep =>
+      creep.memory.home === room.name);
+    const situation = getRoomSituation(room);
+    publishRoomScenarios(room, situation,
+      buildRoomStaffingPlan(room, roomWorkers, situation.policy));
+    room.memory.spawnLoopTrace = { tick: Game.time, stage: 'queued' };
     const start = room.memory.nextSpawnIndex % spawns.length || 0;
     for (let offset = 0; offset < spawns.length; offset++) {
       spawnOrder.push(spawns[(start + offset) % spawns.length]);
@@ -1788,6 +1567,8 @@ module.exports.loop = function () {
     }
     const workers = Object.values(Game.creeps).filter(c =>
       c.memory.home === spawn.room.name);
+    spawn.room.memory.spawnLoopTrace = { tick: Game.time,
+      stage: 'selecting', population: workers.length };
     for (const worker of workers) {
       if (worker.memory.role !== 'miner') continue;
       worker.memory.role = 'harvester';
@@ -1805,20 +1586,129 @@ module.exports.loop = function () {
     releaseUndersizedRefillers(spawn.room, workers);
     reconcileRefillerClusters(spawn.room, workers);
     const { workerLimit } = getWorkerLimits(spawn.room);
+    const populationTransitionAllowance = getPopulationTransitionAllowance(
+      spawn.room, workers, workerLimit);
+    const controllerBrigadeBudgeted = isControllerBrigadeBudgeted(
+      spawn.room);
+    const activeBrigadeCount = getActiveControllerBrigadeCount(
+      spawn.room, workers);
     const populationLimit = getPopulationLimit(workerLimit,
       spawn.room.memory.controllerBrigadePlan,
-      isControllerBrigadeBudgeted(spawn.room));
+      controllerBrigadeBudgeted,
+      activeBrigadeCount,
+      populationTransitionAllowance);
     const bodyRosterPlan = getBodyRosterPlan(spawn.room, workers);
-    const assignment = getSpawnAssignment(spawn.room, workers,
-      bodyRosterPlan);
+    const proposedAssignment = getSpawnAssignment(spawn.room, workers);
+    const authoritySituation = getRoomSituation(spawn.room);
+    const authorityStaffingPlan = buildRoomStaffingPlan(spawn.room, workers,
+      authoritySituation.policy);
+    const authority = authorizeSpawnAssignment({
+      assignment: proposedAssignment, staffingPlan: authorityStaffingPlan
+    });
+    spawn.room.memory.spawnLoopTrace = { tick: Game.time,
+      stage: 'authorized', population: workers.length,
+      jobKey: authority.jobKey, authorized: authority.authorized };
+    const previousSpawnDecision = spawn.room.memory.spawnDecision;
+    const remoteBuilderJob = authorityStaffingPlan.jobs.remoteBuilder;
+    spawn.room.memory.spawnDecision = {
+      version: 3,
+      updated: Game.time,
+      authorized: authority.authorized,
+      phase: authority.phase,
+      jobKey: authority.jobKey,
+      population: workers.length,
+      populationLimit,
+      workerLimit,
+      populationTransitionAllowance,
+      controllerBrigadeBudgeted,
+      activeBrigadeCount,
+      controllerBrigadeReplacementMode:
+        spawn.room.memory.controllerBrigadeReadiness &&
+        spawn.room.memory.controllerBrigadeReadiness.replacementMode || null,
+      controllerBrigadeTargetCount:
+        spawn.room.memory.controllerBrigadeReadiness &&
+        spawn.room.memory.controllerBrigadeReadiness.targetCount || 0,
+      controllerBrigadeMaintenanceBlockers:
+        spawn.room.memory.controllerBrigadeReadiness &&
+        spawn.room.memory.controllerBrigadeReadiness.maintenanceBlockers || [],
+      role: proposedAssignment && proposedAssignment.role || null,
+      controllerRelaySlot: proposedAssignment &&
+        Number.isInteger(proposedAssignment.controllerRelaySlot)
+        ? proposedAssignment.controllerRelaySlot : null,
+      brigadeMaintenance: Boolean(proposedAssignment &&
+        proposedAssignment.brigadeMaintenance),
+      builderScope: proposedAssignment &&
+        proposedAssignment.builderScope || null,
+      builderMission: proposedAssignment &&
+        proposedAssignment.builderMission || null,
+      remoteRoom: proposedAssignment && proposedAssignment.remoteRoom || null,
+      reservationDeadline: proposedAssignment &&
+        proposedAssignment.reservationDeadline !== undefined
+        ? proposedAssignment.reservationDeadline : null,
+      remoteBuilderSlot: proposedAssignment &&
+        Number.isInteger(proposedAssignment.remoteBuilderSlot)
+        ? proposedAssignment.remoteBuilderSlot : null,
+      minimumGap: authorityStaffingPlan.minimumGap &&
+        (authorityStaffingPlan.minimumGap.role ||
+          authorityStaffingPlan.minimumGap.key) || null,
+      remoteBuilderCoverage: remoteBuilderJob &&
+        remoteBuilderJob.coverageCount || 0,
+      remoteBuilderMinimum: remoteBuilderJob && remoteBuilderJob.min || 0,
+      reason: authority.reason
+    };
+    if (!authority.authorized && (!previousSpawnDecision ||
+        previousSpawnDecision.reason !== authority.reason ||
+        previousSpawnDecision.role !==
+          spawn.room.memory.spawnDecision.role ||
+        previousSpawnDecision.remoteRoom !==
+          spawn.room.memory.spawnDecision.remoteRoom ||
+        previousSpawnDecision.remoteBuilderSlot !==
+          spawn.room.memory.spawnDecision.remoteBuilderSlot)) {
+      console.log(`[${Game.time}] ${spawn.room.name} spawn denied | ` +
+        authority.reason);
+    }
+    const assignment = authority.assignment;
     if (assignment) {
+      if (['harvester', 'miner'].includes(assignment.role) && assignment.preferredSource) {
+        const totalWork = Math.ceil(assignment.preferredSource.energyCapacity / ENERGY_REGEN_TIME / HARVEST_POWER);
+        assignment.requiredWork = Math.min(totalWork, getSourceBodyWorkCapacity(spawn.room));
+        assignment.miningProduction = assignment.preferredSource.energyCapacity / ENERGY_REGEN_TIME;
+        const productiveBody = buildBody('miner', spawn.room.energyCapacityAvailable,
+          { miningProduction: assignment.miningProduction });
+        assignment.minimumEnergy = productiveBody && productiveBody.reduce((sum, part) => sum + BODYPART_COST[part], 0);
+      }
+      const capacityPlan=spawn.room.memory.laborPlan;
+      if(capacityPlan && assignment.role==='refiller')assignment.carryParts=capacityPlan.refiller.carryParts;
+      const upgradeOperation = getRoomSituation(spawn.room).policy.operations;
+      if (assignment.role === 'upgrader' &&
+          upgradeOperation?.upgradePush) {
+        assignment.operationWork = upgradeOperation.upgradeWork;
+        assignment.requiredWork = upgradeOperation.upgradeWork;
+        assignment.workLimit = upgradeOperation.upgradeWork;
+        assignment.spawnBodyRole = 'upgrader';
+        assignment.minimumEnergy = upgradeOperation.upgradeBodyEnergy;
+      }
+      if(capacityPlan && assignment.role==='upgrader' && !assignment.operationWork){
+        const cappedBody = buildBody('upgrader', routineBodyEnergyCap,
+          { maximize: true, workLimit: capacityPlan.upgrader.workParts });
+        const cappedWork = cappedBody
+          ? cappedBody.filter(part => part === WORK).length : 1;
+        assignment.workLimit=Math.min(capacityPlan.upgrader.workParts,
+          cappedWork);
+        if(workers.some(c=>c.memory.role==='upgrader'&&!c.spawning&&hasLocalReplacementLife(c))){
+          assignment.requiredWork=assignment.workLimit;
+          assignment.minimumEnergy=cappedBody.reduce((sum, part) =>
+            sum + BODYPART_COST[part], 0);
+        }
+      }
       assignment.bodyType = getBodyTypeForAssignment(assignment);
       assignment.bodyRosterNeed = bodyRosterPlan.next &&
         bodyRosterPlan.next.type;
       const jobKey = assignment.role === 'harvester' ||
           assignment.role === 'miner' ? 'source'
-        : assignment.role === 'remote-scout' ? 'remoteMiner'
-          : assignment.role === 'remote-hauler' ? 'remoteHauler'
+        : assignment.role === 'remote-miner' ? 'remoteMiner'
+          : assignment.role === 'remote-reserver' ? 'remoteReserver'
+        : assignment.role === 'remote-hauler' ? 'remoteHauler'
             : assignment.role === 'builder'
               ? assignment.builderScope === 'outpost' ? 'remoteBuilder'
                 : assignment.builderMission === 'repair' ? 'repairBuilder'
@@ -1828,24 +1718,24 @@ module.exports.loop = function () {
       const staffingJob = buildRoomStaffingPlan(spawn.room, workers,
         getRoomSituation(spawn.room).policy).jobs[jobKey];
       if (staffingJob) {
-        assignment.staffingCurrent = staffingJob.coverageCount;
-        assignment.staffingTarget = Math.max(1, staffingJob.min ||
-          staffingJob.desired);
-        assignment.minimumGap = staffingJob.coverageCount < staffingJob.min;
-      }
-      if (assignment.bodyRosterMinimumGap && bodyRosterPlan.next) {
-        assignment.staffingCurrent = bodyRosterPlan.next.count;
-        assignment.staffingTarget = Math.max(1, bodyRosterPlan.next.min);
-        assignment.minimumGap = true;
-      } else if (assignment.bodyRosterDesiredGap && bodyRosterPlan.next) {
-        assignment.staffingCurrent = bodyRosterPlan.next.count;
-        assignment.staffingTarget = Math.max(1,
-          bodyRosterPlan.next.desired);
+        // Coverage for remote jobs counts rooms; body sizing needs roster units.
+        assignment.staffingCurrent = ['remoteHauler','remoteBuilder'].includes(jobKey)
+          ? staffingJob.count : staffingJob.coverageCount;
+        assignment.staffingTarget = Math.max(1, staffingJob.min || 0,
+          staffingJob.desired || 0);
+        assignment.minimumGap = assignment.emergencyDefense ||
+          assignment.emergencyPresence ||
+          staffingJob.coverageCount < staffingJob.min;
       }
     }
     const spawnRequest = prepareSpawnRequest({
       spawn, assignment, workers, workerLimit: populationLimit, hasWorkParts
     });
+    spawn.room.memory.spawnLoopTrace = { tick: Game.time,
+      stage: 'prepared', population: workers.length, populationLimit,
+      jobKey: authority.jobKey, needsWorker: spawnRequest.needsWorker,
+      hasBody: Boolean(spawnRequest.body), waited: spawnRequest.waited,
+      waitLimit: spawnRequest.waitLimit };
     if (!spawnRequest.needsWorker) continue;
     const body = spawnRequest.body;
     if (!spawn.spawning && body) {
@@ -1856,9 +1746,11 @@ module.exports.loop = function () {
           working: false,
           role: assignment.role,
           birthRole: assignment.role,
+          qualityFor: assignment.qualityFor,
           bodyType: assignment.bodyType,
           builderScope: assignment.builderScope,
           builderMission: assignment.builderMission,
+          assignmentBuilderMission: assignment.builderMission,
           builderTarget: assignment.builderTarget,
           birthRoomOrdinal: getRoomOrdinal(assignment.remoteRoom ||
             assignment.expansionTarget || spawn.room.name),
@@ -1883,16 +1775,32 @@ module.exports.loop = function () {
           remoteSlot: assignment.remoteSlot,
           remoteTeam: assignment.remoteTeam,
           remoteDelivery: assignment.remoteDelivery,
-          leftScoutSlot: assignment.remoteTeam === 'left'
-            ? assignment.remoteSlot : undefined,
           remoteHaulerSlot: assignment.remoteHaulerSlot,
           remoteBuilderSlot: assignment.remoteBuilderSlot,
           controllerRelaySlot: assignment.controllerRelaySlot,
+          defenseTargetRoom: assignment.defenseTargetRoom,
+          recoveryLane: assignment.recoveryLane,
           expansionTarget: assignment.expansionTarget
         }
       });
       if (result === OK) {
         clearSpawnWait(spawn.room);
+        if (assignment.role === 'defender') {
+          spawn.room.memory.defenderSpawnQueuedTick = Game.time;
+        }
+        if (assignment.recoveryLane) {
+          if (!spawn.room.memory.recoveryBalance) {
+            spawn.room.memory.recoveryBalance = { lastServed: {} };
+          }
+          const balance = spawn.room.memory.recoveryBalance;
+          if (!balance.lastServed) balance.lastServed = {};
+          balance.lastServed[assignment.recoveryLane] = Game.time;
+          balance.lastLane = assignment.recoveryLane;
+          balance.lastCoverage = assignment.recoveryCoverage;
+          balance.lastCurrent = assignment.recoveryCurrent;
+          balance.lastTarget = assignment.recoveryTarget;
+          balance.updated = Game.time;
+        }
         const roomSpawns = spawnGroups[spawn.room.name];
         const spawnIndex = roomSpawns.findIndex(candidate => candidate.id === spawn.id);
         spawn.room.memory.nextSpawnIndex = (spawnIndex + 1) % roomSpawns.length;
@@ -1905,10 +1813,16 @@ module.exports.loop = function () {
   const ownedRooms = new Set(Object.values(Game.spawns).map(spawn => spawn.room.name));
   for (const roomName of ownedRooms) {
     const room = Game.rooms[roomName];
-    if (room && (!room.memory.containerPurposes ||
-        scheduledRoomTick(room, 25, 5))) {
+    if (!room) continue;
+    const purposesRefreshed = !room.memory.containerPurposes ||
+      scheduledRoomTick(room, 20, 5);
+    if (purposesRefreshed) {
       refreshContainerPurposes(room);
     }
+    // Keep the shared store inventory present even when no carrier happens to
+    // request it this tick. Refresh immediately after purpose classification so
+    // the remembered list never describes a container using an old purpose.
+    getEnergyStoreRegistry(room, purposesRefreshed);
   }
   // Traffic exists anywhere our creeps travel, not only in rooms containing
   // one of our spawns. Record and draw heatmaps in every currently visible
@@ -1942,22 +1856,27 @@ module.exports.loop = function () {
     const paths = getImportantRoadPaths(room);
     const travelPaths = getImportantTravelPaths(room);
     const interRoomTravelPaths = getInterRoomTravelPaths(room);
-    delete room.memory.highwayPlan;
+    // The shared road network owns highway placement and direction hints.
     // Build within the corridors where multiple important-place routes
     // converge. The compact canonical plan still owns the total road budget,
     // preventing the richer visual network from increasing the road cap.
     const plannedPaths = getConvergedTravelPaths(travelPaths);
     const controllerFanPaths = getControllerFanPaths(room);
+    const infrastructureServicePaths = getInfrastructureServicePaths(room);
     const infrastructureRoadPaths = getInfrastructureRoadPaths(room);
     const localRoadPaths = [...plannedPaths, ...controllerFanPaths,
-      ...infrastructureRoadPaths];
+      ...infrastructureServicePaths, ...infrastructureRoadPaths];
     const controllerLevel = room.controller ? room.controller.level : 0;
-    const roadBudget = getRoadBudget(room, paths, controllerLevel);
-    drawInterRoomRoadLinks(room);
-    drawRoadPlan(room, [
-      ...localRoadPaths,
-      ...(interRoomTravelPaths[room.name] || [])
-    ], traffic, roadBudget);
+    const roadBudget = getRoadBudget(room,
+      [...paths, ...infrastructureServicePaths], controllerLevel);
+    if (allowSlowPlanning) {
+      drawInterRoomRoadLinks(room);
+      drawRoadPlan(room, [
+        ...paths,
+        ...localRoadPaths,
+        ...(interRoomTravelPaths[room.name] || [])
+      ], traffic, roadBudget);
+    }
     const relatedRoomNames = new Set([
       ...Object.keys(interRoomTravelPaths),
       ...[room.memory.leftSurvey, room.memory.southSurvey,
@@ -1969,42 +1888,50 @@ module.exports.loop = function () {
       if (relatedRoomName === room.name) continue;
       const relatedRoom = Game.rooms[relatedRoomName];
       if (!relatedRoom) continue;
-      drawTravelPaths(relatedRoom, [
-        ...getConvergedTravelPaths(getImportantTravelPaths(relatedRoom)),
-        ...(interRoomTravelPaths[relatedRoomName] || [])
-      ]);
+      if (allowSlowPlanning) {
+        drawTravelPaths(relatedRoom, [
+          ...getConvergedTravelPaths(getImportantTravelPaths(relatedRoom)),
+          ...(interRoomTravelPaths[relatedRoomName] || [])
+        ]);
+      }
     }
-    // Site placement and migration are stable planning work. Ten-tick,
+    // Site placement and migration are stable planning work. Twenty-tick,
     // room-staggered checks are responsive enough without rescanning every
     // structure and construction tile on every game tick.
     // Link cooldowns are measured in ticks, so operate the completed network
     // every tick even though construction planning remains staggered.
     runLinks(room);
-    if (scheduledRoomTick(room, 25)) {
+    if (allowSlowPlanning && scheduledRoomTick(room, 20)) {
+      placeExtensionSite(room);
       manageControllerContainer(room);
       manageExtensionContainer(room);
       placeSourceContainerSite(room);
-      placeStorageSite(room);
-      placeTowerSite(room);
-      placeLinkSite(room);
-      // Reopen remembered infrastructure roads before reserving more
-      // extension sites. This includes source-wall tunnels that create
-      // otherwise unavailable mining stations.
-      if (!roadsPaused(room)) {
+      // Remembered infrastructure paths include source-wall tunnels and other
+      // access that keeps harvesting viable. Reopen those even while optional
+      // construction is paused; ordinary layout growth remains gated below.
+      if (!roadsPaused(room) && !room.memory.roadNetworkPlan) {
         placeRoadSite(room, infrastructureRoadPaths, traffic, roadBudget);
       }
-      const linkConstructionPending = room.find(FIND_MY_CONSTRUCTION_SITES, {
-        filter: site => site.structureType === STRUCTURE_LINK
-      }).length > 0;
-      if (!linkConstructionPending) placeExtensionSite(room);
-      placeBorderRelaySite(room, interRoomTravelPaths);
-      const priorityStructureQueued = room.find(FIND_MY_CONSTRUCTION_SITES, {
-        filter: site => site.structureType === STRUCTURE_CONTAINER ||
-          site.structureType === STRUCTURE_EXTENSION ||
-          site.structureType === STRUCTURE_STORAGE
-      }).length > 0;
-      if (!roadsPaused(room) && !priorityStructureQueued) {
-        placeRoadSite(room, localRoadPaths, traffic, roadBudget);
+      if (situation.policy.permissions.optionalConstruction) {
+        placeStorageSite(room);
+        placeTowerSite(room);
+        placeLinkSite(room);
+        placeBorderRelaySite(room, interRoomTravelPaths);
+        for (const survey of [room.memory.leftSurvey,
+          room.memory.southSurvey, room.memory.southwestSurvey]) {
+          const outpostRoom = survey && survey.active &&
+            Game.rooms[survey.targetRoom];
+          if (outpostRoom) {
+            placeOutpostBorderCacheSite(room, outpostRoom,
+              interRoomTravelPaths);
+          }
+        }
+        const priorityStructureQueued = [STRUCTURE_CONTAINER,
+          STRUCTURE_EXTENSION, STRUCTURE_STORAGE].some(type =>
+          getRoomSitesByType(room, type).length > 0);
+        if (!roadsPaused(room) && !priorityStructureQueued && !room.memory.roadNetworkPlan) {
+          placeRoadSite(room, localRoadPaths, traffic, roadBudget);
+        }
       }
     }
   }
@@ -2030,11 +1957,22 @@ module.exports.loop = function () {
   const isControllerLink = target => target && target.room &&
     target.structureType === STRUCTURE_LINK &&
     isRcl5ControllerLink(target.room, target);
-  const isSpawnLink = target => target && target.room &&
+  const isExtensionLink = target => target && target.room &&
     target.structureType === STRUCTURE_LINK &&
-    isRcl5SpawnLink(target.room, target);
+    isRcl5ExtensionLink(target.room, target);
   const canWithdrawFrom = (creep, target) => {
     if (!target || !target.store) return false;
+    // Collection must move energy toward the assigned sink, never withdraw
+    // from that sink and immediately put the same load back.
+    const lane = creep.memory.demandLane;
+    if (lane === 'storage' && target.structureType === STRUCTURE_STORAGE) {
+      return false;
+    }
+    if ((lane === 'storage' || lane === 'refill-buffer') &&
+        (isExtensionRefillBuffer(creep.room, target) ||
+          isExtensionLink(target))) return false;
+    if(creep.memory.role==='hauler'&&!creep.memory.refillSpecialist&&
+        (isExtensionRefillBuffer(creep.room,target)||isExtensionLink(target)))return false;
     if (target.structureType === STRUCTURE_STORAGE) {
       return Boolean(target.my);
     }
@@ -2042,7 +1980,7 @@ module.exports.loop = function () {
       return (creep.memory.role === 'upgrader' && isControllerLink(target)) ||
         (creep.memory.role === 'refiller' ||
           creep.memory.role === 'hauler' ||
-          creep.memory.role === 'remote-hauler') && isSpawnLink(target);
+          creep.memory.role === 'remote-hauler') && isExtensionLink(target);
     }
     if (target.structureType !== STRUCTURE_CONTAINER) return false;
     // The extension buffer is reserved spawn fuel. Logistics specialists may
@@ -2111,8 +2049,8 @@ module.exports.loop = function () {
       assignedCreeps[creep.name] = true;
     } else if (isExpansionBuilder(creep)) {
       assignedCreeps[creep.name] = true;
-    } else if ((creep.memory.role === 'remote-scout' ||
-          creep.memory.role === 'remote-hauler' ||
+    } else if ((creep.memory.role === 'remote-miner' ||
+          creep.memory.role === 'remote-hauler' || creep.memory.role === 'remote-reserver' ||
           isOutpostBuilder(creep)) &&
         creep.memory.remoteHome) {
       assignedCreeps[creep.name] = true;
@@ -2161,7 +2099,7 @@ module.exports.loop = function () {
       roomTunnelBuilders[creep.room.name] = creep;
       assignedCreeps[creep.name] = true;
     } else if (creep.room.controller && creep.room.controller.my &&
-        creep.memory.role === 'hauler' &&
+        creep.memory.role === 'hauler' && !hasBuilderBody(creep) &&
         !sourceWorkerShortages[creep.room.name] &&
         (roomHaulers[creep.room.name] || 0) <
           getRoomSituation(creep.room).targets.hauler) {
@@ -2181,6 +2119,7 @@ module.exports.loop = function () {
       const upgrader = roomCreeps.filter(creep =>
         !assignedCreeps[creep.name] &&
         creep.memory.role !== 'hauler' &&
+        creep.memory.role !== 'builder' &&
         creep.memory.role !== 'remote-hauler' &&
         creep.memory.role !== 'miner' &&
         creep.memory.role !== 'harvester' &&
@@ -2203,10 +2142,11 @@ module.exports.loop = function () {
     if (!roomBuilders[room.name]) roomBuilders[room.name] = [];
     while (roomBuilders[room.name].length < builderTarget) {
       const builder = roomCreeps.find(creep =>
+        !assignedCreeps[creep.name] &&
         creep.memory.role === 'hauler' &&
         creep.memory.task === 'build' && hasBuilderBody(creep)) ||
-        roomCreeps.find(creep => creep.memory.role === 'hauler' &&
-          hasBuilderBody(creep)) ||
+        roomCreeps.find(creep => !assignedCreeps[creep.name] &&
+          creep.memory.role === 'hauler' && hasBuilderBody(creep)) ||
         roomCreeps.find(creep => !assignedCreeps[creep.name] &&
           creep.memory.role === 'worker' && hasBuilderBody(creep));
       if (!builder) break;
@@ -2214,6 +2154,7 @@ module.exports.loop = function () {
       builder.memory.role = 'builder';
       builder.memory.builderScope = 'local';
       builder.memory.builderMission = 'build';
+      builder.memory.assignmentBuilderMission = 'build';
       roomBuilders[room.name].push(builder);
       assignedCreeps[builder.name] = true;
     }
@@ -2229,6 +2170,7 @@ module.exports.loop = function () {
         repairBuilder.memory.role = 'builder';
         repairBuilder.memory.builderScope = 'local';
         repairBuilder.memory.builderMission = 'repair';
+        repairBuilder.memory.assignmentBuilderMission = 'repair';
         roomRepairBuilders[room.name] = [repairBuilder];
         assignedCreeps[repairBuilder.name] = true;
       }
@@ -2288,17 +2230,28 @@ module.exports.loop = function () {
     for (const entry of sourceContainers) {
       let miner = miners[entry.source.id];
       if (!miner) {
-        miner = room.lookForAt(LOOK_CREEPS,
-          entry.container.pos.x, entry.container.pos.y)
-          .find(creep => roomCreeps.includes(creep) &&
-            !assignedCreeps[creep.name] && hasWorkParts(creep)) ||
-          roomCreeps.filter(creep => !assignedCreeps[creep.name] &&
-            hasWorkParts(creep) &&
+        const reservedReplacement = roomCreeps.filter(creep =>
+          !assignedCreeps[creep.name] && hasWorkParts(creep) &&
+          (creep.spawning || hasLocalReplacementLife(creep)) &&
             (creep.memory.sourceReserve === entry.source.id ||
               creep.memory.sourceReplacement === entry.source.id ||
               creep.memory.preferredSource === entry.source.id))
-            .sort((a, b) => b.getActiveBodyparts(WORK) -
-              a.getActiveBodyparts(WORK))[0] ||
+          .sort((a, b) =>
+            Number(Boolean(b.memory.sourceReserve ||
+              b.memory.sourceReplacement)) -
+              Number(Boolean(a.memory.sourceReserve ||
+                a.memory.sourceReplacement)) ||
+            b.getActiveBodyparts(WORK) - a.getActiveBodyparts(WORK) ||
+            (b.ticksToLive || 1500) - (a.ticksToLive || 1500))[0];
+        const viableStationMiner = room.lookForAt(LOOK_CREEPS,
+          entry.container.pos.x, entry.container.pos.y)
+          .find(creep => roomCreeps.includes(creep) &&
+            !assignedCreeps[creep.name] && hasWorkParts(creep) &&
+            (creep.spawning || hasLocalReplacementLife(creep)));
+        // A reserved viable replacement owns the lane before the aging creep
+        // currently standing on its container. Choosing the old occupant first
+        // releases the replacement as surplus and reopens the same spawn gap.
+        miner = reservedReplacement || viableStationMiner ||
           roomCreeps.find(creep => !assignedCreeps[creep.name] &&
             hasWorkParts(creep));
         if (!miner) continue;
@@ -2348,6 +2301,8 @@ module.exports.loop = function () {
     for (const source of getRoomSources(room)) {
       const requiredWork = Math.ceil(source.energyCapacity /
         ENERGY_REGEN_TIME / HARVEST_POWER);
+      let assignedCount = miners[source.id] ? 1 : 0;
+      const minimumCount = getSourceMinerMinimum(room, source);
       let assignedWork = miners[source.id]
         ? miners[source.id].getActiveBodyparts(WORK) : 0;
       assignedWork += roomCreeps.filter(creep =>
@@ -2366,7 +2321,7 @@ module.exports.loop = function () {
           b.getActiveBodyparts(WORK) - a.getActiveBodyparts(WORK) ||
           b.ticksToLive - a.ticksToLive);
       for (const creep of candidates) {
-        if (assignedWork >= requiredWork) break;
+        if (assignedWork >= requiredWork && assignedCount >= minimumCount) break;
         creep.memory.role = 'harvester';
         creep.memory.preferredSource = source.id;
         assignedCreeps[creep.name] = true;
@@ -2374,6 +2329,7 @@ module.exports.loop = function () {
         const work = creep.getActiveBodyparts(WORK);
         sourceWorkCount += work;
         assignedWork += work;
+        assignedCount++;
       }
       // The room-wide recovery planner owns newly promoted and retained
       // recovery bodies for this tick. Even if a later roster calculation
@@ -2446,11 +2402,11 @@ module.exports.loop = function () {
             `body is not road-mobile enough for build/repair work`);
           creep.memory.mobilityRoleVersion = 'road-v1';
         }
-      } else if (creep.memory.role === 'worker' && hasBuilderBody(creep)) {
-        creep.memory.role = 'builder';
-        creep.memory.builderScope = 'local';
-        creep.memory.builderMission = 'flexible';
       }
+      // The explicit roomBuilders loop above already filled the sustainable
+      // builder target. A remaining flexible WORK body stays a worker; turning
+      // every leftover body into a builder is how one build slot became eleven
+      // builder identities crowding the same construction site.
       assignedCreeps[creep.name] = true;
       if (creep.memory.minerSource && creep.memory.role === 'harvester') {
         creep.memory.preferredSource = creep.memory.minerSource;
@@ -2479,6 +2435,7 @@ module.exports.loop = function () {
           (sourceSpotCounts[source.id] ||
             sourceWorkerTargets[source.id] || 0) - dedicatedMinerCount -
             rebalancerCount),
+        minimumRemaining: Math.max(0, getSourceMinerMinimum(room, source) - dedicatedMinerCount),
         workDeficit: Math.max(0, requiredWork - dedicatedWork)
       };
     });
@@ -2487,8 +2444,12 @@ module.exports.loop = function () {
     const harvesters = roomCreeps
       .filter(creep => creep.memory.role === 'harvester' &&
         !dedicatedMinerNames.has(creep.name))
-      .sort((a, b) => b.getActiveBodyparts(WORK) -
-        a.getActiveBodyparts(WORK) || a.name.localeCompare(b.name));
+      .sort((a, b) =>
+        Number(b.memory.sourceRecoveryPlanTick===Game.time) -
+          Number(a.memory.sourceRecoveryPlanTick===Game.time) ||
+        Number(hasLocalReplacementLife(b)) - Number(hasLocalReplacementLife(a)) ||
+        b.getActiveBodyparts(WORK) - a.getActiveBodyparts(WORK) ||
+        a.name.localeCompare(b.name));
     const sourceAssignments = planSourceAssignments({
       needs: sourceNeeds,
       candidates: harvesters.map(creep => ({
@@ -2560,12 +2521,15 @@ module.exports.loop = function () {
       creep.getActiveBodyparts(CARRY) * 100 +
       creep.getActiveBodyparts(MOVE) * 10 + (creep.ticksToLive || 0);
     const keep = new Set();
-    const repairCapacity = policyRoles.repairBuilder.max;
+    // Desired is the sustainable standing roster. Maximum is permission for a
+    // bounded emergency surge, not a number of builder identities to retain
+    // after demand falls.
+    const repairCapacity = policyRoles.repairBuilder.desired;
     localBuilders.filter(creep =>
       creep.memory.builderMission === 'repair')
       .sort((a, b) => bodyScore(b) - bodyScore(a))
       .slice(0, repairCapacity).forEach(creep => keep.add(creep.name));
-    const buildCapacity = policyRoles.builder.max;
+    const buildCapacity = policyRoles.builder.desired;
     localBuilders.filter(creep => !keep.has(creep.name) &&
       creep.memory.builderMission !== 'repair')
       .sort((a, b) => bodyScore(b) - bodyScore(a))
@@ -2577,7 +2541,9 @@ module.exports.loop = function () {
       creep.memory.role === 'upgrader' && !creep.memory.staffingRetire).length;
     let upgraderGap = Math.max(0,
       policyRoles.upgrader.desired - currentUpgraders);
-    while (upgraderGap > 0 && surplus.length > 0) {
+    surplus=surplus.sort((a,b)=>Number(b.getActiveBodyparts(WORK)>=(room.memory.laborPlan?.upgrader.workParts||4))-Number(a.getActiveBodyparts(WORK)>=(room.memory.laborPlan?.upgrader.workParts||4)));
+    while (upgraderGap > 0 && surplus.length > 0 &&
+        surplus[0].getActiveBodyparts(WORK)>=(room.memory.laborPlan?.upgrader.workParts||4)) {
       const creep = surplus.shift();
       creep.memory.role = 'upgrader';
       creep.memory.bodyType = BODY_TYPES.CONTROLLER;
@@ -2623,7 +2589,9 @@ module.exports.loop = function () {
     const populationLimit = getPopulationLimit(
       getWorkerLimits(room).workerLimit,
       room.memory.controllerBrigadePlan,
-      isControllerBrigadeBudgeted(room));
+      isControllerBrigadeBudgeted(room),
+      getActiveControllerBrigadeCount(room, localCreeps),
+      getPopulationTransitionAllowance(room));
     const retiringCount = localCreeps.filter(creep =>
       creep.memory.staffingRetire || creep.memory.role === 'retire').length;
     const retirees = selectRetirementCandidates({
@@ -2649,8 +2617,8 @@ module.exports.loop = function () {
   }
 
   for (const creep of creeps) {
-    if (creep.memory.role === 'remote-scout' ||
-        creep.memory.role === 'remote-hauler' ||
+    if (creep.memory.role === 'remote-miner' ||
+        creep.memory.role === 'remote-hauler' || creep.memory.role === 'remote-reserver' ||
         isOutpostBuilder(creep) || isExpansionBuilder(creep)) continue;
     if (!creep.room.controller || !creep.room.controller.my) {
         creep.memory.role = 'builder';
@@ -2667,6 +2635,7 @@ module.exports.loop = function () {
   // ownership field once more before demand planning and execution so no
   // previous job can reclaim the creep on the next tick.
   reconcileCreepAssignments(creeps);
+  for(const creep of creeps)reconcileLaborBody(creep);
 
   // Calculate total room demand once, then reserve one work lane per mobile
   // creep. Individual task queues execute these assignments instead of every
@@ -2681,7 +2650,9 @@ module.exports.loop = function () {
     const populationLimit = getPopulationLimit(
       getWorkerLimits(room).workerLimit,
       room.memory.controllerBrigadePlan,
-      isControllerBrigadeBudgeted(room));
+      isControllerBrigadeBudgeted(room),
+      getActiveControllerBrigadeCount(room),
+      getPopulationTransitionAllowance(room));
     const populationEmergency = homePopulation > populationLimit;
     const assignments = {};
     const slowInventory = getSlowWorkInventory(room);
@@ -2690,9 +2661,14 @@ module.exports.loop = function () {
     const builtExtensionCount = slowInventory.structures.filter(structure =>
       structure.structureType === STRUCTURE_EXTENSION).length;
     const storageDeferred = builtExtensionCount < extensionLimit;
+    const tunnelRecoverySite = getSource2TunnelSite(room);
     const sites = slowInventory.sites.filter(site =>
       (!roadsPaused(room) || site.structureType !== STRUCTURE_ROAD) &&
-      (!storageDeferred || site.structureType !== STRUCTURE_STORAGE));
+      (!storageDeferred || site.structureType !== STRUCTURE_STORAGE) &&
+      (situation.policy.permissions.optionalConstruction ||
+        site.structureType === STRUCTURE_CONTAINER ||
+        site.structureType === STRUCTURE_SPAWN ||
+        tunnelRecoverySite && site.id === tunnelRecoverySite.id));
     const buildRemaining = sites.reduce((total, site) =>
       total + site.progressTotal - site.progress, 0);
     const repairTargets = slowInventory.structures.filter(structure =>
@@ -2711,8 +2687,10 @@ module.exports.loop = function () {
       total + Math.ceil((structure.hitsMax * 0.75 - structure.hits) /
         REPAIR_POWER), 0);
 
-    const workCreeps = roomCreeps.filter(creep => hasWorkParts(creep) &&
-      canBodyTypeRunLane(creep.memory.bodyType, 'upgrade') &&
+    const workCreeps = roomCreeps.filter(creep => ['builder','worker','upgrader'].includes(creep.memory.role) && hasWorkParts(creep) &&
+      creep.getActiveBodyparts(CARRY)>0 &&
+      (canBodyTypeRunLane(creep.memory.bodyType, 'upgrade') ||
+        canBodyTypeRunLane(creep.memory.bodyType, 'build', creep.memory.role)) &&
       creep.memory.role !== 'retire' &&
       !isBuilder(creep, 'local', 'tunnel') &&
       !isOutpostBuilder(creep) && !isExpansionBuilder(creep));
@@ -2722,6 +2700,7 @@ module.exports.loop = function () {
     // the executor rejected that invalid handoff.
     const supplyRecipients = workCreeps.slice();
     for (const creep of workCreeps.filter(worker =>
+      worker.memory.role === 'upgrader' ||
       worker.memory.bodyType === BODY_TYPES.CONTROLLER)) {
       assignments[creep.name] = 'upgrade';
     }
@@ -2733,8 +2712,9 @@ module.exports.loop = function () {
         ? Math.max(1, situation.targets.repairBuilder)
         : 0;
       const availableWorkers = workCreeps.filter(creep =>
+        creep.memory.role !== 'upgrader' && (
         creep.memory.bodyType === BODY_TYPES.WORKER ||
-          isLocalBuilder(creep))
+          isLocalBuilder(creep) || creep.memory.role==='worker'))
         .sort((a, b) =>
           Number(b.memory.builderMission === 'repair') -
             Number(a.memory.builderMission === 'repair') ||
@@ -2745,26 +2725,23 @@ module.exports.loop = function () {
       // buffer is not being consumed quickly enough. Keep one builder moving
       // construction, but send the remaining WORK-heavy bodies to the RC so
       // carriers can unload and return to the sources.
-      const rawConstructionCrew = constructionPriority
-        .desiredCrewTotal(sites, linksPending);
+      const rawConstructionCrew = Math.max(constructionPriority
+        .desiredCrewTotal(sites, linksPending),
+        room.memory.roadBacklog?.missing > 0 && sites.some(site =>
+          site.structureType === STRUCTURE_ROAD)
+          ? situation.policy.roles.builder.desired : 0);
       const constructionScale = situation.policy.budgets &&
         situation.policy.budgets.constructionCrewScale || 1;
-      const desiredConstructionCrew = rawConstructionCrew > 0
-        ? Math.max(1, Math.ceil(rawConstructionCrew * constructionScale)) : 0;
+      const desiredConstructionCrew = Math.min(situation.targets.builder,rawConstructionCrew > 0
+        ? Math.max(1, Math.ceil(rawConstructionCrew * constructionScale)) : 0);
       let buildSlots = situation.mode === 'logistics-backup'
         ? Math.min(2, availableWorkers.length, desiredConstructionCrew)
         : Math.min(availableWorkers.length, desiredConstructionCrew);
+      const balancedWork=allocateBalancedWork({workers:availableWorkers,repairTargets:repairTargets.length,buildSlots});
       for (const creep of availableWorkers) {
-        if (repairSlots > 0) {
-          assignments[creep.name] = 'repair';
-          repairSlots--;
-        } else if (buildSlots > 0) {
-          assignments[creep.name] = 'build';
-          buildSlots--;
-        } else {
-          assignments[creep.name] = populationEmergency
-            ? 'standby' : 'upgrade';
-        }
+        if (balancedWork.repair.has(creep.name)) assignments[creep.name]='repair';
+        else if (balancedWork.build.has(creep.name)) assignments[creep.name]='build';
+        else assignments[creep.name]=populationEmergency?'standby':'upgrade';
       }
     }
 
@@ -2856,20 +2833,25 @@ module.exports.loop = function () {
       : extensionBufferCapacity * 0.5;
     let extensionBufferDemand = Math.max(0,
       extensionBufferTarget - extensionBufferStored);
-    // Routine controller work is elastic. Preserve one downgrade-safe slot,
-    // but do not feed a controller crowd while the spawn-side handoff is dry.
+    // Translate the selected situation policy into executable RC lanes. An
+    // active operation owns its declared count. Without an operation, normal
+    // survival and routine policy may reduce the executable count to one or
+    // two based on population pressure and room migration state.
     const assignedUpgraders = workCreeps.filter(creep =>
       assignments[creep.name] === 'upgrade').sort((a, b) =>
       Number(b.memory.role === 'upgrader') -
         Number(a.memory.role === 'upgrader') ||
       b.getActiveBodyparts(WORK) - a.getActiveBodyparts(WORK) ||
       a.name.localeCompare(b.name));
-    const routineUpgradeSlots = situation.mode === 'controller-emergency'
+    const operationUpgradeSlots = situation.policy.operations?.upgradePush
+      ? situation.policy.operations.upgraderTarget : null;
+    const routineUpgradeSlots = operationUpgradeSlots != null
+      ? Math.min(assignedUpgraders.length, operationUpgradeSlots)
+      : situation.mode === 'controller-emergency'
       ? assignedUpgraders.length
-      : populationEmergency ? 0
-      : extensionBufferDemand > 0
-        ? 1
-        : Math.min(2, Math.max(1, situation.targets.upgrader));
+      : populationEmergency ? 1
+      : room.memory.singleExtensionLayout?.migration ? 1
+      : Math.min(2, Math.max(1, situation.targets.upgrader));
     let overflowRepairSlots = Math.max(0,
       repairTargets.length -
         workCreeps.filter(creep => assignments[creep.name] === 'repair').length);
@@ -2884,8 +2866,7 @@ module.exports.loop = function () {
         assignments[creep.name] = 'build';
         overflowBuildSlots--;
       } else {
-        assignments[creep.name] = populationEmergency
-          ? 'standby' : 'upgrade';
+        assignments[creep.name] = 'standby';
       }
     }
     // Remote carriers standing in their home room are part of the local
@@ -2900,6 +2881,7 @@ module.exports.loop = function () {
           !creep.memory.remoteRosterSurplus && !hasDedicatedLocalHauler;
     const energyWorkPhase = room.memory.energyWorkPhase || 'refill';
     const emergencyEnergyRefill = room.energyAvailable < workerCost;
+    room.memory.homeRefillRecovery=networkRecoveryNeeded({energy:room.energyAvailable,capacity:room.energyCapacityAvailable,previous:room.memory.homeRefillRecovery});
     // Dedicated haulers continuously top off room energy; the phase gate only
     // decides whether WORK creeps must join that refill wave.
     let refillDemand = spawnFree + towerFree;
@@ -2920,12 +2902,20 @@ module.exports.loop = function () {
     const activeUpgraderWork = workCreeps.filter(creep =>
       assignments[creep.name] === 'upgrade').reduce((total, creep) =>
       total + creep.getActiveBodyparts(WORK), 0);
-    const controllerReserveTarget = Math.min(bufferCapacity, Math.max(
-      bufferCapacity * 0.75,
-      activeUpgraderWork * 75));
+    const minimalControllerDuringMove = Boolean(room.memory.singleExtensionLayout &&
+      (room.memory.singleExtensionLayout.migration || roomStructures.some(s=>
+        s.my && s.structureType===STRUCTURE_EXTENSION &&
+        !room.memory.singleExtensionLayout.extensionTiles.some(p=>
+          p.x===s.pos.x&&p.y===s.pos.y)))) &&
+      situation.mode !== 'controller-emergency';
+    const controllerReserveTarget = minimalControllerDuringMove
+      ? Math.min(bufferCapacity, Math.max(100, activeUpgraderWork * 25))
+      : Math.min(bufferCapacity, Math.max(bufferCapacity * 0.75,
+        activeUpgraderWork * 75));
     let urgentBufferDemand = Math.max(0,
       controllerReserveTarget - bufferStored);
-    let bufferDemand = Math.max(0, bufferCapacity - bufferStored);
+    let bufferDemand = Math.max(0,
+      (minimalControllerDuringMove ? controllerReserveTarget : bufferCapacity) - bufferStored);
     // Mobile workers collect from fixed local stores. Haulers stock those
     // stores; they do not chase moving creeps for direct handoffs.
     let supplyDemand = 0;
@@ -2934,6 +2924,17 @@ module.exports.loop = function () {
       ? storage.store.getFreeCapacity(RESOURCE_ENERGY) : 0;
     const storageStored = storage
       ? storage.store[RESOURCE_ENERGY] : 0;
+    const brigadePlan = room.memory.controllerBrigadePlan;
+    const activeBrigadeCount = roomCreeps.filter(creep =>
+      creep.memory.role === CONTROLLER_BRIGADE_ROLE).length;
+    let brigadeIntakeDemand = minimalControllerDuringMove ? 0 : getBrigadeIntakeDemand({
+      plan: brigadePlan,
+      activeRelayCount: activeBrigadeCount,
+      storageEnergy: storageStored,
+      controllerReserveTarget,
+      storageCapacity: storage
+        ? storage.store.getCapacity(RESOURCE_ENERGY) : 0
+    });
     // Keep one full room charge in reserve during normal operation. In an
     // energy emergency storage is available all the way down to zero.
     const storageReserveFloor = emergencyEnergyRefill
@@ -3048,7 +3049,6 @@ module.exports.loop = function () {
       delete room.memory.refillCarrier;
       delete room.memory.refillCarriers;
     }
-    let urgentBufferCarrierAssigned = false;
     const urgentBufferCarriers = new Set();
     for (const creep of loadedHaulers) {
       delete creep.memory.collectionSourceTarget;
@@ -3058,7 +3058,7 @@ module.exports.loop = function () {
         ? creep.memory.dispatchCommitment : null;
       const committedTarget = commitment &&
         Game.getObjectById(commitment.targetId);
-      if (emergencyEnergyRefill && refillDemandFor(creep) > 0) {
+      if ((emergencyEnergyRefill||room.memory.homeRefillRecovery) && refillDemand>0 && refillDemandFor(creep) > 0) {
         // During recovery every loaded local carrier becomes a direct filler.
         // Staging energy in StockSp while spawn is below one worker body only
         // prolongs the emergency.
@@ -3066,26 +3066,17 @@ module.exports.loop = function () {
         emergencyRefillDemand = Math.max(0,
           emergencyRefillDemand - carried);
         refillDemand = Math.max(0, refillDemand - carried);
+      } else if (!fillsSpawn && situation.mode !== 'controller-emergency' &&
+          extensionBufferStored + (extensionBufferTarget -
+            extensionBufferStored - extensionBufferDemand) <
+              Math.min(500, extensionBufferCapacity * 0.25)) {
+        // Fund a short-range filler load before routine RC/storage spending.
+        assignments[creep.name] = 'refill-buffer';
+        extensionBufferDemand = Math.max(0, extensionBufferDemand - carried);
       } else if (!fillsSpawn && commitment &&
           commitment.lane === 'storage' && storageDemand > 0) {
         assignments[creep.name] = 'storage';
         storageDemand = Math.max(0, storageDemand - carried);
-      } else if (!fillsSpawn && commitment &&
-          commitment.lane === 'refill-buffer' && extensionBufferDemand > 0) {
-        assignments[creep.name] = 'refill-buffer';
-        extensionBufferDemand = Math.max(0,
-          extensionBufferDemand - carried);
-      } else if (!fillsSpawn && commitment &&
-          commitment.lane === 'buffer' && bufferDemand > 0 &&
-          extensionBufferDemand <= 0 &&
-          !urgentBufferCarrierAssigned) {
-        assignments[creep.name] = 'buffer';
-        if (urgentBufferDemand > 0) {
-          urgentBufferCarrierAssigned = true;
-          urgentBufferCarriers.add(creep.name);
-        }
-        urgentBufferDemand = Math.max(0, urgentBufferDemand - carried);
-        bufferDemand = Math.max(0, bufferDemand - carried);
       } else if (!fillsSpawn && commitment &&
           commitment.lane === 'supply' && committedTarget &&
           recipientRemaining[committedTarget.name] > 0) {
@@ -3106,21 +3097,24 @@ module.exports.loop = function () {
         refillDemand = Math.max(0, refillDemand - carried);
       } else if (fillsSpawn) {
         assignments[creep.name] = 'refill-stage';
-      } else if (extensionBufferDemand > 0) {
-        // StockSp is the short-range refill handoff. Refill it before routine
-        // controller reserve so fillers do not cross the room for every load.
-        assignments[creep.name] = 'refill-buffer';
-        extensionBufferDemand = Math.max(0,
-          extensionBufferDemand - carried);
-      } else if (urgentBufferDemand > 0 &&
-          !urgentBufferCarrierAssigned) {
-        assignments[creep.name] = 'buffer';
-        urgentBufferCarrierAssigned = true;
-        urgentBufferCarriers.add(creep.name);
-        urgentBufferDemand = Math.max(0, urgentBufferDemand - carried);
-        bufferDemand = Math.max(0, bufferDemand - carried);
+      } else if (extensionBufferDemand > 0 || brigadeIntakeDemand > 0) {
+        const lane = selectBufferLane(
+          extensionBufferDemand, extensionBufferTarget,
+          brigadeIntakeDemand, controllerReserveTarget);
+        // A stationary brigade's controller lane begins at storage. Feeding
+        // the endpoint directly leaves the seated relays permanently empty.
+        assignments[creep.name] = lane === 'buffer' ? 'storage' : lane;
+        if (lane === 'buffer') {
+          brigadeIntakeDemand = Math.max(0,
+            brigadeIntakeDemand - carried);
+          storageDemand = Math.max(0, storageDemand - carried);
+        } else {
+          extensionBufferDemand = Math.max(0,
+            extensionBufferDemand - carried);
+        }
       } else if (urgentBufferDemand > 0) {
         assignments[creep.name] = 'buffer';
+        urgentBufferCarriers.add(creep.name);
         urgentBufferDemand = Math.max(0, urgentBufferDemand - carried);
         bufferDemand = Math.max(0, bufferDemand - carried);
       } else if (bufferDemand > 0) {
@@ -3157,18 +3151,22 @@ module.exports.loop = function () {
           ? 'buffer-stage' : 'standby';
       }
     }
-    // WORK-heavy creeps should not cross the room to perform logistics while
-    // dedicated haulers exist. They join refill only as a true no-hauler
-    // recovery fallback.
-    const availableLocalHaulers = roomCreeps.filter(creep =>
-      servesAsLocalHauler(creep) && !creep.spawning);
-    if ((energyWorkPhase === 'refill' || emergencyEnergyRefill) &&
-        availableLocalHaulers.length === 0) {
-      for (const creep of workCreeps.filter(worker =>
-        worker.memory.role !== 'upgrader')) {
+    // Flexible WORK bodies normally stay out of logistics. During a measured
+    // refill backlog, surplus workers temporarily cover only the capacity the
+    // carrier group cannot. Their body family remains WORKER so this relief
+    // does not hide the shortage of real HAULER bodies.
+    if (energyWorkPhase === 'refill' || emergencyEnergyRefill) {
+      const emptyCarrierCapacity = emptyHaulers.reduce((total, carrier) =>
+        total + carrier.store.getCapacity(RESOURCE_ENERGY), 0);
+      const reliefWorkers = selectLogisticsReliefWorkers(
+        workCreeps.filter(worker => worker.memory.role !== 'upgrader' &&
+          assignments[worker.name] === 'standby'),
+        refillDemand, emptyCarrierCapacity,
+        worker => worker.store.getCapacity(RESOURCE_ENERGY));
+      for (const creep of reliefWorkers) {
         assignments[creep.name] = 'refill';
         refillDemand = Math.max(0, refillDemand -
-          creep.store[RESOURCE_ENERGY]);
+          creep.store.getCapacity(RESOURCE_ENERGY));
       }
     }
     const operationalCollectionDemand = refillDemand +
@@ -3213,6 +3211,12 @@ module.exports.loop = function () {
     // area and competes for a load that does not exist yet.
     let collectibleEnergy = sourceStored + relayStored +
       storageWithdrawalDemand;
+    const extensionLinkSource = roomStructures.find(structure =>
+      isExtensionLink(structure) &&
+        getUnreservedEnergy(structure) > 0);
+    let extensionLinkAvailable = extensionLinkSource
+      ? getUnreservedEnergy(extensionLinkSource) : 0;
+    collectibleEnergy += extensionLinkAvailable;
     const projectedRelays = relayBuffers.filter(buffer =>
       getUnreservedEnergy(buffer) > 0).map(buffer => ({
       buffer,
@@ -3230,7 +3234,13 @@ module.exports.loop = function () {
           creep.memory.collectionSourceTarget);
         const relay = projectedRelays.find(entry => entry.stored > 0);
         const drainSourceBacklog = group && remainingSourceBacklog > 0;
-        if (relay) {
+        if (ownsOpenRefill && extensionLinkSource &&
+            extensionLinkAvailable > 0) {
+          collectionSources[creep.name] = extensionLinkSource.id;
+          delete creep.memory.collectionSourceTarget;
+          extensionLinkAvailable = Math.max(0,
+            extensionLinkAvailable - cargoCapacity);
+        } else if (relay) {
           collectionSources[creep.name] = relay.buffer.id;
           delete creep.memory.collectionSourceTarget;
           relay.stored = Math.max(0, relay.stored - cargoCapacity);
@@ -3284,11 +3294,14 @@ module.exports.loop = function () {
           supplyTarget.store.getFreeCapacity(RESOURCE_ENERGY) > 0 ||
         loaded && previousLane === 'storage' && storage &&
           storage.store.getFreeCapacity(RESOURCE_ENERGY) > 0;
-      const emergencyRefillOverride = loaded && emergencyEnergyRefill &&
+      const emergencyRefillOverride = loaded && (emergencyEnergyRefill||room.memory.homeRefillRecovery) &&
         proposedLane === 'refill';
+      const extensionReserveOverride = loaded && proposedLane === 'refill-buffer' &&
+        extensionBufferStored < Math.min(500, extensionBufferCapacity * 0.25);
       if (previousLane && previousLane !== proposedLane &&
           (fillsSpawn ? previousWasRefill : !previousWasRefill) &&
-          previousStillUseful && !emergencyRefillOverride) {
+          previousStillUseful && !emergencyRefillOverride &&
+          !extensionReserveOverride) {
         assignments[creep.name] = previousLane;
         if (previousLane === 'supply' && supplyTarget) {
           supplyTargets[creep.name] = supplyTarget.name;
@@ -3380,6 +3393,8 @@ module.exports.loop = function () {
       creep.room.controller.my &&
       creep.room.controller.ticksToDowngrade < 1000;
     if (creep.store.getFreeCapacity() === 0 ||
+        hasWorkParts(creep) && creep.store[RESOURCE_ENERGY] > 0 &&
+          creep.store.getFreeCapacity(RESOURCE_ENERGY) < creep.getActiveBodyparts(WORK) * HARVEST_POWER ||
         (controllerEmergency && creep.memory.role === 'upgrader' &&
           creep.store[RESOURCE_ENERGY] > 0)) {
       creep.memory.working = true;
@@ -3455,7 +3470,7 @@ module.exports.loop = function () {
     let bestRange = Infinity;
     const candidateSources = preferredSource
       ? (preferredSource.energy > 0 ? [preferredSource] : [])
-      : creep.room.find(FIND_SOURCES_ACTIVE);
+      : getRoomSources(creep.room).filter(source => source.energy > 0);
     for (const candidate of candidateSources) {
       for (let spotX = candidate.pos.x - 1; spotX <= candidate.pos.x + 1; spotX++) {
         for (let spotY = candidate.pos.y - 1; spotY <= candidate.pos.y + 1; spotY++) {
@@ -3496,13 +3511,13 @@ module.exports.loop = function () {
           structure.structureType === STRUCTURE_CONTAINER &&
           localSource.pos.getRangeTo(structure) <= 2);
         return !hasSourceContainer || collector.memory.role === 'harvester';
-      }
+      },
+      postBattleRooms: postBattleSalvageRooms
     });
 
   const plannedRefillTargets = planRefillTargets({
     rooms: Object.values(Game.rooms), creeps, roomDemandPlans, Game,
-    RESOURCE_ENERGY, FIND_MY_STRUCTURES, STRUCTURE_SPAWN,
-    STRUCTURE_EXTENSION, STRUCTURE_TOWER, isRefillTargetFor,
+    RESOURCE_ENERGY, getRoomRefillStructures, isRefillTargetFor,
     getRefillPriority
   });
 
@@ -3528,6 +3543,7 @@ module.exports.loop = function () {
     const demandPlan = roomDemandPlans[creep.room.name];
     if (!demandPlan) continue;
     const lane = demandPlan.assignments[creep.name];
+    if(lane==='build'&&creep.memory.workJob?.lane==='repair'&&demandPlan.demand.fixTargets>0)workDispatch.complete(creep);
     if (lane === 'standby' && creep.memory.workJob) {
       workProposals[creep.name] = { lane, cancelCurrent: true, priority: 0 };
       continue;
@@ -3544,11 +3560,11 @@ module.exports.loop = function () {
     } else if (lane === 'buffer') {
       const roomStructures = getRoomStructures(creep.room);
       const controllerEndpoint = roomStructures.find(isControllerLink);
-      const spawnEndpoint = roomStructures.find(isSpawnLink);
-      const linkFeed = controllerEndpoint && spawnEndpoint &&
+      const extensionEndpoint = roomStructures.find(isExtensionLink);
+      const linkFeed = controllerEndpoint && extensionEndpoint &&
         controllerEndpoint.store[RESOURCE_ENERGY] < 400 &&
-        spawnEndpoint.store.getFreeCapacity(RESOURCE_ENERGY) > 0
-        ? spawnEndpoint : null;
+        extensionEndpoint.store.getFreeCapacity(RESOURCE_ENERGY) > 0
+        ? extensionEndpoint : null;
       const buffer = linkFeed || roomStructures.find(structure =>
         structure.structureType === STRUCTURE_CONTAINER &&
         structure.pos.getRangeTo(creep.room.controller) <= 3 &&
@@ -3574,13 +3590,38 @@ module.exports.loop = function () {
       currentCollectionSource && plannedCollectionSource.pos &&
       currentCollectionSource.pos &&
       plannedCollectionSource.pos.getRangeTo(currentCollectionSource) > 2;
+    const restoreExtensionReserve = lane === 'refill-buffer' &&
+      demandPlan.demand.extensionBufferStored <
+        Math.min(500, demandPlan.demand.extensionBufferCapacity * 0.25) &&
+      creep.memory.workJob &&
+      ['buffer', 'storage', 'supply'].includes(creep.memory.workJob.lane);
+    const restoreSpawnNetwork=lane==='refill'&&creep.room.memory.homeRefillRecovery&&
+      creep.memory.workJob&&['buffer','storage','supply','refill-buffer'].includes(creep.memory.workJob.lane);
+    if(restoreSpawnNetwork)delete creep.memory.dispatchCommitment;
+    if (restoreExtensionReserve) delete creep.memory.dispatchCommitment;
+    const rerouteRefill = lane === 'refill' && targetId &&
+      creep.memory.workJob && creep.memory.workJob.lane === 'refill' &&
+      creep.memory.workJob.targetId !== targetId;
+    if (rerouteRefill) delete creep.memory.dispatchCommitment;
+    const rerouteBuffer = lane === 'buffer' && targetId &&
+      creep.memory.workJob && creep.memory.workJob.lane === 'buffer' &&
+      creep.memory.workJob.targetId !== targetId;
     workProposals[creep.name] = {
       lane, sourceId, targetId,
       amount: lane === 'collect'
         ? creep.store.getFreeCapacity(RESOURCE_ENERGY)
         : creep.store[RESOURCE_ENERGY],
       priority: lanePriority(creep.room, demandPlan, lane),
-      cancelCurrent: Boolean(rerouteCollection)
+      cancelCurrent: Boolean(creep.memory.waitState === 'blocked' ||
+        rerouteCollection || rerouteBuffer || rerouteRefill ||
+        restoreExtensionReserve || restoreSpawnNetwork),
+      reason: rerouteRefill
+        ? 'refill matcher selected a nearer or higher-priority target'
+        : rerouteCollection
+        ? 'assigned collection source changed rooms'
+        : rerouteBuffer
+          ? 'assigned controller buffer became invalid'
+          : 'previous assignment completed or invalid'
     };
   }
   const ownedWorkJobs = workDispatch.reconcile(creeps, workProposals);
@@ -3621,15 +3662,67 @@ module.exports.loop = function () {
 
   // Let logistics reserve source energy before general workers withdraw it.
   // The controller buffer remains protected for the dedicated upgrader.
-  const taskPriority = creep => creep.memory.role === 'refiller'
-    ? 0 : creep.memory.role === 'hauler' ||
-      creep.memory.role === 'remote-hauler'
-      ? 1 : creep.memory.role === CONTROLLER_BRIGADE_ROLE
-        ? 2 : creep.memory.role === 'rebalancer'
-        ? 2 : creep.memory.role === 'upgrader'
-          ? 3 : isBuilder(creep, 'local', 'repair') ? 4 : 5;
-  const taskCreeps = creeps.slice().sort((a, b) =>
-    taskPriority(a) - taskPriority(b));
+  const taskPriority = (_creep, memory) => memory.emergencyRepairRoom
+    ? -1 : memory.role === 'refiller'
+      ? 0 : memory.role === 'hauler' || memory.role === 'remote-hauler'
+        ? 1 : memory.role === CONTROLLER_BRIGADE_ROLE ||
+          memory.role === 'rebalancer'
+          ? 2 : memory.role === 'upgrader'
+            ? 3 : memory.role === 'builder' &&
+              (memory.builderScope || 'local') === 'local' &&
+              (memory.builderMission || 'build') === 'repair' ? 4 : 5;
+  const executionOrderRecords = snapshotExecutionOrder(
+    creeps, taskPriority, Game.time);
+  const taskCreeps = sortTaskRecords(executionOrderRecords)
+    .map(record => record.creep);
+  // One genuinely empty numbered slot may borrow one uncommitted carrier.
+  // This is emergency gap coverage, not a shadow brigade: a BRIG already
+  // spawning/traveling owns its slot, and the room may never borrow a carrier
+  // for every moving relay. The stand-in resumes its real job when BRIGn sits.
+  for (const room of Object.values(Game.rooms).filter(candidate =>
+    candidate.controller && candidate.controller.my)) {
+    const plan = getControllerBrigadePlan(room);
+    const rosterChanges = reconcileControllerBrigadeOverlaps(room.name, plan);
+    if (rosterChanges.reassigned.length || rosterChanges.released.length) {
+      console.log(`[${Game.time}] ${room.name} released ` +
+        `${rosterChanges.released.length} duplicate brigade relays to ` +
+        `hauling; moved ${rosterChanges.reassigned.length} into empty slots`);
+    }
+    const candidates = taskCreeps.filter(creep =>
+      creep.memory.home === room.name && creep.room.name === room.name &&
+      creep.memory.role !== CONTROLLER_BRIGADE_ROLE && !creep.spawning &&
+      ['hauler', 'rebalancer', 'remote-hauler', 'worker']
+        .includes(creep.memory.role) &&
+      !creep.memory.staffingRetire &&
+      creep.getActiveBodyparts(CARRY) > 0 &&
+      creep.getActiveBodyparts(MOVE) > 0 &&
+      !creep.memory.dispatchCommitment &&
+      !(creep.memory.role === 'remote-hauler' &&
+        (creep.memory.remoteHaulReturning ||
+          creep.store[RESOURCE_ENERGY] > 0)))
+      .sort((a, b) => {
+        const priority = creep => creep.memory.role === 'hauler' ? 0
+          : creep.memory.role === 'rebalancer' ? 1
+            : creep.memory.role === 'remote-hauler' &&
+              creep.memory.remoteRosterSurplus ? 2
+              : creep.memory.role === 'remote-hauler' ? 3 : 4;
+        return priority(a) - priority(b) ||
+          a.store[RESOURCE_ENERGY] - b.store[RESOURCE_ENERGY] ||
+          b.ticksToLive - a.ticksToLive || a.name.localeCompare(b.name);
+      });
+    // The managed push uses real numbered relays, not borrowed core workers.
+    const brigadeAllowed = !getOperationScope(room, Game).managed &&
+      getRoomSituation(room).policy.permissions.controllerBrigade;
+    const substitutes = reconcileControllerBrigadeSubstitutes({
+      creeps: taskCreeps, roomName: room.name,
+      plan: brigadeAllowed ? plan : null,
+      candidates: brigadeAllowed ? candidates : []
+    });
+    room.memory.controllerBrigadeSubstitutes = {
+      updated: Game.time,
+      slots: substitutes
+    };
+  }
   const reservedRemoteSourceCoverage = {};
   const isSharedBuildTarget = target => target && target.room &&
     (target.structureType === STRUCTURE_EXTENSION ||
@@ -3640,7 +3733,15 @@ module.exports.loop = function () {
   const { createBuckets, isAvailable: exclusiveClaimAvailable,
     claim: claimExclusive, release: releaseExclusive,
     retain: retainTaskTarget, retainExclusive: retainExclusiveTarget } =
-    createTaskReservations({ Game, isSharedTarget: isSharedBuildTarget });
+    createTaskReservations({
+      Game,
+      isSharedTarget: isSharedBuildTarget,
+      // Shared means a bounded crew, not an unlimited crowd. Construction
+      // priority sizes the useful crew from structure cost; completed repair
+      // targets retain one exclusive worker.
+      getSharedTargetLimit: target => target.progressTotal !== undefined
+        ? constructionPriority.desiredCrew(target) : 1
+    });
   const reservedJobs = createBuckets(['build', 'repair']);
   for (const creep of taskCreeps) {
     retainTaskTarget(creep,
@@ -3679,16 +3780,28 @@ module.exports.loop = function () {
         target.memory.role === 'worker') &&
       target.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
   }
-  const executionCreeps = taskCreeps.slice().sort((a, b) =>
-    Number(!!b.memory.dispatchCommitment) -
-      Number(!!a.memory.dispatchCommitment) ||
-    (a.memory.dispatchCommitment && a.memory.dispatchCommitment.since ||
-      Game.time) -
-      (b.memory.dispatchCommitment && b.memory.dispatchCommitment.since ||
-        Game.time) ||
-    Number(b.store.getUsedCapacity() > 0) -
-      Number(a.store.getUsedCapacity() > 0) ||
-    taskPriority(a) - taskPriority(b) || a.name.localeCompare(b.name));
+  const sortedExecutionCreeps = sortExecutionRecords(executionOrderRecords)
+    .map(record => record.creep);
+  // Under CPU pressure, always run the home survival economy first. Rotate
+  // everything else so a hard ceiling cannot starve the same remote creeps on
+  // every tick while the bucket rebuilds.
+  const survivalExecutionRoles = new Set([
+    'refiller', 'harvester', 'miner', 'hauler', 'rebalancer', 'upgrader',
+    // A reserver is the sole actuator that prevents a running outpost from
+    // losing its controller reservation. It cannot be rotated behind optional
+    // work while constrained CPU is shedding deferred executors.
+    'remote-reserver', 'defender', 'retire', CONTROLLER_BRIGADE_ROLE
+  ]);
+  const survivalExecutionCreeps = sortedExecutionCreeps.filter(creep =>
+    creep.memory.emergencyRepairRoom ||
+    survivalExecutionRoles.has(creep.memory.role));
+  const deferredExecutionCreeps = sortedExecutionCreeps.filter(creep =>
+    !survivalExecutionCreeps.includes(creep));
+  const executionRotation = deferredExecutionCreeps.length
+    ? Game.time % deferredExecutionCreeps.length : 0;
+  const executionCreeps = survivalExecutionCreeps.concat(
+    deferredExecutionCreeps.slice(executionRotation),
+    deferredExecutionCreeps.slice(0, executionRotation));
   const controllerStations = planControllerStations({
     rooms: Object.values(Game.rooms), creeps, getRoomStructures,
     getContainerPurpose, RoomPosition,
@@ -3707,22 +3820,27 @@ module.exports.loop = function () {
         ...getRoomStructures(room), ...getRoomSites(room)
       ].map(target => `${target.pos.x}:${target.pos.y}`));
       const candidates = [];
-      const perimeter = [];
-      for (let coordinate = 3; coordinate <= 46; coordinate++) {
-        perimeter.push({ x: coordinate, y: 3 },
-          { x: coordinate, y: 46 },
-          { x: 3, y: coordinate },
-          { x: 46, y: coordinate });
+      const spawn = getRoomStructuresByType(room, STRUCTURE_SPAWN)
+        .find(s=>s.my);
+      const anchors = [spawn?.pos, room.storage?.pos].filter(Boolean);
+      const plannedExtensions = new Set((room.memory.singleExtensionLayout?.extensionTiles||[])
+        .map(p=>`${p.x}:${p.y}`));
+      const staging = [];
+      for(let x=2;x<=47;x++)for(let y=2;y<=47;y++){
+        if(anchors.some(anchor=>anchor.getRangeTo(x,y)<=7))staging.push({x,y});
       }
       const seen = new Set();
-      for (const { x, y } of perimeter) {
+      for (const { x, y } of staging) {
         const key = `${x}:${y}`;
         if (seen.has(key)) continue;
         seen.add(key);
         if (terrain.get(x, y) === TERRAIN_MASK_WALL ||
             room.controller && room.controller.pos.getRangeTo(x, y) <= 6 ||
             sources.some(source => source.pos.getRangeTo(x, y) <= 4) ||
-            protectedRoads.has(key) || occupied.has(key)) continue;
+            protectedRoads.has(key) || occupied.has(key) ||
+            plannedExtensions.has(key) ||
+            spawn && spawn.pos.getRangeTo(x,y)<=2 ||
+            room.storage && room.storage.pos.getRangeTo(x,y)<=2) continue;
         candidates.push({ x, y });
       }
       conservationParkingByRoom[room.name] = candidates;
@@ -3750,7 +3868,105 @@ module.exports.loop = function () {
     creep.memory.conservationY = chosen.y;
     return new RoomPosition(chosen.x, chosen.y, room.name);
   };
+  const pickupParticipants=executionCreeps.filter(c=>!c.spawning&&
+    c.room.controller?.my&&
+    !(c.memory.role === 'rebalancer' && Boolean(
+      c.memory.controllerLinkFeedTarget ||
+      c.memory.controllerLinkHandoffTarget ||
+      selectControllerLinkFeed(c.room) ||
+      selectControllerLinkHandoff(c.room)))&&
+    (['refiller', 'rebalancer'].includes(c.memory.role) ||
+      !['none', 'standby'].includes(
+        roomDemandPlans[c.room.name]?.assignments[c.name] || 'none'))&&
+    (c.store[RESOURCE_ENERGY]===0 || c.memory.role === 'hauler' &&
+      roomDemandPlans[c.room.name]?.assignments[c.name] === 'collect' &&
+      c.store.getFreeCapacity(RESOURCE_ENERGY) > 0)&&
+    !['harvester','miner','remote-miner','remote-hauler','controller-relay','retire'].includes(c.memory.role));
+  const pickupNames=new Set(pickupParticipants.map(c=>c.name));
+  const pickupPlan=planPickupJobs({creeps:pickupParticipants,tick:Game.time,
+    getCandidates:c=>homePickupCandidates({creep:c,
+      candidates:getRoomStructures(c.room).filter(s=>['container','storage','link'].includes(s.structureType)&&canWithdrawFrom(c,s)&&getUnreservedEnergy(s)>0),
+      planned:Game.getObjectById(roomDemandPlans[c.room.name]?.collectionSources[c.name]),
+      isSpawnReserve:s=>isExtensionRefillBuffer(c.room,s)||isExtensionLink(s),
+      isSourceBuffer:(s,source)=>s.structureType===STRUCTURE_CONTAINER&&source.pos.getRangeTo(s)<=2}),
+    getJobPriority:c=>{
+      if(c.memory.role==='refiller')return 0;
+      if(c.memory.role==='upgrader')return 1;
+      const lane=roomDemandPlans[c.room.name]?.assignments[c.name];
+      if(['build','repair'].includes(lane))return 2;
+      return ['hauler','rebalancer'].includes(c.memory.role)?3:4;
+    },
+    getPreferredTarget:c=>c.memory.pickupReservation?.targetId||
+      c.memory.refillPickupTarget||c.memory.withdrawTarget||
+      c.memory.workJob?.sourceId,
+    maxCollectors:2});
+  for(const room of Object.values(Game.rooms).filter(r=>r.controller?.my)){
+    room.memory.pickupReservations={tick:Game.time,jobs:Object.fromEntries(
+      Object.entries(pickupPlan.jobs).filter(([name])=>Game.creeps[name].room.name===room.name)),
+      maxCollectorsPerStore:2};
+  }
+  for(const home of Object.values(Game.rooms).filter(r=>r.controller?.my)){
+    for(const survey of [home.memory.leftSurvey,home.memory.southSurvey,home.memory.southwestSurvey].filter(p=>p?.active)){
+      const remote=Game.rooms[survey.targetRoom];if(!remote)continue;
+      remote.memory.repairSupplyPlan={...planRepairSupply({structures:getRoomStructures(remote),production:getRoomSources(remote).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)}),updated:Game.time};
+    }
+  }
+  const rawPickupEnergy=getUnreservedEnergy;
+  const rawReservePickup=reserveEnergyFrom;
+  const baseCanWithdraw=canWithdrawFrom;
+  const executionCpuCeiling = cpuPolicy.executionCpuRatio !== null &&
+    Game.cpu && Number.isFinite(Game.cpu.limit)
+    ? Game.cpu.limit * cpuPolicy.executionCpuRatio : null;
+  const requiredExecutionCount = Math.max(
+    survivalExecutionCreeps.length,
+    cpuPolicy.minimumExecutionCreeps || 0);
+  let executedCreepCount = 0;
   for (const creep of executionCreeps) {
+    if (executionCpuCeiling !== null &&
+        executedCreepCount >= requiredExecutionCount &&
+        Game.cpu.getUsed() >= executionCpuCeiling) break;
+    executedCreepCount++;
+    const pickupJob=pickupPlan.jobs[creep.name];
+    const managedPickup=pickupNames.has(creep.name);
+    const canWithdrawFrom=(actor,target)=>baseCanWithdraw(actor,target)&&
+      (!managedPickup||target?.id===pickupJob?.targetId);
+    const getUnreservedEnergy=target=>managedPickup&&
+      ['container','storage','link'].includes(target?.structureType)
+      ? target.id===pickupJob?.targetId
+        ? Math.min(rawPickupEnergy(target),pickupJob.amount):0
+      : creep.memory.role==='remote-hauler' && target?.room?.memory.repairSupplyPlan
+        ? exportableEnergy(target,rawPickupEnergy(target),target.room.memory.repairSupplyPlan)
+        : rawPickupEnergy(target);
+    const reserveEnergyFrom=(target,amount)=>rawReservePickup(target,
+      managedPickup||creep.memory.role==='remote-hauler'?Math.min(amount,getUnreservedEnergy(target)):amount);
+    delete creep.memory.energyBudgetHeld;
+    delete creep.memory.energyBudgetReason;
+    const upgradeOperation = getRoomSituation(creep.room).policy.operations;
+    const budgetedUpgrade = target => runBudgetedUpgrade({creep,target,memory:creep.room.memory,
+      tick:Game.time,rate:selectUpgradeBudget(creep.room.memory.laborPlan,upgradeOperation),
+      emergency:target.ticksToDowngrade<3000,OK});
+    const budgetedBuild = target => {
+      if(!['builder','worker'].includes(creep.memory.role) ||
+          creep.memory.builderMission==='tunnel' || creep.memory.builderScope==='expansion' ||
+          ['spawn','container'].includes(target.structureType))return creep.build(target);
+      const rate=creep.memory.builderScope==='outpost'?creep.room.memory.builderCapacityPlan?.energyBudget:
+        creep.room.memory.laborPlan?.buildBudget;
+      const cost=Math.min(creep.getActiveBodyparts(WORK)*BUILD_POWER,creep.store[RESOURCE_ENERGY],
+        Math.max(0,target.progressTotal-target.progress));
+      return runBudgetedWork({creep,target,memory:creep.room.memory,tick:Game.time,rate,cost,
+        action:()=>creep.build(target),OK});
+    };
+    const budgetedRepair = target => {
+      if(creep.memory.builderScope!=='outpost'&&!creep.memory.emergencyRepairRoom)return creep.repair(target);
+      const cost=Math.min(creep.getActiveBodyparts(WORK),creep.store[RESOURCE_ENERGY],
+        Math.ceil((target.hitsMax-target.hits)/REPAIR_POWER));
+      return runBudgetedWork({creep,target,tick:Game.time,
+        rate:creep.room.memory.repairSupplyPlan?.rate,cost,
+        memory:creep.room.memory.repairBudgetLedger ||= {},action:()=>creep.repair(target),OK});
+    };
+    const harvestOptions = { resource: RESOURCE_ENERGY, WORK, power: HARVEST_POWER, boosts: BOOSTS };
+    const harvestFits = source => harvestBatchFits(creep, source, harvestOptions);
+    const harvestWithoutSpill = source => harvestSafely({ creep, source, ...harvestOptions, ERR_FULL });
     const controller = creep.room.controller;
     const controllerStation = controllerStations[creep.name];
     const demandPlan = roomDemandPlans[creep.room.name];
@@ -3764,6 +3980,12 @@ module.exports.loop = function () {
     creep.memory.demandLane = demandLane || 'none';
     creep.memory.incomingSupply = incomingSupply;
     const perform = (target, action, range = 1) => {
+      if(managedPickup&&target&&target.energyCapacity!==undefined&&
+          target.store===undefined&&creep.memory.role!=='upgrader')return false;
+      // Keep repairs available while transport-blocked outposts stop building.
+      if (target && target.progressTotal !== undefined &&
+          creep.room.memory.deliveryPolicy?.blocked &&
+          !(creep.room.controller && creep.room.controller.my)) return false;
       const result = action(target);
       if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, range);
       if (result !== OK && result !== ERR_NOT_IN_RANGE) return false;
@@ -3784,7 +4006,7 @@ module.exports.loop = function () {
         creep.memory.taskTarget = site.id;
         return true;
       }
-      return perform(site, target => creep.build(target), 3);
+      return perform(site, target => budgetedBuild(target), 3);
     };
     const rememberDispatchCommitment = (target, amount) => {
       const committedLanes = ['collect', 'refill', 'refill-buffer', 'buffer',
@@ -3881,6 +4103,7 @@ module.exports.loop = function () {
         const validPickup = creep.store[RESOURCE_ENERGY] === 0 &&
           canWithdrawFrom(creep, target) &&
           target.store[RESOURCE_ENERGY] > 0 && (storagePickup ||
+            isExtensionLink(target) ||
             target.structureType === STRUCTURE_CONTAINER &&
               sources.some(source => source.pos.getRangeTo(target) <= 2));
         if (!validPickup) {
@@ -3904,6 +4127,13 @@ module.exports.loop = function () {
       const sourceBuffer = target.structureType === STRUCTURE_CONTAINER &&
         getRoomSources(creep.room).some(source =>
           source.pos.getRangeTo(target) <= 2);
+      const preferredLinkFeed = commitment.lane === 'buffer' &&
+        getRoomStructures(creep.room).some(structure =>
+          isControllerLink(structure) &&
+            structure.store[RESOURCE_ENERGY] < 400) &&
+        getRoomStructures(creep.room).some(structure =>
+          isExtensionLink(structure) &&
+            structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
       const laneTargetValid = commitment.lane === 'refill'
         ? target.my && (target.structureType === STRUCTURE_SPAWN ||
           target.structureType === STRUCTURE_EXTENSION ||
@@ -3911,9 +4141,10 @@ module.exports.loop = function () {
         : commitment.lane === 'refill-buffer'
           ? isExtensionRefillBuffer(creep.room, target)
           : commitment.lane === 'buffer'
-            ? !sourceBuffer && ((controller &&
+            ? !sourceBuffer && (isExtensionLink(target) ||
+              !preferredLinkFeed && (controller &&
               target.structureType === STRUCTURE_CONTAINER &&
-              target.pos.getRangeTo(controller) <= 3) || isSpawnLink(target))
+              target.pos.getRangeTo(controller) <= 3))
             : commitment.lane === 'storage'
               ? target.my && target.structureType === STRUCTURE_STORAGE
             : commitment.lane === 'supply' && target.my;
@@ -3935,14 +4166,60 @@ module.exports.loop = function () {
       const ruin = Game.getObjectById(ruinAssignments[creep.name]);
       if (ruin) {
         return perform(ruin,
-          target => creep.withdraw(target, RESOURCE_ENERGY));
+          target => creep.withdraw(target, selectSalvageResource(target)));
       }
       const tombstone = Game.getObjectById(
         tombstoneAssignments[creep.name]);
       return tombstone
         ? perform(tombstone,
-          target => creep.withdraw(target, RESOURCE_ENERGY))
+          target => creep.withdraw(target, selectSalvageResource(target)))
         : false;
+    };
+    const selectSalvageResource = target => target && target.store &&
+      Object.keys(target.store)
+        .filter(resourceType => target.store[resourceType] > 0)
+        .sort((a, b) => Number(a === RESOURCE_ENERGY) -
+          Number(b === RESOURCE_ENERGY))[0];
+    const seekTowerHealing = () => {
+      const tower = selectHealingTower({
+        creep, structures: getRoomStructures(creep.room),
+        RESOURCE_ENERGY, STRUCTURE_TOWER
+      });
+      if (!tower) return false;
+      if (creep.pos.getRangeTo(tower) > 5) moveCreep(creep, tower, 5);
+      creep.memory.taskTarget = `${tower.id} tower healing`;
+      return true;
+    };
+    const postBattleScavenge = () => {
+      if (!postBattleSalvageRooms.has(creep.room.name) ||
+          creep.store.getFreeCapacity() <= 0) return false;
+      const tombstone = Game.getObjectById(
+        tombstoneAssignments[creep.name]);
+      const ruin = Game.getObjectById(ruinAssignments[creep.name]);
+      const drop = Game.getObjectById(dropAssignments[creep.name]);
+      if (tombstone) {
+        const resourceType = selectSalvageResource(tombstone);
+        if (resourceType) return perform(tombstone,
+          target => creep.withdraw(target, resourceType));
+      }
+      if (ruin) {
+        const resourceType = selectSalvageResource(ruin);
+        if (resourceType) return perform(ruin,
+          target => creep.withdraw(target, resourceType));
+      }
+      return drop ? perform(drop, resource => creep.pickup(resource)) : false;
+    };
+    const storeNonEnergySalvage = () => {
+      const resourceType = Object.keys(creep.store).find(type =>
+        type !== RESOURCE_ENERGY && creep.store[type] > 0);
+      const storage = creep.room.storage;
+      if (!resourceType || !storage ||
+          storage.store.getFreeCapacity(resourceType) <= 0) return false;
+      const result = creep.transfer(storage, resourceType);
+      if (result === ERR_NOT_IN_RANGE) moveCreep(creep, storage, 1);
+      if (result !== OK && result !== ERR_NOT_IN_RANGE) return false;
+      creep.memory.taskTarget = `${storage.id} ${resourceType} salvage`;
+      return true;
     };
     const pickupNearbyDrop = () => {
       if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) return false;
@@ -3956,20 +4233,22 @@ module.exports.loop = function () {
       if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) return false;
       const ruin = Game.getObjectById(ruinAssignments[creep.name]);
       const nearbyRange = creep.memory.role === 'upgrader' ? 1 : 3;
-      if (!ruin || ruin.store[RESOURCE_ENERGY] <= 0 ||
+      const resourceType = selectSalvageResource(ruin);
+      if (!ruin || !resourceType ||
           creep.pos.getRangeTo(ruin) > nearbyRange) return false;
       return perform(ruin,
-        target => creep.withdraw(target, RESOURCE_ENERGY));
+        target => creep.withdraw(target, resourceType));
     };
     const withdrawNearbyTombstone = () => {
       if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) return false;
       const tombstone = Game.getObjectById(
         tombstoneAssignments[creep.name]);
       const nearbyRange = creep.memory.role === 'upgrader' ? 1 : 3;
-      if (!tombstone || tombstone.store[RESOURCE_ENERGY] <= 0 ||
+      const resourceType = selectSalvageResource(tombstone);
+      if (!tombstone || !resourceType ||
           creep.pos.getRangeTo(tombstone) > nearbyRange) return false;
       return perform(tombstone,
-        target => creep.withdraw(target, RESOURCE_ENERGY));
+        target => creep.withdraw(target, resourceType));
     };
     const selectPersistentTarget = (memoryKey, valid, findTarget) => {
       let target = Game.getObjectById(creep.memory[memoryKey]);
@@ -3981,20 +4260,12 @@ module.exports.loop = function () {
       return target || null;
     };
     const getRefillTarget = extraFilter => {
-      const exclusiveRefillers = demandPlan &&
-        (demandPlan.refillCarriers || [demandPlan.refillCarrier])
-          .map(name => Game.creeps[name])
-          .filter(owner => owner && owner.memory.role === 'refiller');
-      if (exclusiveRefillers && exclusiveRefillers.length > 0 &&
-          creep.memory.role !== 'refiller') {
-        delete creep.memory.refillTarget;
-        return null;
-      }
-      const openRefillStructures = getRoomStructures(creep.room).filter(
-        structure => structure.my &&
-          (structure.structureType === STRUCTURE_SPAWN ||
-            structure.structureType === STRUCTURE_EXTENSION ||
-            structure.structureType === STRUCTURE_TOWER) &&
+      // Refillers are stable specialists, not an exclusive lock on the energy
+      // network. When demand planning assigns a loaded hauler to refill, it
+      // must be allowed to help instead of watching one specialist service an
+      // entire 1800-energy spawn/extension bank alone.
+      const openRefillStructures = getRoomRefillStructures(creep.room).filter(
+        structure =>
           isRefillTargetFor(creep, structure) &&
           getUnreservedCapacity(structure) > 0);
       const highestPriority = openRefillStructures.reduce((priority, structure) =>
@@ -4018,14 +4289,14 @@ module.exports.loop = function () {
         // genuinely unreserved capacity. This keeps it productive without
         // racing a closer carrier for an already committed extension.
         return selectPersistentTarget('refillTarget', valid, () =>
-          getRoomStructures(creep.room).filter(valid)
+          getRoomRefillStructures(creep.room).filter(valid)
             .sort((a, b) =>
               getRefillPriority(creep.room, a, creep) -
                 getRefillPriority(creep.room, b, creep) ||
               creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0]);
       }
       return selectPersistentTarget('refillTarget', valid, () =>
-        getRoomStructures(creep.room).filter(valid)
+        getRoomRefillStructures(creep.room).filter(valid)
           .sort((a, b) =>
             getRefillPriority(creep.room, a, creep) -
               getRefillPriority(creep.room, b, creep) ||
@@ -4176,14 +4447,13 @@ module.exports.loop = function () {
             site.structureType !== STRUCTURE_ROAD
         });
       } else if (demandLane === 'repair') {
-        anchor = creep.pos.findClosestByPath(FIND_STRUCTURES, {
-          filter: structure => structure.hits !== undefined &&
+        anchor = creep.pos.findClosestByPath(getRoomStructures(creep.room)
+          .filter(structure => structure.hits !== undefined &&
             structure.hits < structure.hitsMax * 0.75 &&
             structure.structureType !== STRUCTURE_WALL &&
             structure.structureType !== STRUCTURE_RAMPART &&
             (!roadsPaused(creep.room) ||
-              structure.structureType !== STRUCTURE_ROAD)
-        });
+              structure.structureType !== STRUCTURE_ROAD)));
       }
       if (!anchor) anchor = controller;
       if (anchor && creep.pos.getRangeTo(anchor) > 3) {
@@ -4203,19 +4473,25 @@ module.exports.loop = function () {
         : [];
       const wantsExtensionBuffer = demandLane === 'refill-buffer';
       const wantsStorage = demandLane === 'storage';
+      const plannedBuffer = Game.getObjectById(creep.memory.workJob &&
+        creep.memory.workJob.targetId);
       const valid = structure => structure &&
         (wantsStorage
           ? structure.my && structure.structureType === STRUCTURE_STORAGE
           : wantsExtensionBuffer
           ? isExtensionRefillBuffer(creep.room, structure)
-          : structure.structureType === STRUCTURE_CONTAINER && controller &&
-            structure.pos.getRangeTo(controller) <= 3) &&
+          : plannedBuffer === structure && isExtensionLink(structure) ||
+            structure.structureType === STRUCTURE_CONTAINER && controller &&
+              structure.pos.getRangeTo(controller) <= 3) &&
         energySources.indexOf(structure.id) === -1 &&
         getUnreservedCapacity(structure) > 0;
-      const container = selectPersistentTarget('bufferTarget', valid, () =>
-        getRoomStructures(creep.room).filter(valid)
-          .sort((a, b) => creep.pos.getRangeTo(a) -
-            creep.pos.getRangeTo(b))[0]);
+      const container = valid(plannedBuffer)
+        ? plannedBuffer
+        : selectPersistentTarget('bufferTarget', valid, () =>
+          getRoomStructures(creep.room).filter(valid)
+            .sort((a, b) => creep.pos.getRangeTo(a) -
+              creep.pos.getRangeTo(b))[0]);
+      if (container) creep.memory.bufferTarget = container.id;
       return container ? transferEnergy(container) : false;
     };
     const topUpFromPassingSourceBuffer = allowed => {
@@ -4265,10 +4541,14 @@ module.exports.loop = function () {
         structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0 &&
         creep.memory.withdrawTarget !== structure.id);
       if (!extensionBuffer) return false;
-      const delivered = deliverStagedEnergy({
-        creep, target: extensionBuffer, resourceType: RESOURCE_ENERGY,
-        moveCreep, OK, ERR_NOT_IN_RANGE
-      });
+      // Remote cargo must use the tracked handoff path: a staged transfer
+      // otherwise empties the carrier without crediting its outpost income.
+      const delivered = creep.memory.role === 'remote-hauler'
+        ? transferEnergy(extensionBuffer)
+        : deliverStagedEnergy({
+          creep, target: extensionBuffer, resourceType: RESOURCE_ENERGY,
+          moveCreep, OK, ERR_NOT_IN_RANGE
+        });
       if (delivered) creep.memory.taskTarget = extensionBuffer.id;
       return delivered;
     };
@@ -4323,24 +4603,36 @@ module.exports.loop = function () {
         !isSourceBuffer(structure) &&
         getUnreservedCapacity(structure) > 0;
       let target = Game.getObjectById(creep.memory.remoteDeliveryTarget);
-      const preferredRelay = creep.room.find(FIND_STRUCTURES, {
-        filter: structure => validBuffer(structure) && relayPurpose &&
-          getContainerPurpose(creep.room, structure.pos) === relayPurpose
-      })[0];
-      if (preferredRelay && target !== preferredRelay) {
-        target = preferredRelay;
-        creep.memory.remoteDeliveryTarget = target.id;
-      } else if (!validBuffer(target)) {
+      const preferredRelay = getRemoteDeliveryStores(creep.room)
+        .find(structure => validBuffer(structure) && relayPurpose &&
+          getContainerPurpose(creep.room, structure.pos) === relayPurpose);
+      // Every carrier reads the same room-level inventory. The full registry
+      // remains in memory for inspection; this view contains only legal remote
+      // handoffs, and live capacity is still checked immediately before use.
+      getEnergyStoreRegistry(creep.room);
+      let candidates = getRemoteDeliveryStores(creep.room)
+        .filter(validBuffer);
+      if (preferredRelay && !candidates.some(candidate =>
+        candidate.id === preferredRelay.id)) {
+        getEnergyStoreRegistry(creep.room, true);
+        candidates = getRemoteDeliveryStores(creep.room)
+          .filter(validBuffer);
+      }
+      const bestTarget = selectHomeDeliveryTarget({
+        candidates,
+        storage: creep.room.storage,
+        preferredRelay,
+        distance: candidate => creep.pos.getRangeTo(candidate)
+      });
+      // Retain an ordinary container once selected so a carrier does not
+      // flip-flop as it crosses the room. Re-evaluate invalid targets, a newly
+      // available named relay, and legacy storage selections made by the old
+      // storage-first rule.
+      const targetIsStorage = target && target === creep.room.storage;
+      if (!validBuffer(target) || preferredRelay && target !== preferredRelay ||
+          targetIsStorage && bestTarget && bestTarget !== target) {
         delete creep.memory.remoteDeliveryTarget;
-        const candidates = creep.room.find(FIND_STRUCTURES, {
-          filter: validBuffer
-        });
-        target = candidates.sort((a, b) =>
-          Number(getContainerPurpose(creep.room, b.pos) === relayPurpose) -
-            Number(getContainerPurpose(creep.room, a.pos) === relayPurpose) ||
-          Number(b.structureType === STRUCTURE_STORAGE) -
-            Number(a.structureType === STRUCTURE_STORAGE) ||
-          creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0];
+        target = bestTarget;
         if (target) creep.memory.remoteDeliveryTarget = target.id;
       }
       if (target) return transferEnergy(target);
@@ -4351,9 +4643,18 @@ module.exports.loop = function () {
       tasks = [{
         name: 'recycle',
         run: () => {
-          const spawn = creep.pos.findClosestByPath(FIND_MY_SPAWNS) ||
-            creep.room.find(FIND_MY_SPAWNS)[0];
+          const roomSpawns = getRoomStructuresByType(
+            creep.room, STRUCTURE_SPAWN).filter(spawn => spawn.my);
+          const spawn = creep.pos.findClosestByPath(roomSpawns) ||
+            roomSpawns[0];
           if (!spawn) {
+            const homeRoomName = creep.memory.home;
+            if (homeRoomName && creep.room.name !== homeRoomName) {
+              moveCreep(creep,
+                new RoomPosition(25, 25, homeRoomName), 20);
+              creep.memory.taskTarget = `${homeRoomName} recycle return`;
+              return true;
+            }
             creep.memory.taskTarget = 'waiting for recycle spawn';
             return true;
           }
@@ -4378,7 +4679,20 @@ module.exports.loop = function () {
           return true;
         }
       }];
-    } else if (creep.memory.role === CONTROLLER_BRIGADE_ROLE) {
+    } else if (demandLane === 'standby' &&
+        ['builder', 'worker', 'upgrader'].includes(creep.memory.role)) {
+      tasks = [];
+    } else if (managedPickup && !pickupJob) {
+      tasks=[{name:'wait-job',run:()=>{
+        const parking=getConservationParkingSpot(creep);
+        if(parking&&creep.pos.getRangeTo(parking)>0)moveCreep(creep,parking,0);
+        creep.memory.waitState = 'blocked';
+        creep.memory.waitReason = 'no available reserved pickup';
+        creep.memory.taskTarget='waiting for an available reserved pickup';
+        return true;
+      }}];
+    } else if (creep.memory.role === CONTROLLER_BRIGADE_ROLE ||
+        Number.isInteger(creep.memory.controllerRelaySubstituteSlot)) {
       tasks = [{
         name: CONTROLLER_BRIGADE_ROLE,
         run: () => runControllerBrigade(creep,
@@ -4418,6 +4732,27 @@ module.exports.loop = function () {
           }
         },
         {
+          name: 'stock-extension-reserve',
+          run: () => {
+            if (creep.store[RESOURCE_ENERGY] <= 0) {
+              delete creep.memory.refillLoadSource;
+              return false;
+            }
+            const loadSource = Game.getObjectById(
+              creep.memory.refillLoadSource);
+            if (!isExtensionLink(loadSource)) return false;
+            const extensionBuffer = getRoomStructures(creep.room)
+              .filter(structure => isLocalExtensionRefillBuffer(structure) &&
+                getUnreservedCapacity(structure) > 0)
+              .sort((a, b) => creep.pos.getRangeTo(a) -
+                creep.pos.getRangeTo(b))[0];
+            if (!extensionBuffer) return false;
+            creep.memory.taskTarget =
+              `${loadSource.id} -> ${extensionBuffer.id} refill reserve`;
+            return transferEnergy(extensionBuffer);
+          }
+        },
+        {
           name: 'refill-load',
           run: () => {
             if (!ownsRefillLane ||
@@ -4428,15 +4763,25 @@ module.exports.loop = function () {
             const valid = structure => structure && structure.store &&
               getUnreservedEnergy(structure) > 0 &&
               (structure === storage ||
+                isExtensionLink(structure) ||
                 structure.structureType === STRUCTURE_CONTAINER &&
                   !isControllerBuffer(structure));
             let source = Game.getObjectById(creep.memory.refillPickupTarget);
+            const preferredExtensionLink = getRoomStructures(creep.room)
+              .filter(structure => valid(structure) &&
+                isExtensionLink(structure))
+              .sort((a, b) => creep.pos.getRangeTo(a) -
+                creep.pos.getRangeTo(b))[0];
             const localExtensionBuffer = getRoomStructures(creep.room)
               .filter(structure => valid(structure) &&
                 isLocalExtensionRefillBuffer(structure))
               .sort((a, b) => creep.pos.getRangeTo(a) -
                 creep.pos.getRangeTo(b))[0];
-            if (localExtensionBuffer &&
+            if (preferredExtensionLink &&
+                (!source || source.id !== preferredExtensionLink.id)) {
+              source = null;
+              delete creep.memory.refillPickupTarget;
+            } else if (localExtensionBuffer &&
                 (!source || source.id !== localExtensionBuffer.id)) {
               source = null;
               delete creep.memory.refillPickupTarget;
@@ -4445,6 +4790,11 @@ module.exports.loop = function () {
               delete creep.memory.refillPickupTarget;
               const candidates = getRoomStructures(creep.room).filter(valid)
                 .sort((a, b) => {
+                  const aExtensionLink = isExtensionLink(a);
+                  const bExtensionLink = isExtensionLink(b);
+                  if (aExtensionLink !== bExtensionLink) {
+                    return Number(bExtensionLink) - Number(aExtensionLink);
+                  }
                   const aExtensionBuffer =
                     isLocalExtensionRefillBuffer(a);
                   const bExtensionBuffer =
@@ -4453,9 +4803,15 @@ module.exports.loop = function () {
                     return Number(bExtensionBuffer) -
                       Number(aExtensionBuffer);
                   }
-                  const aStorage = a === storage;
-                  const bStorage = b === storage;
-                  if (aStorage !== bStorage) return bStorage - aStorage;
+                  // Outside the dedicated refill buffers, avoid crossing
+                  // the room for a small storage remainder while a source
+                  // container can supply a complete delivery load.
+                  const load = creep.store.getFreeCapacity(RESOURCE_ENERGY);
+                  const aFullLoad = getUnreservedEnergy(a) >= load;
+                  const bFullLoad = getUnreservedEnergy(b) >= load;
+                  if (aFullLoad !== bFullLoad) {
+                    return Number(bFullLoad) - Number(aFullLoad);
+                  }
                   return creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
                     getUnreservedEnergy(b) - getUnreservedEnergy(a);
                 });
@@ -4463,6 +4819,7 @@ module.exports.loop = function () {
               if (source) creep.memory.refillPickupTarget = source.id;
             }
             if (!source) return false;
+            creep.memory.refillLoadSource = source.id;
             const amount = reserveEnergyFrom(source,
               creep.store.getFreeCapacity(RESOURCE_ENERGY));
             if (amount <= 0) return false;
@@ -4519,6 +4876,78 @@ module.exports.loop = function () {
         run: () => {
           const storage = creep.room.storage;
           const sources = getRoomSources(creep.room);
+          const savedLinkFeedTarget = Game.getObjectById(
+            creep.memory.controllerLinkFeedTarget);
+          const spawnDemand = Math.max(0,
+            creep.room.energyCapacityAvailable - creep.room.energyAvailable);
+          if (creep.store[RESOURCE_ENERGY] > 0 && spawnDemand > 0 &&
+              savedLinkFeedTarget && isControllerLink(savedLinkFeedTarget) &&
+              savedLinkFeedTarget.store.getFreeCapacity(
+                RESOURCE_ENERGY) > 0) {
+            creep.memory.taskTarget =
+              `${savedLinkFeedTarget.id} controller link feed`;
+            if (transferEnergy(savedLinkFeedTarget)) return true;
+          }
+          delete creep.memory.controllerLinkFeedTarget;
+          if (creep.store[RESOURCE_ENERGY] === 0 && spawnDemand > 0) {
+            const feed = selectControllerLinkFeed(creep.room);
+            if (feed) {
+              const amount = reserveEnergyFrom(feed.source, Math.min(
+                creep.store.getFreeCapacity(RESOURCE_ENERGY), feed.amount));
+              if (amount > 0) {
+                const result = creep.withdraw(feed.source,
+                  RESOURCE_ENERGY, amount);
+                if (result === ERR_NOT_IN_RANGE) {
+                  moveCreep(creep, feed.source, 1);
+                }
+                if (result === OK || result === ERR_NOT_IN_RANGE) {
+                  creep.memory.controllerLinkFeedTarget = feed.target.id;
+                  creep.memory.taskTarget = `${feed.source.id} -> ` +
+                    `${feed.target.id} controller link feed`;
+                  return true;
+                }
+                releaseAmount(reservedEnergy, feed.source, amount);
+              }
+            }
+          }
+          const savedHandoffTarget = Game.getObjectById(
+            creep.memory.controllerLinkHandoffTarget);
+          if (creep.store[RESOURCE_ENERGY] > 0 && savedHandoffTarget &&
+              isControllerBuffer(savedHandoffTarget) &&
+              savedHandoffTarget.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
+            creep.memory.taskTarget =
+              `${savedHandoffTarget.id} controller link handoff`;
+            if (transferEnergy(savedHandoffTarget)) return true;
+          }
+          delete creep.memory.controllerLinkHandoffTarget;
+          if (creep.store[RESOURCE_ENERGY] === 0) {
+            const handoff = selectControllerLinkHandoff(creep.room);
+            if (handoff) {
+              const targetCapacity = handoff.target.store.getCapacity(
+                RESOURCE_ENERGY) || 0;
+              const targetNeed = Math.max(0, Math.ceil(
+                targetCapacity * 0.75 -
+                handoff.target.store[RESOURCE_ENERGY]));
+              const amount = reserveEnergyFrom(handoff.source, Math.min(
+                creep.store.getFreeCapacity(RESOURCE_ENERGY),
+                targetNeed));
+              if (amount > 0) {
+                const result = creep.withdraw(handoff.source,
+                  RESOURCE_ENERGY, amount);
+                if (result === ERR_NOT_IN_RANGE) {
+                  moveCreep(creep, handoff.source, 1);
+                }
+                if (result === OK || result === ERR_NOT_IN_RANGE) {
+                  creep.memory.controllerLinkHandoffTarget =
+                    handoff.target.id;
+                  creep.memory.taskTarget = `${handoff.source.id} -> ` +
+                    `${handoff.target.id} controller link handoff`;
+                  return true;
+                }
+                releaseAmount(reservedEnergy, handoff.source, amount);
+              }
+            }
+          }
           const extensionPlan = creep.room.memory.extensionContainerPlan;
           const extensionCluster = creep.room.memory.extensionCluster;
           const getBufferTargetRatio = structure => {
@@ -4551,11 +4980,16 @@ module.exports.loop = function () {
           if (isRebalanceReviewDue(target,
             creep.memory.rebalanceTargetReviewed, Game.time,
             stillNeedsEnergy)) {
+            const previousTarget = target;
             target = selectRebalanceTarget(
               getRoomStructures(creep.room),
               getBufferTargetRatio,
               structure => creep.pos.getRangeTo(structure));
             creep.memory.rebalanceTargetReviewed = Game.time;
+            creep.memory.rebalanceAssignmentReason = previousTarget
+              ? 'assigned buffer reached its policy target'
+              : 'assigned buffer missing or invalid';
+            creep.memory.rebalanceAssignmentChanged = Game.time;
             if (target) creep.memory.rebalanceTarget = target.id;
             else delete creep.memory.rebalanceTarget;
           }
@@ -4651,6 +5085,9 @@ module.exports.loop = function () {
           return true;
         }
       }];
+    } else if (creep.memory.role === 'remote-reserver') {
+      tasks = [{ name: 'reserve', run: () => runReservation({ creep, Game,
+        move: moveCreep, RoomPosition, OK, ERR_NOT_IN_RANGE, FIND_HOSTILE_CREEPS }) }];
     } else if (creep.memory.role === 'claimer') {
       tasks = [{
         name: 'claim',
@@ -4695,7 +5132,8 @@ module.exports.loop = function () {
             creep.memory.taskTarget = `${targetRoomName} bootstrap`;
             return true;
           }
-          const spawn = creep.room.find(FIND_MY_SPAWNS)[0];
+          const spawn = getRoomStructuresByType(creep.room, STRUCTURE_SPAWN)
+            .find(candidate => candidate.my);
           if (spawn) {
             creep.memory.home = targetRoomName;
             creep.memory.role = 'builder';
@@ -4705,24 +5143,24 @@ module.exports.loop = function () {
             creep.memory.taskTarget = `${spawn.name} established`;
             return true;
           }
-          const site = creep.room.find(FIND_MY_CONSTRUCTION_SITES, {
-            filter: candidate => candidate.structureType === STRUCTURE_SPAWN
-          })[0];
+          const site = getRoomSitesByType(creep.room, STRUCTURE_SPAWN)[0];
           if (creep.store[RESOURCE_ENERGY] === 0) {
             creep.memory.expansionBuilding = false;
           } else if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
             creep.memory.expansionBuilding = true;
           }
           if (creep.memory.expansionBuilding && site) {
-            return perform(site, target => creep.build(target), 3);
+            return perform(site, target => budgetedBuild(target), 3);
           }
-          const source = creep.pos.findClosestByPath(FIND_SOURCES_ACTIVE);
+          const source = creep.pos.findClosestByPath(
+            getRoomSources(creep.room).filter(candidate =>
+              candidate.energy > 0));
           if (source && creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-            return perform(source, target => creep.harvest(target));
+            return perform(source, target => harvestWithoutSpill(target));
           }
           if (site && creep.store[RESOURCE_ENERGY] > 0) {
             creep.memory.expansionBuilding = true;
-            return perform(site, target => creep.build(target), 3);
+            return perform(site, target => budgetedBuild(target), 3);
           }
           creep.memory.taskTarget = site
             ? `${site.id} waiting energy`
@@ -4730,9 +5168,9 @@ module.exports.loop = function () {
           return true;
         }
       }];
-    } else if (creep.memory.role === 'remote-scout') {
+    } else if (creep.memory.role === 'remote-miner') {
       tasks = [{
-        name: 'remote-scout',
+        name: 'remote-miner',
         run: () => {
           delete creep.memory.remoteAction;
           const homeRoomName = creep.memory.remoteHome || creep.memory.home;
@@ -4747,7 +5185,13 @@ module.exports.loop = function () {
           // Remote miners stay at their assigned source. Haulers own the trip
           // home, so an old shuttle flag must never pull a miner off L1/L2.
           delete creep.memory.remoteReturning;
-          if (creep.room.name !== targetRoomName) return travelTo(targetRoomName);
+          if (creep.room.name !== targetRoomName) {
+            const visible=Game.rooms[targetRoomName];
+            const sources=visible&&getRoomSources(visible).slice().sort((a,b)=>a.pos.x-b.pos.x||a.pos.y-b.pos.y);
+            const source=sources&&sources[(creep.memory.remoteSlot||0)%sources.length];
+            if(source){creep.memory.remoteAction='Travel';moveCreep(creep,source,1,{direct:true,maxOps:12000});creep.memory.taskTarget=source.id;return true;}
+            return travelTo(targetRoomName);
+          }
           const remoteSources = getRoomSources(creep.room)
             .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
           if (remoteSources.length === 0) {
@@ -4847,17 +5291,17 @@ module.exports.loop = function () {
             delete creep.memory.remoteContainerBuilding;
           } else if (creep.store[RESOURCE_ENERGY] === 0) {
             creep.memory.remoteContainerBuilding = false;
-          } else if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 ||
+          } else if (!harvestFits(source) ||
               source.energy === 0) {
             creep.memory.remoteContainerBuilding = true;
           }
           if (containerSite && creep.memory.remoteContainerBuilding &&
               creep.store[RESOURCE_ENERGY] > 0) {
             creep.memory.remoteAction = 'BuildC';
-            return perform(containerSite, site => creep.build(site), 3);
+            return perform(containerSite, site => budgetedBuild(site), 3);
           }
           if (container && creep.store[RESOURCE_ENERGY] > 0 &&
-              (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 ||
+              (!harvestFits(source) ||
                 source.energy === 0) &&
               getUnreservedCapacity(container) > 0) {
             creep.memory.remoteAction = 'Store';
@@ -4865,14 +5309,14 @@ module.exports.loop = function () {
           }
           if (creep.pos.getRangeTo(source) > 1) {
             creep.memory.remoteAction = 'Mine';
-            moveCreep(creep, source, 1);
+            moveCreep(creep, source, 1,{direct:true,maxOps:12000});
             creep.memory.taskTarget = source.id;
             return true;
           }
           if (source.energy > 0 &&
               creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
             creep.memory.remoteAction = 'Mine';
-            return perform(source, target => creep.harvest(target));
+            return perform(source, target => harvestWithoutSpill(target));
           }
           if (container && creep.store[RESOURCE_ENERGY] > 0) {
             if (getUnreservedCapacity(container) > 0) {
@@ -4889,7 +5333,7 @@ module.exports.loop = function () {
               repairTarget, creep.name)) {
               creep.memory.remoteAction = 'Repair';
               return perform(repairTarget,
-                target => creep.repair(target), 3);
+                target => budgetedRepair(target), 3);
             }
             const buildTarget = getRoomSites(creep.room)
               .filter(site => exclusiveClaimAvailable(reservedJobs.build,
@@ -4899,7 +5343,7 @@ module.exports.loop = function () {
             if (buildTarget && claimExclusive(reservedJobs.build,
               buildTarget, creep.name)) {
               creep.memory.remoteAction = 'BuildC';
-              return perform(buildTarget, target => creep.build(target), 3);
+              return perform(buildTarget, target => budgetedBuild(target), 3);
             }
             creep.memory.remoteAction = 'Wait';
             creep.memory.taskTarget = `${container.id} full; no overflow`;
@@ -4925,6 +5369,15 @@ module.exports.loop = function () {
             moveCreep(creep, new RoomPosition(25, 25, roomName), 20);
             creep.memory.taskTarget = `${roomName} haul`;
             return true;
+          };
+          const getOutpostBorderCache = () => {
+            if (creep.room.name !== targetRoomName) return null;
+            const plan = Game.rooms[homeRoomName]?.memory
+              .outpostBorderCachePlans?.[targetRoomName];
+            if (!plan) return null;
+            return creep.room.lookForAt(LOOK_STRUCTURES, plan.x, plan.y)
+              .find(structure =>
+                structure.structureType === STRUCTURE_CONTAINER) || null;
           };
           const transitRoom = creep.memory.remoteTransitRoom;
           if (transitRoom && (creep.room.name !== transitRoom ||
@@ -4952,7 +5405,9 @@ module.exports.loop = function () {
               creep.memory.remoteHaulReturning = true;
             }
           }
-          if (creep.store[RESOURCE_ENERGY] === 0) {
+          if (creep.store[RESOURCE_ENERGY] === 0 &&
+              !(creep.memory.remoteCacheReturnHome &&
+                creep.room.name !== homeRoomName)) {
             const completedRemoteDelivery =
               creep.memory.remoteHaulReturning &&
               creep.room.name === homeRoomName;
@@ -4964,6 +5419,8 @@ module.exports.loop = function () {
             delete creep.memory.remoteDeliveryTarget;
             delete creep.memory.remoteCargoOrigin;
             delete creep.memory.remoteCargoRemaining;
+            delete creep.memory.remoteCacheDeliveryPending;
+            delete creep.memory.remoteCacheReturnHome;
             // Assigned roster carriers own their named outpost. Shared
             // dispatch is reserved for genuine roster surplus, so one busy
             // remote room cannot drain the carriers from every other room.
@@ -5054,7 +5511,9 @@ module.exports.loop = function () {
           // Readiness decides whether a new trip may leave home. It must not
           // recall an already-outbound hauler from an intermediate room, or a
           // fluctuating container threshold makes it hop across the border.
-          const readinessBlocksDeparture = !readiness.ready &&
+          const visionProbe=shouldProbeRemoteVision({creep,
+            creeps:Object.values(Game.creeps),targetRoomName,readiness,RESOURCE_ENERGY});
+          const readinessBlocksDeparture = !readiness.ready && !visionProbe &&
             creep.room.name === homeRoomName &&
             creep.store[RESOURCE_ENERGY] === 0;
           if (creep.room.energyAvailable >= workerCost &&
@@ -5063,7 +5522,7 @@ module.exports.loop = function () {
                 creep.store[RESOURCE_ENERGY] > 0)) {
             return true;
           }
-          if (readinessBlocksDeparture || handlesLocalDemand) {
+          if (readinessBlocksDeparture || handlesLocalDemand && !visionProbe) {
             if (creep.store[RESOURCE_ENERGY] === 0) {
               delete creep.memory.remoteHaulReturning;
             } else {
@@ -5140,7 +5599,7 @@ module.exports.loop = function () {
                   creep.store.getFreeCapacity(RESOURCE_ENERGY));
                 if (amount > 0) {
                   rememberDispatchCommitment(localContainer, amount);
-                  const result = creep.withdraw(localContainer, RESOURCE_ENERGY);
+                  const result = creep.withdraw(localContainer, RESOURCE_ENERGY, amount);
                   if (result === ERR_NOT_IN_RANGE) {
                     moveCreep(creep, localContainer);
                   } else if (result !== OK) {
@@ -5170,6 +5629,24 @@ module.exports.loop = function () {
           }
           if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
             creep.memory.remoteHaulReturning = true;
+          }
+          if (creep.memory.remoteCacheReturnHome &&
+              creep.room.name !== homeRoomName) {
+            return travelTo(homeRoomName);
+          }
+          if (creep.memory.remoteCacheDeliveryPending &&
+              creep.room.name === targetRoomName &&
+              creep.store[RESOURCE_ENERGY] > 0) {
+            const cache = getOutpostBorderCache();
+            if (cache && getUnreservedCapacity(cache) > 0) {
+              const deliveredToCache = transferEnergy(cache);
+              if (creep.store[RESOURCE_ENERGY] === 0) {
+                delete creep.memory.remoteCacheDeliveryPending;
+                creep.memory.remoteCacheReturnHome = true;
+              }
+              return deliveredToCache;
+            }
+            delete creep.memory.remoteCacheDeliveryPending;
           }
           if (creep.memory.remoteHaulReturning) {
             if (creep.room.name !== homeRoomName) return travelTo(homeRoomName);
@@ -5206,7 +5683,42 @@ module.exports.loop = function () {
             creep.memory.taskTarget = `${targetRoomName} no source`;
             return true;
           }
-          const source = sources[slot % sources.length];
+          const routePlan = Game.rooms[homeRoomName]?.memory.remoteHaulRoutes?.[targetRoomName];
+          const plannedSourceId = routePlan?.lanes?.[routePlan?.slotSources?.[slot]]?.sourceId;
+          const plannedSourceSlot = sources.findIndex(source => source.id === plannedSourceId);
+          const sourceSlot = plannedSourceSlot >= 0 ? plannedSourceSlot : slot % sources.length;
+          const source = sources[sourceSlot];
+          const borderCache = getOutpostBorderCache();
+          if (borderCache && creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0 &&
+              getUnreservedEnergy(borderCache) > 0) {
+            const amount = reserveEnergyFrom(borderCache,
+              creep.store.getFreeCapacity(RESOURCE_ENERGY));
+            if (amount > 0) {
+              rememberDispatchCommitment(borderCache, amount);
+              const result = creep.withdraw(borderCache, RESOURCE_ENERGY,
+                amount);
+              if (result === ERR_NOT_IN_RANGE) {
+                moveCreep(creep, borderCache);
+                creep.memory.taskTarget = borderCache.id;
+                return true;
+              }
+              if (result !== OK) {
+                releaseAmount(reservedEnergy, borderCache, amount);
+                forgetDispatchCommitment(borderCache);
+                return false;
+              }
+              creep.memory.remotePickupSource = borderCache.id;
+              creep.memory.remoteCargoOrigin = targetRoomName;
+              creep.memory.remoteCargoRemaining = amount;
+              creep.memory.remoteHaulReturning = true;
+              delete creep.memory.remoteCacheDeliveryPending;
+              if (creep.memory.remoteDeliveryTarget === borderCache.id) {
+                delete creep.memory.remoteDeliveryTarget;
+              }
+              creep.memory.taskTarget = `${borderCache.id} border cache`;
+              return true;
+            }
+          }
           const container = source.pos.findInRange(FIND_STRUCTURES, 2, {
             filter: structure => structure.structureType === STRUCTURE_CONTAINER
           }).sort((a, b) =>
@@ -5217,7 +5729,7 @@ module.exports.loop = function () {
               filter: candidate => candidate.structureType === STRUCTURE_CONTAINER
             })[0];
             const remoteBuilder = Object.values(Game.creeps).find(worker =>
-              worker.memory.role === 'remote-scout' &&
+              worker.memory.role === 'remote-miner' &&
               worker.memory.remoteRoom === targetRoomName &&
               worker.memory.remoteSlot === slot &&
               worker.room.name === targetRoomName &&
@@ -5236,7 +5748,7 @@ module.exports.loop = function () {
             const amount = reserveEnergyFrom(container,
               creep.store.getFreeCapacity(RESOURCE_ENERGY));
             if (amount <= 0) return true;
-            const result = creep.withdraw(container, RESOURCE_ENERGY);
+            const result = creep.withdraw(container, RESOURCE_ENERGY, amount);
             if (result === ERR_NOT_IN_RANGE) {
               moveCreep(creep, container);
               creep.memory.taskTarget = container.id;
@@ -5250,6 +5762,8 @@ module.exports.loop = function () {
             creep.memory.remoteCargoOrigin = targetRoomName;
             creep.memory.remoteCargoRemaining =
               (creep.memory.remoteCargoRemaining || 0) + amount;
+            creep.memory.remoteCacheDeliveryPending = Boolean(borderCache &&
+              getUnreservedCapacity(borderCache) > 0);
             if (creep.memory.remoteDeliveryTarget === container.id) {
               delete creep.memory.remoteDeliveryTarget;
             }
@@ -5267,14 +5781,14 @@ module.exports.loop = function () {
             return travelTo(homeRoomName);
           }
           const sourceCovered = Object.values(Game.creeps).some(worker =>
-            worker.memory.role === 'remote-scout' &&
+            worker.memory.role === 'remote-miner' &&
             worker.memory.remoteRoom === targetRoomName &&
-            worker.memory.remoteSlot === slot % sources.length &&
+            worker.memory.remoteSlot === sourceSlot &&
             worker.room.name === targetRoomName &&
             worker.pos.getRangeTo(source) <= 1);
           if (hasWorkParts(creep) && !sourceCovered && source.energy > 0 &&
               creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-            return perform(source, target => creep.harvest(target));
+            return perform(source, target => harvestWithoutSpill(target));
           }
           creep.memory.taskTarget = `${container.id} empty`;
           return true;
@@ -5285,6 +5799,8 @@ module.exports.loop = function () {
         name: 'remote-road',
         run: () => {
           const homeRoom = Game.rooms[creep.memory.home];
+          const allowOptionalRemoteBuild = Boolean(homeRoom &&
+            getRoomSituation(homeRoom).policy.permissions.optionalConstruction);
           const plan = homeRoom && (creep.memory.remoteTeam === 'south'
             ? homeRoom.memory.southRemoteRoadPlan
             : creep.memory.remoteTeam === 'southwest'
@@ -5296,18 +5812,41 @@ module.exports.loop = function () {
             (plan.paths.find(candidate => candidate.slot === slot) ||
               plan.paths[0]);
           if (!homeRoom) return false;
+          // Finish source storage before routine road maintenance can consume
+          // every load. Keep urgent decay protection active during bootstrap.
+          const sourceStoragePending = creep.room.name === creep.memory.remoteRoom &&
+            creep.room.find(FIND_MY_CONSTRUCTION_SITES).some(site =>
+              site.structureType === STRUCTURE_CONTAINER &&
+              getRoomSources(creep.room).some(source =>
+                source.pos.getRangeTo(site) <= 1));
+          const repairAllowed = structure => isOutpostRepairTarget(structure) &&
+            (!sourceStoragePending || structure.hits / structure.hitsMax <
+              (structure.structureType === STRUCTURE_CONTAINER ? 0.25 : 0.1));
           if (creep.room.name === creep.memory.remoteRoom &&
               creep.store[RESOURCE_ENERGY] > 0) {
             let repairTarget = Game.getObjectById(
               creep.memory.remoteRepairTarget);
+            // A retained routine container job must not let a road decay away.
+            const urgentRepair = selectOutpostRepairTarget(
+              getRoomStructures(creep.room).filter(structure =>
+                repairAllowed(structure) &&
+                structure.hits < structure.hitsMax * 0.25 &&
+                exclusiveClaimAvailable(reservedJobs.repair, structure,
+                  creep.name)), creep.pos);
+            if (urgentRepair && (!repairTarget ||
+                repairTarget.hits >= repairTarget.hitsMax * 0.25)) {
+              repairTarget = urgentRepair;
+              creep.memory.remoteRepairTarget = repairTarget.id;
+            }
             if (!repairTarget || repairTarget.room.name !==
                 creep.memory.remoteRoom ||
-                !isOutpostRepairTarget(repairTarget) ||
+                !repairAllowed(repairTarget) ||
                 !exclusiveClaimAvailable(reservedJobs.repair, repairTarget,
                   creep.name)) {
               delete creep.memory.remoteRepairTarget;
               repairTarget = selectOutpostRepairTarget(
                 getRoomStructures(creep.room).filter(structure =>
+                  repairAllowed(structure) &&
                   exclusiveClaimAvailable(reservedJobs.repair, structure,
                     creep.name)), creep.pos);
               if (repairTarget) {
@@ -5318,7 +5857,7 @@ module.exports.loop = function () {
               repairTarget, creep.name)) {
               creep.memory.taskTarget = repairTarget.id;
               return perform(repairTarget,
-                target => creep.repair(target), 3);
+                target => budgetedRepair(target), 3);
             }
           } else if (creep.store[RESOURCE_ENERGY] === 0) {
             // An empty maintainer is not actively assigned to a repair. Drop
@@ -5332,7 +5871,7 @@ module.exports.loop = function () {
               !reservedRemoteSourceCoverage[source.id] &&
               source.energy > 0 &&
               !Object.values(Game.creeps).some(worker =>
-                worker.memory.role === 'remote-scout' &&
+                worker.memory.role === 'remote-miner' &&
                 worker.memory.remoteRoom === creep.memory.remoteRoom &&
                 worker.memory.remoteSlot === sourceSlot &&
                 worker.room.name === creep.memory.remoteRoom &&
@@ -5352,7 +5891,7 @@ module.exports.loop = function () {
               }
               if (creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
                 return perform(uncoveredSource,
-                  target => creep.harvest(target));
+                  target => harvestWithoutSpill(target));
               }
               if (container && creep.store[RESOURCE_ENERGY] > 0) {
                 return transferEnergy(container);
@@ -5373,7 +5912,8 @@ module.exports.loop = function () {
           const seenSiteIds = new Set();
           const orderedPaths = [path, ...(plan.paths || []).filter(candidate =>
             candidate !== path)];
-          for (const candidatePath of orderedPaths) {
+          for (const candidatePath of allowOptionalRemoteBuild
+            ? orderedPaths : []) {
             for (const point of candidatePath.points) {
               const visibleRoom = Game.rooms[point.roomName];
               if (!visibleRoom) continue;
@@ -5395,7 +5935,8 @@ module.exports.loop = function () {
             for (const site of corridorRoom.find(
               FIND_MY_CONSTRUCTION_SITES, {
                 filter: candidate =>
-                  (candidate.structureType === STRUCTURE_ROAD ||
+                  (allowOptionalRemoteBuild &&
+                    candidate.structureType === STRUCTURE_ROAD ||
                     candidate.structureType === STRUCTURE_CONTAINER)
               })) {
               if (seenSiteIds.has(site.id)) continue;
@@ -5406,7 +5947,7 @@ module.exports.loop = function () {
           // Once the outpost corridor and its containers are complete, bring
           // the remote builder home for core capacity work instead of leaving
           // it parked in an empty remote queue.
-          if (roadSites.length === 0) {
+          if (allowOptionalRemoteBuild && roadSites.length === 0) {
             for (const extensionSite of homeRoom.find(
               FIND_MY_CONSTRUCTION_SITES, {
                 filter: candidate =>
@@ -5471,19 +6012,18 @@ module.exports.loop = function () {
                 Math.min(2, creep.pos.getRangeTo(site) - 1));
               moveCreep(creep, site, inwardRange);
             }
-            return perform(site, target => creep.build(target), 3);
+            return perform(site, target => budgetedBuild(target), 3);
           }
           if (!creep.memory.remoteRoadBuilding &&
               creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
             const targetRoomName = creep.memory.remoteRoom;
             if (site && site.structureType === STRUCTURE_EXTENSION &&
                 creep.room.name === homeRoom.name) {
-              const supply = creep.pos.findClosestByPath(FIND_STRUCTURES, {
-                filter: structure =>
+              const supply = creep.pos.findClosestByPath(
+                getRoomStructures(creep.room).filter(structure =>
                   (structure.structureType === STRUCTURE_CONTAINER ||
                     structure.structureType === STRUCTURE_STORAGE) &&
-                  getUnreservedEnergy(structure) > 0
-              });
+                  getUnreservedEnergy(structure) > 0));
               if (supply) {
                 const amount = reserveEnergyFrom(supply,
                   creep.store.getFreeCapacity(RESOURCE_ENERGY));
@@ -5534,7 +6074,7 @@ module.exports.loop = function () {
               }
             }
             if (source && source.energy > 0) {
-              return perform(source, target => creep.harvest(target));
+              return perform(source, target => harvestWithoutSpill(target));
             }
           }
           if (site) {
@@ -5601,17 +6141,17 @@ module.exports.loop = function () {
               // space, then wait without dropping.
               if (source.energy > 0 &&
                   creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-                return perform(source, target => creep.harvest(target));
+                return perform(source, target => harvestWithoutSpill(target));
               }
               creep.memory.taskTarget = `${container.id} (all buffers full)`;
               return true;
             }
             if (creep.store[RESOURCE_ENERGY] > 0 &&
-                (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 || source.energy === 0)) {
+                (!harvestFits(source) || source.energy === 0)) {
               return transferEnergy(depositContainer);
             }
             if (source.energy > 0 && creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-              return perform(source, target => creep.harvest(target));
+              return perform(source, target => harvestWithoutSpill(target));
             }
             if (creep.store[RESOURCE_ENERGY] > 0) {
               return transferEnergy(depositContainer);
@@ -5637,11 +6177,10 @@ module.exports.loop = function () {
               creep.memory.taskTarget = `${source.id} (returning)`;
               return true;
             }
-            const containers = creep.room.find(FIND_STRUCTURES, {
-              filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
+            const containers = getRoomStructuresByType(
+              creep.room, STRUCTURE_CONTAINER).filter(structure =>
                 !isRetiringContainer(creep.room, structure) &&
-                source.pos.getRangeTo(structure) <= 2
-            });
+                source.pos.getRangeTo(structure) <= 2);
             const sourceLink = getSourceLink(creep.room, source);
             const deposits = sourceLink ? [sourceLink, ...containers] : containers;
             const availableContainers = deposits.filter(structure =>
@@ -5667,7 +6206,7 @@ module.exports.loop = function () {
                 site.structureType === STRUCTURE_CONTAINER &&
                 source.pos.getRangeTo(site) <= 1);
               if (existingSite) {
-                return perform(existingSite, site => creep.build(site), 3);
+                return perform(existingSite, site => budgetedBuild(site), 3);
               }
               if (!creep.room.controller || !creep.room.controller.my ||
                   creep.room.controller.level < 2) {
@@ -5706,30 +6245,6 @@ module.exports.loop = function () {
                 placementResults.add(result);
               }
               const failedAtContainerLimit = placementResults.has(ERR_RCL_NOT_ENOUGH);
-              const currentPopulation = Object.values(Game.creeps)
-                .filter(worker => worker.memory.home === creep.room.name).length;
-              if (Number.isInteger(
-                creep.room.memory.containerHaulerPendingTarget) &&
-                  currentPopulation >=
-                    creep.room.memory.containerHaulerPendingTarget) {
-                delete creep.room.memory.containerHaulerPendingTarget;
-              }
-              const roomEnergyFull = creep.room.energyAvailable ===
-                creep.room.energyCapacityAvailable;
-              if (failedAtContainerLimit && roomEnergyFull &&
-                  !Number.isInteger(
-                    creep.room.memory.containerHaulerPendingTarget)) {
-                const currentTarget = getWorkerLimits(creep.room).workerLimit;
-                const requestedPopulation = currentPopulation + 1;
-                const increasedTarget = Math.max(currentTarget, requestedPopulation);
-                creep.room.memory.workerTarget = increasedTarget;
-                creep.room.memory.containerHaulerPendingTarget =
-                  requestedPopulation;
-                delete creep.room.memory.containerMaxedBoostLevel;
-                console.log(`[${Game.time}] ${creep.room.name} energy and ` +
-                  `containers full; requesting hauler ${requestedPopulation}/` +
-                  `${increasedTarget}`);
-              }
               const errorNames = {
                 [ERR_FULL]: 'construction-site limit reached',
                 [ERR_INVALID_TARGET]: 'no legal adjacent source tile',
@@ -5770,8 +6285,8 @@ module.exports.loop = function () {
               if (collecting) creep.memory.cleanupEnergy = true;
               return collecting;
             }
-            const shouldUnload = creep.store[RESOURCE_ENERGY] >= CARRY_CAPACITY ||
-              creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0 ||
+            const shouldUnload = !harvestFits(source) ||
+              !harvestFits(source) ||
               source.energy === 0 || creep.memory.cleanupEnergy;
             if (creep.store[RESOURCE_ENERGY] > 0 && shouldUnload) {
               if (container) {
@@ -5804,12 +6319,12 @@ module.exports.loop = function () {
             }
             if (assignment && source.energy > 0 &&
                 creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-              return perform(source, target => creep.harvest(target));
+              return perform(source, target => harvestWithoutSpill(target));
             }
             if (source.energy > 0 &&
                 creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
               if (creep.pos.getRangeTo(source) <= 1) {
-                return perform(source, target => creep.harvest(target));
+                return perform(source, target => harvestWithoutSpill(target));
               }
               moveCreep(creep, source, 1);
               creep.memory.taskTarget = `${source.id} (returning)`;
@@ -5857,7 +6372,7 @@ module.exports.loop = function () {
             if (demandLane !== 'repair') return false;
             const target = getRepairTarget();
             return target
-              ? perform(target, structure => creep.repair(structure), 3)
+              ? perform(target, structure => budgetedRepair(structure), 3)
               : false;
           }
         },
@@ -5865,20 +6380,18 @@ module.exports.loop = function () {
           name: 'build',
           run: () => {
             if (demandLane !== 'build') return false;
-            const nonRoadSites = creep.room.find(FIND_MY_CONSTRUCTION_SITES, {
-              filter: site => site.structureType !== STRUCTURE_ROAD
-            });
+            const nonRoadSites = getRoomSites(creep.room)
+              .filter(site => site.structureType !== STRUCTURE_ROAD);
             const extensionSites = nonRoadSites.filter(site =>
               site.structureType === STRUCTURE_EXTENSION);
             const tunnelSite = getSource2TunnelSite(creep.room);
-            const roadSites = creep.room.find(FIND_MY_CONSTRUCTION_SITES, {
-              filter: site => site.structureType === STRUCTURE_ROAD &&
+            const roadSites = getRoomSitesByType(creep.room, STRUCTURE_ROAD)
+              .filter(site =>
                 (!tunnelSite || site.id !== tunnelSite.id) &&
-                isSingleLaneRoadPosition(creep.room, site)
-            });
-            const roadCrew = creep.room.find(FIND_MY_CREEPS, {
-              filter: worker => worker.memory.role === 'builder'
-            }).sort((a, b) => a.name.localeCompare(b.name))[0];
+                isSingleLaneRoadPosition(creep.room, site));
+            const roadCrew = getRoomCreeps(creep.room)
+              .filter(worker => worker.memory.role === 'builder')
+              .sort((a, b) => a.name.localeCompare(b.name))[0];
             const ownsRoadLane = roadCrew && roadCrew.name === creep.name &&
               roadSites.length > 0;
             const site = extensionSites.length > 0
@@ -5915,7 +6428,7 @@ module.exports.loop = function () {
               return true;
             }
             return perform(controller,
-              target => creep.upgradeController(target), 3);
+              target => budgetedUpgrade(target), 3);
           }
         }
       ];
@@ -5958,7 +6471,7 @@ module.exports.loop = function () {
               return true;
             }
             return perform(controller,
-              target => creep.upgradeController(target), 3);
+              target => budgetedUpgrade(target), 3);
           }
         }
       ];
@@ -5977,7 +6490,7 @@ module.exports.loop = function () {
               creep.memory.role === 'remote-hauler' ||
               !hasWorkParts(creep)) return false;
           urgentUpgradeAssigned[roomName] = true;
-          return perform(controller, target => creep.upgradeController(target), 3);
+          return perform(controller, target => budgetedUpgrade(target), 3);
         }
       },
       {
@@ -6002,7 +6515,7 @@ module.exports.loop = function () {
               demandLane !== 'repair') return false;
           const target = getRepairTarget();
           return target
-            ? perform(target, structure => creep.repair(structure), 3)
+            ? perform(target, structure => budgetedRepair(structure), 3)
             : false;
         }
       },
@@ -6078,7 +6591,7 @@ module.exports.loop = function () {
               !hasWorkParts(creep)) {
             return false;
           }
-          return perform(controller, target => creep.upgradeController(target), 3);
+          return perform(controller, target => budgetedUpgrade(target), 3);
         }
       },
       {
@@ -6163,7 +6676,7 @@ module.exports.loop = function () {
             if (storedEnergy) return false;
             const source = creep.pos.findClosestByPath(FIND_SOURCES_ACTIVE);
             return source
-              ? perform(source, target => creep.harvest(target))
+              ? perform(source, target => harvestWithoutSpill(target))
               : false;
           }
           // The slot finder keeps ordinary mobile workers out of reserved source positions.
@@ -6175,7 +6688,7 @@ module.exports.loop = function () {
               assignment.x, assignment.y, creep.room.name), 0);
             return true;
           }
-          return perform(assignment.source, target => creep.harvest(target));
+          return perform(assignment.source, target => harvestWithoutSpill(target));
         }
       },
       {
@@ -6208,6 +6721,10 @@ module.exports.loop = function () {
           const retiringContainer = creep.memory.role === 'hauler' && plan &&
             plan.drainCreep === creep.name &&
             Game.getObjectById(plan.retireContainerId);
+          // Source precedence for RC work is intentionally strict. A creep
+          // assigned to upgrade must drain the controller-side buffer before
+          // considering storage or a source container. This is the consumption
+          // half of the brigade pipeline: brigade -> RC buffer -> upgrader.
           const assignedToController = creep.memory.role === 'upgrader' ||
             demandLane === 'upgrade' || creep.memory.task === 'upgrade' ||
             creep.memory.lastTask === 'upgrade';
@@ -6217,16 +6734,31 @@ module.exports.loop = function () {
               retiringContainer.store[RESOURCE_ENERGY] > 0) {
             container = retiringContainer;
           }
+          // A retained storage target is not a lifetime claim. Builders may
+          // switch to a nearer permitted source container for this empty load;
+          // protected extension/controller buffers remain excluded by
+          // canWithdrawFrom. Once selected, the nearer container is retained.
+          if (isLocalBuilder(creep) && container === creep.room.storage) {
+            const nearerContainer = creep.pos.findClosestByPath(
+              getRoomStructures(creep.room).filter(structure =>
+                structure.structureType === STRUCTURE_CONTAINER &&
+                canWithdrawFrom(creep, structure) &&
+                getUnreservedEnergy(structure) > 0));
+            if (nearerContainer && creep.pos.getRangeTo(nearerContainer) <
+                creep.pos.getRangeTo(container)) {
+              container = nearerContainer;
+              delete creep.memory.withdrawTarget;
+            }
+          }
           if (container) creep.memory.withdrawTarget = container.id;
           if (!canWithdrawFrom(creep, container) ||
               getUnreservedEnergy(container) <= 0) {
             delete creep.memory.withdrawTarget;
-            const candidates = creep.room.find(FIND_STRUCTURES, {
-              filter: s => canWithdrawFrom(creep, s) &&
+            const candidates = getRoomStructures(creep.room).filter(s =>
+              canWithdrawFrom(creep, s) &&
                 getUnreservedEnergy(s) > 0 &&
                 (!plan || s.id !== plan.retireContainerId ||
-                  plan.drainCreep === creep.name)
-            });
+                  plan.drainCreep === creep.name));
             if (creep.memory.role === 'hauler' && demandLane === 'collect') {
               const localSources = getRoomSources(creep.room);
               const assignedSource = Game.getObjectById(demandPlan &&
@@ -6298,13 +6830,49 @@ module.exports.loop = function () {
 
     delete creep.memory.task;
     delete creep.memory.taskTarget;
-    if (fillPassingExtensionBuffer()) {
+    delete creep.memory.waitState;
+    delete creep.memory.waitReason;
+    if((creep.memory.emergencyRepairRoom || isOutpostBuilder(creep)) && (()=>{
+      const destination=Game.rooms[creep.memory.emergencyRepairRoom||creep.memory.remoteRoom];
+      if(!destination)return false;
+      const active=runOutpostRepair({creep,room:destination,structures:getRoomStructures(destination),
+        stores:getRoomStructures(creep.room).filter(s=>s.structureType===STRUCTURE_CONTAINER||s===creep.room.storage),
+        work:creep.getActiveBodyparts(WORK),free:creep.store.getFreeCapacity(RESOURCE_ENERGY),energy:creep.store[RESOURCE_ENERGY],
+        available:getUnreservedEnergy,reserve:reserveEnergyFrom,
+        withdraw:(target,amount)=>perform(target,t=>creep.withdraw(t,RESOURCE_ENERGY,amount)),
+        repair:target=>perform(target,t=>budgetedRepair(t),3),
+        move:(target,range)=>moveCreep(creep,target,range,{direct:true,maxOps:12000}),
+        claim:target=>claimExclusive(reservedJobs.repair,target,creep.name),
+        eligible:target=>exclusiveClaimAvailable(reservedJobs.repair,target,creep.name)});
+      if(!active)delete creep.memory.emergencyRepairRoom;
+      return active;
+    })()){
+      creep.memory.task=creep.memory.repairLoading?'repair-load':'emergency-repair';
+    } else if (seekTowerHealing()) {
+      creep.memory.task = 'seek-tower-healing';
+    } else if (storeNonEnergySalvage()) {
+      creep.memory.task = 'store-salvage';
+    } else if (postBattleScavenge()) {
+      creep.memory.task = 'battle-salvage';
+    } else if (fillPassingExtensionBuffer()) {
       creep.memory.task = 'stock-refill-pass';
     } else if (topUpFromPassingSourceBuffer(demandLane === 'storage')) {
       creep.memory.task = 'collect-pass';
+    } else if (collectPartialHauler({
+      creep, lane: demandLane,
+      target: Game.getObjectById(managedPickup ? pickupJob?.targetId
+        : creep.memory.workJob?.sourceId),
+      resource: RESOURCE_ENERGY, canWithdraw: canWithdrawFrom,
+      reserve: reserveEnergyFrom,
+      release: (target, amount) => releaseAmount(reservedEnergy, target, amount),
+      remember: rememberDispatchCommitment, forget: forgetDispatchCommitment,
+      move: moveCreep, OK, ERR_NOT_IN_RANGE
+    })) {
+      creep.memory.task = 'committed-collect';
     } else if (continueDispatchCommitment()) {
       creep.memory.task = `committed-${demandLane}`;
-    } else if (creep.memory.role !== 'refiller' &&
+    } else if (!['miner', 'harvester'].includes(creep.memory.role) &&
+        creep.memory.role !== 'refiller' &&
         creep.memory.role !== 'rebalancer' &&
         creep.memory.role !== CONTROLLER_BRIGADE_ROLE &&
         (pickupNearbyDrop() || withdrawNearbyRuin() ||
@@ -6319,8 +6887,8 @@ module.exports.loop = function () {
       }
     }
 
-    if (creep.memory.role === 'remote-scout' &&
-        creep.memory.task === 'remote-scout') {
+    if (creep.memory.role === 'remote-miner' &&
+        creep.memory.task === 'remote-miner') {
       if (creep.memory.remoteAction === 'BuildC' ||
           creep.memory.remoteAction === 'Site') {
         creep.memory.task = 'remote-container';
@@ -6374,10 +6942,12 @@ module.exports.loop = function () {
             creep.pos.getRangeTo(b));
         const fixedStore = fixedStores[0];
         if (fixedStore) {
-          const delivering = deliverStagedEnergy({
-            creep, target: fixedStore, resourceType: RESOURCE_ENERGY,
-            moveCreep, OK, ERR_NOT_IN_RANGE
-          });
+          const delivering = creep.memory.role === 'remote-hauler'
+            ? transferEnergy(fixedStore)
+            : deliverStagedEnergy({
+              creep, target: fixedStore, resourceType: RESOURCE_ENERGY,
+              moveCreep, OK, ERR_NOT_IN_RANGE
+            });
           if (delivering) {
             creep.memory.task = demandLane === 'refill-buffer'
               ? 'stock-refill'
@@ -6410,7 +6980,7 @@ module.exports.loop = function () {
         creep.memory.role !== 'hauler' &&
         creep.memory.role !== 'remote-hauler') {
       if (perform(controller,
-        target => creep.upgradeController(target), 3)) {
+        target => budgetedUpgrade(target), 3)) {
         creep.memory.task = 'upgrade';
       }
     }
@@ -6431,9 +7001,11 @@ module.exports.loop = function () {
         creep.memory.taskTarget = recipient.id;
       }
     }
-    // A funded WORK body never enters ordinary standby. If its planned target
-    // disappeared or another creep claimed it first, immediately use the
-    // energy on another repair, construction site, or the controller.
+    // Last-resort use of energy already carried by a flexible WORK body. This
+    // branch does not authorize a new upgrader or change the durable specialty;
+    // it only prevents a paid load from idling after the planned object
+    // completed between planning and execution. Repair and construction come
+    // before RC. An explicit standby lane bypasses this fallback entirely.
     if (!creep.memory.task && creep.store[RESOURCE_ENERGY] > 0 &&
         demandLane !== 'standby' &&
         hasWorkParts(creep) && creep.memory.role !== 'miner' &&
@@ -6445,15 +7017,118 @@ module.exports.loop = function () {
       workDispatch.complete(creep);
       const repairTarget = getRepairTarget();
       if (repairTarget && perform(repairTarget,
-        target => creep.repair(target), 3)) {
+        target => budgetedRepair(target), 3)) {
         creep.memory.task = 'repair';
       } else {
         const buildTarget = getBuildTarget();
         if (buildTarget && performBuild(buildTarget)) {
           creep.memory.task = 'build';
-        } else if (controller && controller.my && perform(controller,
-          target => creep.upgradeController(target), 3)) {
-          creep.memory.task = 'upgrade';
+        }
+        // No unassigned RC fallback: the dispatched upgrade lane above owns
+        // routine controller work, including during a minimal-upgrading move.
+      }
+    }
+    // A failed lane gets a second dispatch pass this tick. Use the same target
+    // claims and capacity reservations as normal execution, with fixed stores
+    // for hauling and reserved source tiles for emergency worker harvesting.
+    const localRecoveryRole = ['hauler', 'refiller', 'rebalancer', 'builder', 'worker',
+      'upgrader'].includes(creep.memory.role) &&
+      !isOutpostBuilder(creep) && !isExpansionBuilder(creep) &&
+      !isBuilder(creep, 'local', 'tunnel') &&
+      (!creep.memory.home || creep.memory.home === creep.room.name);
+    const recovery = localRecoveryRole && recoverBlockedWork({
+      creep, lane: demandLane,
+      actions: [
+        {
+          task: 'refill', lane: 'refill',
+          eligible: () => creep.store[RESOURCE_ENERGY] > 0,
+          run: () => {
+            const target = getRefillTarget();
+            return Boolean(target && deliverRefill(target));
+          }
+        },
+        {
+          task: 'repair', lane: 'repair',
+          eligible: () => creep.store[RESOURCE_ENERGY] > 0 &&
+            hasWorkParts(creep) && canBodyTypeRunLane(
+              creep.memory.bodyType, 'repair', creep.memory.role),
+          run: () => {
+            const target = getRepairTarget();
+            return Boolean(target && perform(target,
+              structure => budgetedRepair(structure), 3));
+          }
+        },
+        {
+          task: 'build', lane: 'build',
+          eligible: () => creep.store[RESOURCE_ENERGY] > 0 &&
+            hasWorkParts(creep) && canBodyTypeRunLane(
+              creep.memory.bodyType, 'build', creep.memory.role),
+          run: () => {
+            const target = getBuildTarget();
+            return Boolean(target && performBuild(target));
+          }
+        },
+        {
+          task: 'store-storage', lane: 'storage',
+          eligible: () => creep.store[RESOURCE_ENERGY] > 0 &&
+            ['hauler', 'refiller', 'rebalancer'].includes(creep.memory.role),
+          run: () => {
+            const storage = creep.room.storage;
+            // Do not return a load to the store it was just collected from.
+            return Boolean(storage &&
+              !creep.memory.energySources?.includes(storage.id) &&
+              transferEnergy(storage));
+          }
+        },
+        {
+          task: 'harvest', lane: 'harvest',
+          eligible: () => creep.store[RESOURCE_ENERGY] === 0 &&
+            hasWorkParts(creep) &&
+            ['builder', 'worker', 'upgrader'].includes(creep.memory.role) &&
+            demandLane !== 'none',
+          run: () => {
+            const assignment = findHarvestAssignment(creep);
+            if (!assignment) return false;
+            creep.memory.taskTarget = assignment.source.id;
+            if (creep.pos.x !== assignment.x || creep.pos.y !== assignment.y) {
+              moveCreep(creep, new RoomPosition(assignment.x,
+                assignment.y, creep.room.name), 0);
+              return true;
+            }
+            return perform(assignment.source, target => harvestWithoutSpill(target));
+          }
+        }
+      ]
+    });
+    if (recovery) {
+      const blockedLane = demandLane;
+      workDispatch.complete(creep);
+      const target = Game.getObjectById(creep.memory.taskTarget);
+      if (recovery.lane !== 'harvest') {
+        workDispatch.reconcile([creep], { [creep.name]: {
+          lane: recovery.lane, targetId: target && target.id,
+          amount: creep.store[RESOURCE_ENERGY], priority: lanePriority(
+            creep.room, demandPlan, recovery.lane),
+          reason: 'blocked ' + blockedLane + ': reassigned to executable work'
+        } });
+      }
+      creep.memory.task = recovery.task;
+      creep.memory.demandLane = recovery.lane;
+      creep.memory.reassignment = { tick: Game.time, from: blockedLane,
+        to: recovery.lane, targetId: target && target.id };
+      delete creep.memory.waitState;
+      delete creep.memory.waitReason;
+      if (demandPlan) {
+        demandPlan.assignments[creep.name] = recovery.lane;
+        delete demandPlan.collectionSources[creep.name];
+        delete demandPlan.supplyTargets[creep.name];
+        const saved = creep.room.memory.demandPlan;
+        if (saved) {
+          saved.lanes[blockedLane] = Math.max(0, (saved.lanes[blockedLane] || 0) - 1);
+          saved.lanes[recovery.lane] = (saved.lanes[recovery.lane] || 0) + 1;
+          delete saved.collectionSources[creep.name];
+          if (creep.memory.workJob) saved.jobs[creep.name] = creep.memory.workJob;
+          else delete saved.jobs[creep.name];
         }
       }
     }
@@ -6463,6 +7138,8 @@ module.exports.loop = function () {
         moveCreep(creep, parking, 0);
       }
       creep.memory.task = 'standby';
+      creep.memory.waitState = 'parked';
+      creep.memory.waitReason = 'planner reserve: work crews and controller slots allocated';
       creep.memory.taskTarget = parking
         ? `population conservation ${parking.x},${parking.y}`
         : 'population conservation';
@@ -6475,22 +7152,24 @@ module.exports.loop = function () {
           getSource2TunnelSite(creep.room);
         range = 3;
       } else if (creep.store[RESOURCE_ENERGY] === 0) {
-        anchor = creep.pos.findClosestByPath(FIND_STRUCTURES, {
-          filter: structure => structure.structureType === STRUCTURE_CONTAINER &&
+        anchor = creep.pos.findClosestByPath(
+          getRoomStructuresByType(creep.room, STRUCTURE_CONTAINER)
+            .filter(structure =>
             structure.store[RESOURCE_ENERGY] > 0 &&
-            canWithdrawFrom(creep, structure)
-        });
+            canWithdrawFrom(creep, structure)));
         range = 1;
       }
       if (!anchor) {
-        anchor = controller && controller.my
-          ? controller
-          : creep.room.find(FIND_MY_SPAWNS)[0];
+        anchor = creep.memory.role === 'upgrader' && controller?.my
+          ? controller : getRoomStructuresByType(creep.room, STRUCTURE_SPAWN)
+            .find(spawn => spawn.my);
       }
       if (anchor && creep.pos.getRangeTo(anchor) > range) {
         moveCreep(creep, anchor, range);
       }
       creep.memory.task = 'standby';
+      creep.memory.waitState = 'blocked';
+      creep.memory.waitReason = `assigned ${demandLane || 'none'}: no executable target or action`;
       creep.memory.taskTarget = anchor
         ? anchor.id || anchor.name
         : `${creep.room.name} no anchor`;
@@ -6506,9 +7185,21 @@ module.exports.loop = function () {
     const sourceIndex = sourceId
       ? getRoomSources(creep.room).findIndex(source => source.id === sourceId)
       : -1;
+    // Speech is an execution trace, not a role label. For example, GetSt says
+    // where this load is being collected; a later RC says where it is spent.
+    // Durable ownership remains in workJob and dispatchCommitment.
+    if(creep.memory.energyBudgetHeld){
+      creep.memory.idleNow=true;creep.memory.waitState='parked';
+      creep.memory.waitReason=creep.memory.energyBudgetReason||'controller spending budget';
+    }
     let speech;
-    if (creep.memory.role === CONTROLLER_BRIGADE_ROLE) {
-      speech = `BRIG${creep.memory.controllerRelaySlot + 1}`;
+    if(creep.memory.energyBudgetHeld){
+      speech='SaveE';
+    } else if (creep.memory.role === CONTROLLER_BRIGADE_ROLE) {
+      speech = `B${creep.memory.controllerRelaySlot + 1}`;
+    } else if (Number.isInteger(
+      creep.memory.controllerRelaySubstituteSlot)) {
+      speech = `SUB${creep.memory.controllerRelaySubstituteSlot + 1}`;
     } else if (creep.memory.task === 'source-work' && creep.memory.sourceAction) {
       speech = creep.memory.sourceAction;
     } else if (creep.memory.task === 'mine-to-container' ||
@@ -6523,7 +7214,7 @@ module.exports.loop = function () {
       else speech = 'Build';
     } else if (creep.memory.task === 'dig-road') {
       speech = 'Dig';
-    } else if (creep.memory.task === 'remote-scout' ||
+    } else if (creep.memory.task === 'remote-miner' ||
         creep.memory.task === 'remote-harvest' ||
         creep.memory.task === 'remote-container') {
       const remoteSuffix = creep.memory.task === 'remote-container'
@@ -6559,6 +7250,9 @@ module.exports.loop = function () {
       } else {
         speech = sourceIndex >= 0 ? `GetS${sourceIndex + 1}` : 'Get';
       }
+    } else if (creep.memory.task === 'standby' ||
+        creep.memory.task === 'wait-job') {
+      speech = getWaitSpeech(creep.memory);
     } else {
       const taskSpeech = {
         upgrade: 'RC',
@@ -6568,6 +7262,8 @@ module.exports.loop = function () {
         'refill-load': 'Load',
         rebalance: 'Bal',
         repair: 'Fix',
+        'emergency-repair': 'Fix!',
+        'repair-load': 'LoadFix',
         'supply-worker': 'Give',
         'await-supply': 'WaitE',
         'stage-supply': 'Stage',
@@ -6581,13 +7277,14 @@ module.exports.loop = function () {
         'committed-buffer': 'StockRC',
         'committed-storage': 'Store',
         'committed-supply': 'Give',
-        standby: 'Wait',
+        standby: 'Blocked',
         withdraw: 'Get',
         store: 'Store',
         'store-storage': 'Store',
         recycle: 'Recycle',
         scavenge: 'Pick',
         claim: 'Claim',
+        reserve: 'Reserve',
         'expansion-build': 'New'
       };
       speech = taskSpeech[creep.memory.task] || 'Idle';
@@ -6598,10 +7295,146 @@ module.exports.loop = function () {
     creep.say(speech);
   }
 
+  Memory.cpuPolicy.execution = {
+    available: executionCreeps.length,
+    executed: executedCreepCount,
+    deferred: executionCreeps.length - executedCreepCount,
+    ceiling: executionCpuCeiling,
+    usedAfterCreeps: Game.cpu && typeof Game.cpu.getUsed === 'function'
+      ? Game.cpu.getUsed() : null
+  };
+
+  // Defense is an explicit scenario-owned job. Run it after ordinary work so
+  // combat movement and attack intents cannot be overwritten by fallback
+  // dispatch. After the war window, surviving carriers can join an active
+  // brigade; other temporary defenders recycle.
+  const threatenedRooms = Object.values(Game.rooms).filter(room =>
+    room.find(FIND_HOSTILE_CREEPS).length > 0).map(room => room.name);
+  const reactivatedDefenders = reactivateDefenders(Game, threatenedRooms);
+  if (reactivatedDefenders.length) {
+    console.log(`[${Game.time}] defense reactivated ${
+      reactivatedDefenders.map(entry => `${entry.creep}->${entry.targetRoom}`)
+        .join(', ')}`);
+  }
+  const defenders = creeps.filter(candidate =>
+    candidate.memory.role === 'defender');
+  const garrison = selectDefenderGarrison(defenders);
+  for (const creep of defenders) {
+    if (creep.memory.role !== 'defender') continue;
+    const targetRoomName = creep.memory.defenseTargetRoom ||
+      creep.room.name;
+    if (garrison.get(targetRoomName) !== creep) {
+      creep.memory.retiredRole = 'defender';
+      creep.memory.staffingRetire = true;
+      creep.memory.role = 'retire';
+      creep.memory.task = 'recycle';
+      continue;
+    }
+    const homeRoomName = creep.memory.home || targetRoomName;
+    if (creep.memory.defenseReturnHome &&
+        creep.room.name !== homeRoomName) {
+      moveCreep(creep, new RoomPosition(25, 25, homeRoomName), 20);
+      creep.memory.task = 'defend-return';
+      creep.memory.taskTarget = `${homeRoomName} brigade`;
+      continue;
+    }
+    const targetRoom = Game.rooms[targetRoomName];
+    if (!targetRoom) {
+      moveCreep(creep, new RoomPosition(25, 25, targetRoomName), 20);
+      creep.memory.task = 'defend';
+      creep.memory.taskTarget = targetRoomName;
+      creep.memory.idleNow = false;
+      continue;
+    }
+    const hostiles = targetRoom.find(FIND_HOSTILE_CREEPS);
+    if (hostiles.length === 0) {
+      if (Memory.war === true) {
+        creep.memory.task = 'defend-standby';
+        creep.memory.taskTarget = `waiting for war to end`;
+        creep.memory.idleNow = false;
+        continue;
+      }
+      if (creep.room.name !== homeRoomName) {
+        creep.memory.defenseReturnHome = true;
+        moveCreep(creep, new RoomPosition(25, 25, homeRoomName), 20);
+        creep.memory.task = 'defend-return';
+        creep.memory.taskTarget = `${homeRoomName} brigade`;
+        continue;
+      }
+      const homeRoom = Game.rooms[homeRoomName];
+      if (homeRoom && isBrigadePlanActive(homeRoom) &&
+          getRoomSituation(homeRoom).policy.permissions
+            ?.controllerBrigade) {
+        const adopted = adoptDefenders(homeRoom, Game,
+          getControllerBrigadePlan(homeRoom), Memory.war, candidate => {
+            const defendedRoom = Game.rooms[
+              candidate.memory.defenseTargetRoom || candidate.room.name];
+            return candidate.room.name === homeRoomName && defendedRoom &&
+              defendedRoom.find(FIND_HOSTILE_CREEPS).length === 0;
+          });
+        if (adopted.some(entry => entry.creep === creep.name)) continue;
+      }
+      creep.memory.retiredRole = 'defender';
+      creep.memory.staffingRetire = true;
+      creep.memory.role = 'retire';
+      creep.memory.task = 'recycle';
+      continue;
+    }
+    const target = selectCombatTarget(creep, hostiles, {
+      HEAL, RANGED_ATTACK, ATTACK, WORK, CLAIM
+    });
+    if (creep.room.name !== targetRoomName) {
+      moveCreep(creep, target, 1);
+    }
+    const result = creep.room.name === targetRoomName
+      ? creep.attack(target) : ERR_NOT_IN_RANGE;
+    if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
+    creep.memory.task = 'defend';
+    creep.memory.taskTarget = target.id;
+    creep.memory.idleNow = false;
+    creep.say('Defend');
+  }
+  for (const creep of creeps) {
+    if (creep.spawning || creep.memory.role === 'defender') continue;
+    if (creep.hits < creep.hitsMax) {
+      const healers = creep.room.find(FIND_MY_CREEPS, {
+        filter: candidate => candidate.id !== creep.id &&
+          candidate.getActiveBodyparts(HEAL) > 0
+      });
+      const towers = getRoomStructuresByType(creep.room, STRUCTURE_TOWER)
+        .filter(tower => tower.my);
+      const healingTarget = [...healers, ...towers].sort((a, b) =>
+        creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
+        String(a.id).localeCompare(String(b.id)))[0];
+      if (healingTarget) {
+        moveCreep(creep, healingTarget, 1);
+        creep.memory.task = 'seek-healing';
+        creep.memory.taskTarget = healingTarget.id;
+        creep.memory.idleNow = false;
+        creep.say('Heal!');
+        continue;
+      }
+    }
+    const hostiles = creep.room.find(FIND_HOSTILE_CREEPS);
+    const step = findFleeStep(creep, hostiles);
+    if (!step) continue;
+    const threat = creep.pos.findClosestByRange(hostiles);
+    moveCreep(creep, step, 0, { direct: true });
+    creep.memory.task = 'flee';
+    creep.memory.taskTarget = threat && threat.id || 'hostile';
+    creep.memory.idleNow = false;
+    creep.say('Run!');
+  }
+
   // The dashboard only refreshes its stored data every ten ticks. Avoid the
   // full build/repair assignment scan on the other ticks where that data would
   // immediately be discarded; the visual itself is still redrawn every tick.
-  const workMetrics = scheduledGlobalTick(10)
+  const optionalReportingCpuAvailable = () => !Game.cpu ||
+    typeof Game.cpu.getUsed !== 'function' ||
+    !Number.isFinite(Game.cpu.limit) ||
+    Game.cpu.getUsed() < Game.cpu.limit * 0.7;
+  const workMetrics = allowSlowPlanning && optionalReportingCpuAvailable() &&
+    scheduledGlobalTick(10)
     ? collectColonyWorkMetrics({
       Game, creeps, roomDemandPlans, getRoomSites, getRoomStructures,
       isOutpostRepairTarget, isOutpostBuilder, isExpansionBuilder, isBuilder,
@@ -6643,8 +7476,10 @@ module.exports.loop = function () {
         total + (stats.deliveredTotal || 0), 0)
     });
   }
-  updateDashboard(creeps, workMetrics || {});
-  drawDashboard();
+  if (allowSlowPlanning && optionalReportingCpuAvailable()) {
+    updateDashboard(creeps, workMetrics || {});
+    drawDashboard();
+  }
 
   if (Game.time % 100 === 0) {
     const healthLines = Object.values(Game.rooms)
@@ -6723,24 +7558,6 @@ module.exports.loop = function () {
         creep.memory.builderMission === 'tunnel').length;
       const idleCreeps = roomCreeps.filter(creep => creep.memory.idleNow);
       const idleCount = idleCreeps.length;
-      const retireCandidate = idleCreeps.find(creep =>
-        (creep.memory.idleStreak || 0) >= 4 &&
-        (creep.memory.role === 'hauler' || creep.memory.role === 'worker'));
-      if (retireCandidate && workerLimit > minimumWorkerLimit) {
-        const replaceSurplusHauler = retireCandidate.memory.role === 'hauler' &&
-          haulerCount > situation.targets.hauler;
-        const nextTarget = replaceSurplusHauler
-          ? workerLimit
-          : Math.max(minimumWorkerLimit, workerLimit - 1);
-        retireCandidate.memory.retired = true;
-        if (retireCandidate.suicide() === OK) {
-          room.memory.workerTarget = nextTarget;
-          console.log(`[${Game.time}] ${replaceSurplusHauler ? 'Replacing' : 'Retiring'} ` +
-            `idle ${retireCandidate.name}; ${room.name} worker target ${nextTarget}`);
-        } else {
-          delete retireCandidate.memory.retired;
-        }
-      }
       const sources = getRoomSources(room).map((source, index) => {
         const assignedWorkers = roomCreeps.filter(creep =>
           (creep.memory.role === 'miner' && creep.memory.minerSource === source.id) ||
@@ -6765,15 +7582,11 @@ module.exports.loop = function () {
         [STRUCTURE_CONTAINER]: 'C',
         [STRUCTURE_EXTENSION]: 'E'
       };
-      const buildTargets = room.find(FIND_MY_CONSTRUCTION_SITES)
+      const buildTargets = getRoomSites(room)
         .map(site => `${buildCodes[site.structureType] || site.structureType}` +
           `@${site.pos.x},${site.pos.y} ${site.progress}/${site.progressTotal}`);
-      const roadCount = room.find(FIND_STRUCTURES, {
-        filter: structure => structure.structureType === STRUCTURE_ROAD
-      }).length;
-      const roadSiteCount = room.find(FIND_MY_CONSTRUCTION_SITES, {
-        filter: site => site.structureType === STRUCTURE_ROAD
-      }).length;
+      const roadCount = getRoomStructuresByType(room, STRUCTURE_ROAD).length;
+      const roadSiteCount = getRoomSitesByType(room, STRUCTURE_ROAD).length;
       const controllerLevel = room.controller ? room.controller.level : 0;
       const summaryPaths = getImportantRoadPaths(room);
       const roadBudget = getRoadBudget(
@@ -6786,14 +7599,7 @@ module.exports.loop = function () {
       room.memory.busySummaryStreak = allBusyAtTarget
         ? (room.memory.busySummaryStreak || 0) + 1
         : 0;
-      let reportedWorkerLimit = workerLimit;
-      let targetIncrease;
-      if (room.memory.busySummaryStreak >= 4) {
-        reportedWorkerLimit = workerLimit + 1;
-        room.memory.workerTarget = reportedWorkerLimit;
-        room.memory.busySummaryStreak = 0;
-        targetIncrease = `target->${reportedWorkerLimit}`;
-      }
+      const reportedWorkerLimit = workerLimit;
       const blockers = [];
       if (idleCount > 0) blockers.push(`${idleCount} idle; spawn paused`);
       if (congestionCount > 0) blockers.push(`${congestionCount} congested`);
@@ -6840,7 +7646,7 @@ module.exports.loop = function () {
           `Harvest ${situation.status.harvest} ` +
           `Flow ${situation.status.logistics} | ` +
           situation.status.reasons.join(', '),
-        `  Busy ${room.memory.busySummaryStreak}/4${targetIncrease ? ` ${targetIncrease}` : ''} | ` +
+        `  Busy ${room.memory.busySummaryStreak}/4 | ` +
           `Sp ${spawns.join(',') || 'none'} | ${status}`,
         `  Stage ${strategy.stageName}: ${strategy.stageGoal}`,
         `  Next: ${strategy.gate}`
@@ -6848,12 +7654,12 @@ module.exports.loop = function () {
     }
   }
 
-  // Keep two compact 25-tick CPU windows in Memory. This is diagnostic only;
+  // Keep two compact 20-tick CPU windows in Memory. This is diagnostic only;
   // it does not influence staffing or jobs, and lets us compare average and
   // worst ticks after changing scheduler cadence.
   if (cpuStart !== null) {
     const used = Math.max(0, Game.cpu.getUsed() - cpuStart);
-    const bucket = Math.floor(Game.time / 25) * 25;
+    const bucket = Math.floor(Game.time / 20) * 20;
     let performance = Memory.performance;
     if (!performance || performance.version !== 1) {
       performance = { version: 1 };

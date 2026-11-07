@@ -1,0 +1,157 @@
+{
+  "method": "Offline shortest-path lower bounds on saved terrain plus baseline structures; no creeps, congestion, turns, directional traffic or planner restrictions beyond optional brigade reserved tiles. Empty and loaded endpoint positions independently optimized; positioning/queue overhead omitted. Not a live route benchmark. Road fatigue, full carry weight and MOVE recovery modeled; two transfer/withdraw ticks added conservatively.",
+  "routes": [
+    {
+      "carry": 4,
+      "move": 2,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 200,
+      "idealEnergyPerTick": 6.25
+    },
+    {
+      "carry": 4,
+      "move": 2,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 12,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 25,
+      "capacity": 200,
+      "idealEnergyPerTick": 8.0
+    },
+    {
+      "carry": 4,
+      "move": 2,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 200,
+      "idealEnergyPerTick": 6.25
+    },
+    {
+      "carry": 4,
+      "move": 2,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 12,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 25,
+      "capacity": 200,
+      "idealEnergyPerTick": 8.0
+    },
+    {
+      "carry": 7,
+      "move": 7,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 350,
+      "idealEnergyPerTick": 10.9375
+    },
+    {
+      "carry": 7,
+      "move": 7,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 11,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 24,
+      "capacity": 350,
+      "idealEnergyPerTick": 14.583333333333334
+    },
+    {
+      "carry": 7,
+      "move": 7,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 350,
+      "idealEnergyPerTick": 10.9375
+    },
+    {
+      "carry": 7,
+      "move": 7,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 11,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 24,
+      "capacity": 350,
+      "idealEnergyPerTick": 14.583333333333334
+    },
+    {
+      "carry": 8,
+      "move": 4,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 400,
+      "idealEnergyPerTick": 12.5
+    },
+    {
+      "carry": 8,
+      "move": 4,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": false,
+      "loadedTicksLowerBound": 12,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 25,
+      "capacity": 400,
+      "idealEnergyPerTick": 16.0
+    },
+    {
+      "carry": 8,
+      "move": 4,
+      "buffer": "4dfbe0b7d3dfd45",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 15,
+      "emptyTicksLowerBound": 15,
+      "cycleTicksLowerBound": 32,
+      "capacity": 400,
+      "idealEnergyPerTick": 12.5
+    },
+    {
+      "carry": 8,
+      "move": 4,
+      "buffer": "2bdae3c57f81e36",
+      "respectSavedBrigadeReservations": true,
+      "loadedTicksLowerBound": 12,
+      "emptyTicksLowerBound": 11,
+      "cycleTicksLowerBound": 25,
+      "capacity": 400,
+      "idealEnergyPerTick": 16.0
+    }
+  ],
+  "writeSiteCandidates": 123,
+  "candidateModules": {
+    "body.archetypes.js": 1,
+    "builder.roles.js": 15,
+    "builder.roster.js": 3,
+    "controller.brigade.roster.js": 3,
+    "controller.stations.js": 1,
+    "creep.assignment.js": 2,
+    "labor.capacity.js": 1,
+    "main.js": 70,
+    "outpost.rescue.js": 1,
+    "refill.management.js": 1,
+    "remote.corridors.js": 1,
+    "remote.roster.js": 6,
+    "repair.supply.js": 1,
+    "role.capacity.js": 4,
+    "salvage.dispatch.js": 1,
+    "source.staffing.js": 11,
+    "work.dispatch.js": 1
+  }
+}

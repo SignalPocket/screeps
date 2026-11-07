@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const { calculateStaffingDemand, getStaffingStatus, formatRoleEntry } =
+const { calculateStaffingDemand, getStaffingStatus, formatRoleEntry,
+  countBrigadeMembers } =
   require('./colony.dashboard');
 
 const demand = calculateStaffingDemand({
@@ -42,5 +43,11 @@ assert.strictEqual(formatRoleEntry({
   role: 'UP', count: 1, usable: 1, coverage: 1,
   target: { min: 1, desired: 1, max: 1 }, status: 'staffed'
 }), 'UP 1/1');
+
+assert.strictEqual(countBrigadeMembers([
+  { memory: { role: 'controller-relay' } },
+  { memory: { role: 'controller-relay' } },
+  { memory: { role: 'upgrader' } }
+]), 2);
 
 console.log('colony dashboard scenarios passed');

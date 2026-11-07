@@ -1,4 +1,6 @@
 'use strict';
+const { createExtensionLayoutManager } = typeof Game === 'undefined'
+  ? require('./extension.layout') : require('extension.layout');
 
 const createInfrastructurePlanner = ({
   Game, RoomPosition, getRoomSources, isSingleLaneRoadPosition,
@@ -8,165 +10,23 @@ const createInfrastructurePlanner = ({
   TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES, LOOK_CREEPS, RESOURCE_ENERGY, OK
 }) => {
+  const manageSingleExtensionLayout = createExtensionLayoutManager({
+    Game,FIND_STRUCTURES,FIND_MY_CONSTRUCTION_SITES,FIND_MY_SPAWNS,
+    CONTROLLER_STRUCTURES,getRoomSources,OK });
   // Pack extensions in adjacent two-wide columns. Every pair borders a
   // reserved access aisle, so haulers can still reach every structure.
   const isExtensionClusterTile = (cluster, x, y) => {
+    if (cluster.extensionTiles) return cluster.extensionTiles.some(p=>
+      p.x===x&&p.y===y);
     const dx = x - cluster.x;
     const dy = y - cluster.y;
     return Math.max(Math.abs(dx), Math.abs(dy)) <= 3 &&
       (dx + 3) % 3 !== 2;
   };
-  // Keep up to three extension sites active whenever the RCL unlocks more.
-  // Roads and remote construction must not block core room capacity upgrades.
+  // A single connected layout owns placement and serialized migration.
   const placeExtensionSite = room => {
     if (!room.controller || !room.controller.my) return false;
-    const extensionLimit = CONTROLLER_STRUCTURES[STRUCTURE_EXTENSION][room.controller.level] || 0;
-    const builtExtensions = room.find(FIND_MY_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_EXTENSION
-    }).length;
-    const extensionSites = room.find(FIND_MY_CONSTRUCTION_SITES, {
-      filter: site => site.structureType === STRUCTURE_EXTENSION
-    });
-    const extensionCount = builtExtensions + extensionSites.length;
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    if (!spawn) return false;
-    const terrain = room.getTerrain();
-    const sources = getRoomSources(room);
-    const trafficTiles = room.memory.traffic && room.memory.traffic.tiles || {};
-    const usableExtensionTile = (x, y) => x > 1 && x < 48 && y > 1 && y < 48 &&
-      terrain.get(x, y) !== TERRAIN_MASK_WALL &&
-      room.controller.pos.getRangeTo(x, y) >= 2 &&
-      !sources.some(source => source.pos.getRangeTo(x, y) < 2) &&
-      !isSingleLaneRoadPosition(room, { pos: { x, y } }) &&
-      room.lookForAt(LOOK_STRUCTURES, x, y).length === 0 &&
-      room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length === 0;
-    const getClusterCandidates = selectedCluster => {
-      if (!selectedCluster) return [];
-      const candidates = [];
-      for (let radius = 0; radius <= 3; radius++) {
-        for (let x = selectedCluster.x - radius;
-          x <= selectedCluster.x + radius; x++) {
-          for (let y = selectedCluster.y - radius;
-            y <= selectedCluster.y + radius; y++) {
-            if (Math.max(Math.abs(x - selectedCluster.x),
-              Math.abs(y - selectedCluster.y)) !== radius ||
-                !isExtensionClusterTile(selectedCluster, x, y) ||
-                !usableExtensionTile(x, y) ||
-                room.lookForAt(LOOK_CREEPS, x, y).length > 0) continue;
-            candidates.push({
-              x,
-              y,
-              score: (trafficTiles[`${x}:${y}`] || 0) * 20 +
-                radius * 2 + x / 100 + y / 10000
-            });
-          }
-        }
-      }
-      return candidates.sort((a, b) => a.score - b.score);
-    };
-    const selectCluster = (minRange, maxRange, minUsable, excluded) => {
-      const anchors = [];
-      for (let x = spawn.pos.x - maxRange;
-        x <= spawn.pos.x + maxRange; x++) {
-        for (let y = spawn.pos.y - maxRange;
-          y <= spawn.pos.y + maxRange; y++) {
-          const range = spawn.pos.getRangeTo(x, y);
-          if (range < minRange || range > maxRange ||
-              x < 4 || x > 45 || y < 4 || y > 45 ||
-              excluded.some(existing => Math.max(
-                Math.abs(x - existing.x), Math.abs(y - existing.y)) <= 7)) {
-            continue;
-          }
-          const candidateCluster = { x, y };
-          let usable = 0;
-          let traffic = 0;
-          let corridor = 0;
-          for (let dx = -3; dx <= 3; dx++) {
-            for (let dy = -3; dy <= 3; dy++) {
-              const tileX = x + dx;
-              const tileY = y + dy;
-              if (!isExtensionClusterTile(candidateCluster, tileX, tileY)) {
-                continue;
-              }
-              if (usableExtensionTile(tileX, tileY)) usable++;
-              traffic += trafficTiles[`${tileX}:${tileY}`] || 0;
-              if (isSingleLaneRoadPosition(room,
-                { pos: { x: tileX, y: tileY } })) corridor++;
-            }
-          }
-          if (usable < minUsable) continue;
-          const routeLength = room.findPath(spawn.pos,
-            new RoomPosition(x, y, room.name), {
-              ignoreCreeps: true,
-              maxOps: 2000
-            }).length || 100;
-          anchors.push({
-            x,
-            y,
-            score: traffic * 20 + corridor * 200 +
-              Math.abs(routeLength - 7) * 5 - usable
-          });
-        }
-      }
-      anchors.sort((a, b) => a.score - b.score ||
-        a.x - b.x || a.y - b.y);
-      return anchors[0];
-    };
-    let cluster = room.memory.extensionCluster;
-    if (!cluster || cluster.version !== 'low-traffic-v1') {
-      const selected = selectCluster(6, 9, 10, []);
-      if (selected) {
-        cluster = {
-          x: selected.x,
-          y: selected.y,
-          version: 'low-traffic-v1',
-          selected: Game.time
-        };
-        room.memory.extensionCluster = cluster;
-        console.log(`[${Game.time}] ${room.name} extension cluster -> ` +
-          `${cluster.x},${cluster.y}`);
-      }
-    }
-    if (extensionCount >= extensionLimit || !cluster) return false;
-    if (extensionSites.length >= Math.min(3,
-      extensionLimit - builtExtensions)) return false;
-
-    let candidates = getClusterCandidates(cluster);
-    const availableSiteSlots = Math.min(3 - extensionSites.length,
-      extensionLimit - extensionCount);
-    if (candidates.length < availableSiteSlots) {
-      let overflow = room.memory.extensionOverflowCluster;
-      let overflowCandidates = getClusterCandidates(overflow);
-      if (!overflow || overflow.version !== 'overflow-v1' ||
-          overflowCandidates.length === 0) {
-        const selected = selectCluster(6, 12,
-          Math.min(6, extensionLimit - extensionCount), [cluster]);
-        overflow = selected && {
-          x: selected.x,
-          y: selected.y,
-          version: 'overflow-v1',
-          selected: Game.time
-        };
-        if (overflow) {
-          room.memory.extensionOverflowCluster = overflow;
-          console.log(`[${Game.time}] ${room.name} extension overflow ` +
-            `cluster -> ${overflow.x},${overflow.y}`);
-          overflowCandidates = getClusterCandidates(overflow);
-        }
-      }
-      candidates = candidates.concat(overflowCandidates);
-    }
-    let placed = 0;
-    for (const candidate of candidates) {
-      if (placed >= availableSiteSlots) break;
-      const result = room.createConstructionSite(
-        candidate.x, candidate.y, STRUCTURE_EXTENSION);
-      if (result === OK) {
-        console.log(`[${Game.time}] Placed extension site in ${room.name} at ${candidate.x},${candidate.y}`);
-        placed++;
-      }
-    }
-    return placed > 0;
+    return manageSingleExtensionLayout(room);
   };
   const placeStorageSite = room => {
     if (!room.controller || !room.controller.my) return false;
@@ -247,13 +107,8 @@ const createInfrastructurePlanner = ({
       `${candidate.x},${candidate.y} after ${builtExtensions} extensions`);
     return true;
   };
-  const getExtensionClusters = room => [
-    { key: 'primary', anchor: room.memory.extensionCluster },
-    { key: 'overflow', anchor: room.memory.extensionOverflowCluster }
-  ].filter(entry => entry.key !== (room.memory.controllerContainerPairPlan &&
-    room.memory.controllerContainerPairPlan.sacrificeClusterKey) &&
-    entry.anchor && Number.isInteger(entry.anchor.x) &&
-    Number.isInteger(entry.anchor.y));
+  const getExtensionClusters = room => room.memory.extensionCluster
+    ? [{key:'primary',anchor:room.memory.extensionCluster}] : [];
   const isExtensionBufferPosition = (room, position) => {
     const plans = [room.memory.extensionContainerPlan,
       ...Object.values(room.memory.extensionContainerPlans || {})]
@@ -405,6 +260,76 @@ const createInfrastructurePlanner = ({
       };
       console.log(`[${Game.time}] ${room.name} border relay for ` +
         `${remoteRoom} at ${candidate.x},${candidate.y}`);
+      return true;
+    }
+    return false;
+  };
+  const placeOutpostBorderCacheSite = (homeRoom, outpostRoom,
+    interRoomTravelPaths = {}) => {
+    if (!homeRoom.controller || !homeRoom.controller.my ||
+        homeRoom.controller.level < 2 || !outpostRoom) return false;
+    const routes = [
+      { key: 'left', survey: homeRoom.memory.leftSurvey },
+      { key: 'south', survey: homeRoom.memory.southSurvey },
+      { key: 'southwest', survey: homeRoom.memory.southwestSurvey }
+    ].filter(entry => entry.survey && entry.survey.active &&
+      entry.survey.targetRoom === outpostRoom.name);
+    if (!routes.length) return false;
+    if (!homeRoom.memory.outpostBorderCachePlans) {
+      homeRoom.memory.outpostBorderCachePlans = {};
+    }
+    const plans = homeRoom.memory.outpostBorderCachePlans;
+    for (const route of routes) {
+      const current = plans[outpostRoom.name];
+      if (current) {
+        const structures = outpostRoom.lookForAt(LOOK_STRUCTURES,
+          current.x, current.y);
+        const sites = outpostRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
+          current.x, current.y);
+        if (structures.some(structure =>
+          structure.structureType === STRUCTURE_CONTAINER) ||
+            sites.some(site =>
+              site.structureType === STRUCTURE_CONTAINER)) continue;
+        delete plans[outpostRoom.name];
+      }
+      const usage = new Map();
+      for (const path of interRoomTravelPaths[outpostRoom.name] || []) {
+        if (!String(path.label || '').startsWith(`${route.key}-`)) continue;
+        for (const point of path.points || []) {
+          const edge = Math.min(point.x, point.y, 49 - point.x,
+            49 - point.y);
+          if (edge < 1 || edge > 3) continue;
+          const key = `${point.x}:${point.y}`;
+          const entry = usage.get(key) || {
+            x: point.x, y: point.y, edge, uses: 0
+          };
+          entry.uses++;
+          usage.set(key, entry);
+        }
+      }
+      const candidates = [...usage.values()].filter(candidate => {
+        const structures = outpostRoom.lookForAt(LOOK_STRUCTURES,
+          candidate.x, candidate.y);
+        const sites = outpostRoom.lookForAt(LOOK_CONSTRUCTION_SITES,
+          candidate.x, candidate.y);
+        return structures.every(structure =>
+          structure.structureType === STRUCTURE_ROAD ||
+          structure.structureType === STRUCTURE_RAMPART) &&
+          sites.length === 0;
+      }).sort((a, b) => b.uses - a.uses || a.edge - b.edge ||
+        a.x - b.x || a.y - b.y);
+      const candidate = candidates[0];
+      if (!candidate || outpostRoom.createConstructionSite(candidate.x,
+        candidate.y, STRUCTURE_CONTAINER) !== OK) continue;
+      plans[outpostRoom.name] = {
+        remoteRoom: outpostRoom.name,
+        route: route.key,
+        x: candidate.x,
+        y: candidate.y,
+        placed: Game.time
+      };
+      console.log(`[${Game.time}] ${homeRoom.name} outpost cache for ` +
+        `${outpostRoom.name} at ${candidate.x},${candidate.y}`);
       return true;
     }
     return false;
@@ -825,7 +750,6 @@ const createInfrastructurePlanner = ({
           ...existingPairPlan,
           version: 2,
           mode: 'stationary-branch',
-          sacrificeClusterKey: 'overflow',
           primaryId: primary.id,
           primaryX: primary.pos.x,
           primaryY: primary.pos.y,
@@ -866,27 +790,8 @@ const createInfrastructurePlanner = ({
         Number(removedObsoleteSite);
       if (containers.length + activeControllerSiteCount >= containerLimit) {
         if (!pairEnabled) return false;
-        const overflow = room.memory.extensionOverflowCluster;
-        const retired = overflow && containers.filter(container =>
-          container.id !== primary.id &&
-          container.pos.getRangeTo(overflow.x, overflow.y) <= 3 &&
-          !getRoomSources(room).some(source =>
-            source.pos.getRangeTo(container) <= 2) &&
-          container.pos.getRangeTo(room.controller) > 3)
-          .sort((a, b) => a.pos.getRangeTo(overflow.x, overflow.y) -
-            b.pos.getRangeTo(overflow.x, overflow.y) ||
-            a.id.localeCompare(b.id))[0];
-        if (!retired) return false;
-        const releasedEnergy = retired.store[RESOURCE_ENERGY] || 0;
-        if (retired.destroy() !== OK) return false;
-        pairPlan.retiredExtensionId = retired.id;
-        pairPlan.retiredExtensionX = retired.pos.x;
-        pairPlan.retiredExtensionY = retired.pos.y;
-        pairPlan.retiredAt = Game.time;
-        pairPlan.releasedEnergy = releasedEnergy;
-        console.log(`[${Game.time}] ${room.name} removed overflow-clump ` +
-          `container ${retired.id} at ${retired.pos.x},${retired.pos.y}; ` +
-          `${releasedEnergy} energy released for recovery`);
+        // Never sacrifice the single extension handoff for controller growth.
+        return false;
       }
       const pairResult = room.createConstructionSite(second.x, second.y,
         STRUCTURE_CONTAINER);
@@ -993,6 +898,7 @@ const createInfrastructurePlanner = ({
     manageControllerContainer,
     getImportantContainerGaps,
     placeBorderRelaySite,
+    placeOutpostBorderCacheSite,
     isRetiringContainer
   };
 };

@@ -32,6 +32,7 @@ const base = {
 const bootstrap = derivePopulationPolicy({ ...base, rcl: 1,
   sourceContainerCount: 0, extensionCount: 0, energyConsumerCount: 1 });
 assert.strictEqual(bootstrap.mode, 'bootstrap');
+assert.strictEqual(bootstrap.health, 'critical');
 assert.strictEqual(bootstrap.roles.refiller.desired, 0);
 assert.strictEqual(bootstrap.roles.hauler.desired, 0);
 assert.deepStrictEqual(bootstrap.roles.repairBuilder,
@@ -52,16 +53,25 @@ const lowEnergy = derivePopulationPolicy({ ...base, energyRatio: 0.2,
   bufferRatio: 0.1, storedEnergy: 0,
   construction: { remaining: 20000, road: 4 } });
 assert.strictEqual(lowEnergy.mode, 'energy-starved');
-assert.strictEqual(lowEnergy.roles.builder.desired, 1);
+assert.strictEqual(lowEnergy.health, 'recovering');
+assert.strictEqual(lowEnergy.roles.builder.desired, 0);
+assert.strictEqual(lowEnergy.permissions.optionalConstruction, false);
+assert.strictEqual(lowEnergy.permissions.optionalPopulation, false);
+const blockedSourceRecovery = derivePopulationPolicy({ ...base,
+  energyRatio: 0.2, bufferRatio: 0.1, storedEnergy: 0,
+  blockedSourceSite: true });
+assert.strictEqual(blockedSourceRecovery.roles.tunnelBuilder.min, 1);
+assert.strictEqual(blockedSourceRecovery.roles.tunnelBuilder.desired, 1);
 
 const heldLowEnergy = derivePopulationPolicy({ ...base,
   energyRatio: 0.5, bufferRatio: 0.1, storedEnergy: 600,
   energyStarvedHold: true,
   construction: { remaining: 20000, road: 4 } });
 assert.strictEqual(heldLowEnergy.mode, 'energy-starved');
-assert.strictEqual(heldLowEnergy.roles.builder.desired, 1);
+assert.strictEqual(heldLowEnergy.roles.builder.desired, 0);
 
 const infrastructure = derivePopulationPolicy({ ...base,
+  storedEnergy: 10000, bufferRatio: 0.4,
   construction: { remaining: 20000, container: 1, extension: 2 } });
 assert.strictEqual(infrastructure.roles.builder.min, 1);
 assert.ok(infrastructure.roles.builder.desired >= 2);
@@ -77,8 +87,9 @@ const remote = derivePopulationPolicy({ ...base, rcl: 5,
   storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true,
   activeRemoteRooms: 2,
   activeRemoteSources: 4, averageRemoteDistance: 40,
+  remoteHaulerDemand: 4,
   remoteRoomsWithConstruction: 1 });
-assert.strictEqual(remote.health, 'healthy');
+assert.strictEqual(remote.health, 'surplus');
 assert.strictEqual(remote.permissions.remoteGrowth, true);
 assert.strictEqual(remote.remote.miners, 4);
 assert.ok(remote.remote.haulers >= 4);
@@ -97,13 +108,95 @@ assert.strictEqual(strainedRemote.permissions.remoteGrowth, false);
 assert.strictEqual(strainedRemote.remote.haulersMin, 2);
 assert.strictEqual(strainedRemote.remote.haulers, 2);
 
+const blockedRemoteRecovery = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 0.4, bufferRatio: 0.1, storedEnergy: 1000,
+  coreRoadAccessComplete: false, activeRemoteRooms: 2,
+  activeRemoteSources: 4, remoteHaulerDemand: 7,
+  remoteBacklog: 20254, remoteBlockedRooms: 3 });
+assert.strictEqual(blockedRemoteRecovery.health, 'strained');
+assert.strictEqual(blockedRemoteRecovery.permissions.remoteGrowth, false);
+assert.strictEqual(
+  blockedRemoteRecovery.permissions.remoteHaulingRecovery, true);
+assert.strictEqual(blockedRemoteRecovery.remote.haulersMin, 2);
+assert.strictEqual(blockedRemoteRecovery.remote.haulers, 7);
+
+const distanceScaledRecovery = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 0.4, bufferRatio: 0.1, storedEnergy: 1000,
+  activeRemoteRooms: 3, activeRemoteSources: 6,
+  averageRemoteDistance: 40, remoteHaulerDemand: 7,
+  remoteBacklog: 20254, remoteBlockedRooms: 3 });
+assert.strictEqual(distanceScaledRecovery.permissions.remoteHaulingRecovery,
+  true);
+assert.strictEqual(distanceScaledRecovery.remote.haulers, 7,
+  'recovery must stay within concrete survey carrier slots');
+
+const healthyDistanceScaled = derivePopulationPolicy({ ...base, rcl: 5,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true,
+  activeRemoteRooms: 3, activeRemoteSources: 6,
+  averageRemoteDistance: 40, remoteHaulerDemand: 7 });
+assert.strictEqual(healthyDistanceScaled.permissions.remoteGrowth, true);
+assert.strictEqual(healthyDistanceScaled.remote.haulers, 7,
+  'healthy growth must also stay within concrete survey carrier slots');
+
+const criticalRemote = derivePopulationPolicy({ ...base, rcl: 5,
+  controllerTicks: 2500, storedEnergy: 10000, bufferRatio: 0.4,
+  activeRemoteRooms: 2, activeRemoteSources: 4, remoteHaulerDemand: 7 });
+assert.strictEqual(criticalRemote.health, 'critical');
+assert.strictEqual(criticalRemote.permissions.remoteMaintenance, false);
+assert.strictEqual(criticalRemote.remote.minersMin, 0);
+assert.strictEqual(criticalRemote.remote.haulersMin, 0);
+
 const roadBlockedRemote = derivePopulationPolicy({ ...base, rcl: 5,
   storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: false,
   activeRemoteRooms: 1, activeRemoteSources: 2, remoteHaulerDemand: 7 });
 assert.strictEqual(roadBlockedRemote.permissions.remoteGrowth, false);
-assert.strictEqual(roadBlockedRemote.remote.haulers, 1);
+assert.strictEqual(roadBlockedRemote.remote.haulers, 7,
+  'unfinished home roads must not throttle funded established export routes');
+
+const rcl6Expansion = derivePopulationPolicy({ ...base, rcl: 6,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true });
+assert.strictEqual(rcl6Expansion.permissions.expansion, false);
+const rcl7Expansion = derivePopulationPolicy({ ...base, rcl: 7,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true });
+assert.strictEqual(rcl7Expansion.permissions.expansion, true);
+const strainedExpansion = derivePopulationPolicy({ ...base, rcl: 7,
+  energyRatio: 0.4, bufferRatio: 0.1, storedEnergy: 1000,
+  coreRoadAccessComplete: true });
+assert.strictEqual(strainedExpansion.permissions.expansion, false);
+assert.strictEqual(strainedExpansion.permissions.expansionMaintenance, true);
+const criticalExpansion = derivePopulationPolicy({ ...base, rcl: 7,
+  controllerTicks: 2500, storedEnergy: 10000, bufferRatio: 0.4,
+  coreRoadAccessComplete: true });
+assert.strictEqual(criticalExpansion.permissions.expansion, false);
+assert.strictEqual(criticalExpansion.permissions.expansionMaintenance, false);
+
+const chargedFromReserve = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 0.2, bufferRatio: 0.4, storedEnergy: 10000 });
+assert.strictEqual(chargedFromReserve.health, 'healthy');
+const logisticsRecovery = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 0.1, bufferRatio: 0.99, highestSourceBufferRatio: 1,
+  storedEnergy: 20000, storedSourceEnergy: 3950,
+  activeRemoteRooms: 3, activeRemoteSources: 6,
+  coreRoadAccessComplete: true });
+assert.strictEqual(logisticsRecovery.mode, 'logistics-backup');
+assert.strictEqual(logisticsRecovery.health, 'strained');
+assert.strictEqual(logisticsRecovery.permissions.remoteGrowth, false);
+assert.strictEqual(logisticsRecovery.permissions.optionalPopulation, false);
+assert.ok(logisticsRecovery.roles.hauler.desired >
+  logisticsRecovery.roles.hauler.min);
+const surplus = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 1, bufferRatio: 0.4, storedEnergy: 20000 });
+assert.strictEqual(surplus.health, 'surplus');
+const drainedBuffersFlowing = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 1, bufferRatio: 0.1, storedEnergy: 20000 });
+assert.strictEqual(drainedBuffersFlowing.health, 'healthy');
+const fullBuffersAreBacklog = derivePopulationPolicy({ ...base, rcl: 5,
+  energyRatio: 1, bufferRatio: 0.9, highestSourceBufferRatio: 0.9,
+  storedEnergy: 20000 });
+assert.notStrictEqual(fullBuffersAreBacklog.health, 'surplus');
 
 const imbalancedRemote = derivePopulationPolicy({ ...base,
+  storedEnergy: 10000, bufferRatio: 0.4,
   activeRemoteRooms: 3, activeRemoteSources: 4, containerImbalance: 0.65 });
 assert.strictEqual(imbalancedRemote.roles.rebalancer.desired, 3);
 
@@ -132,9 +225,11 @@ assert.strictEqual(emergency.mode, 'controller-emergency');
 assert.ok(emergency.roles.upgrader.desired >= 2);
 
 const fullController = derivePopulationPolicy({ ...base,
+  storedEnergy: 10000, bufferRatio: 0.4,
   controllerBufferRatio: 1, currentUpgraders: 1 });
 assert.strictEqual(fullController.roles.upgrader.desired, 2);
 const stillFullController = derivePopulationPolicy({ ...base,
+  storedEnergy: 10000, bufferRatio: 0.4,
   controllerBufferRatio: 1, currentUpgraders: 2 });
 assert.strictEqual(stillFullController.roles.upgrader.desired, 2);
 
@@ -148,3 +243,19 @@ for (const scenario of [bootstrap, lowEnergy, infrastructure, remote,
 }
 
 console.log('population policy scenarios passed');
+
+const migrationPolicy = derivePopulationPolicy({...base,rcl:5,
+  storedEnergy:50000,controllerBufferRatio:1,extensionMigrationActive:true});
+assert.strictEqual(migrationPolicy.roles.upgrader.desired,1);
+assert.strictEqual(migrationPolicy.roles.upgrader.max,1);
+assert.strictEqual(migrationPolicy.permissions.controllerBrigade,false);
+const fundedStrainedExports = derivePopulationPolicy({ ...base, rcl: 5,
+  energyCapacity: 1750, energyRatio: 0.6, bufferRatio: 0.15,
+  storedEnergy: 50000, coreRoadAccessComplete: false,
+  activeRemoteRooms: 3, activeRemoteSources: 6, remoteHaulerDemand: 7,
+  remoteBacklog: 1700, remoteBlockedRooms: 0 });
+assert.strictEqual(fundedStrainedExports.permissions.remoteGrowth, false);
+assert.strictEqual(fundedStrainedExports.permissions.remoteHaulingRecovery, true);
+assert.strictEqual(fundedStrainedExports.remote.haulers, 7);
+assert.strictEqual(fundedStrainedExports.remote.haulersMin, 3);
+console.log('funded established exports retain measured capacity before a full-container outage');

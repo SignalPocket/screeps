@@ -7,12 +7,13 @@ const createRefillManagement = ({
   BODYPART_COST, CARRY, MOVE, CARRY_CAPACITY
 }) => {
   const getRefillClusters = room => {
-    const spawn = room.find(FIND_MY_SPAWNS)[0];
-    const extensions = getRoomStructures(room).filter(structure =>
+    const roomStructures = getRoomStructures(room);
+    const spawn = roomStructures.find(structure =>
+      structure.my && structure.structureType === STRUCTURE_SPAWN);
+    const extensions = roomStructures.filter(structure =>
       structure.my && structure.structureType === STRUCTURE_EXTENSION);
     return [
-      { id: 'primary', anchor: room.memory.extensionCluster },
-      { id: 'overflow', anchor: room.memory.extensionOverflowCluster }
+      { id: 'primary', anchor: room.memory.extensionCluster }
     ].filter(cluster => cluster.anchor && extensions.some(extension =>
       isExtensionClusterTile(cluster.anchor,
         extension.pos.x, extension.pos.y)))
@@ -31,9 +32,10 @@ const createRefillManagement = ({
 
   const isRefillTargetFor = (creep, structure) => {
     if (!creep || creep.memory.role !== 'refiller') return true;
-    if (structure.structureType === STRUCTURE_SPAWN) {
-      return Boolean(creep.memory.refillSpawnOwner);
-    }
+    // Cluster ownership selects a convenient loading area; it must not forbid
+    // the nearest filler from filling an open spawn on the other side of an
+    // arbitrary historical boundary.
+    if (structure.structureType === STRUCTURE_SPAWN) return true;
     if (structure.structureType === STRUCTURE_TOWER) return true;
     if (structure.structureType !== STRUCTURE_EXTENSION) return false;
     // Dispatch reservations prevent duplicate trips, so fillers can take the
@@ -42,7 +44,7 @@ const createRefillManagement = ({
     return true;
   };
 
-  const getRefillerCarryFloor = room => Math.min(400,
+  const getRefillerCarryFloor = room => Math.min(room.memory?.laborPlan?.refiller.carryParts*50 || 400,
     Math.floor(room.energyCapacityAvailable /
       (BODYPART_COST[CARRY] + BODYPART_COST[MOVE])) * CARRY_CAPACITY);
 
@@ -59,24 +61,6 @@ const createRefillManagement = ({
     const assignedNames = new Set();
     for (const creep of refillers) {
       delete creep.memory.refillCrossClusterFallback;
-    }
-    // When there are not enough specialists for every clump, the strongest
-    // available refiller must own the spawn-side cluster. Do not preserve an
-    // old overflow assignment after the primary owner dies: that strands the
-    // spawn and the larger primary extension bank while the small clump fills.
-    const spawnCluster = clusters.find(cluster => cluster.fillsSpawn);
-    if (spawnCluster && refillers.length > 0 &&
-        refillers.length < clusters.length) {
-      const primaryOwner = refillers[0];
-      primaryOwner.memory.refillClusterId = spawnCluster.id;
-      primaryOwner.memory.refillClusterX = spawnCluster.x;
-      primaryOwner.memory.refillClusterY = spawnCluster.y;
-      primaryOwner.memory.refillSpawnOwner = true;
-      primaryOwner.memory.refillCrossClusterFallback = true;
-      delete primaryOwner.memory.refillTarget;
-      delete primaryOwner.memory.dispatchCommitment;
-      claimed.add(spawnCluster.id);
-      assignedNames.add(primaryOwner.name);
     }
     for (const creep of refillers) {
       if (assignedNames.has(creep.name)) continue;

@@ -15,6 +15,7 @@ const createOutpostMaintenance = ({ STRUCTURE_CONTAINER, STRUCTURE_ROAD }) => {
   const selectRepairTarget = (structures, position) => structures
     .filter(isRepairTarget)
     .sort((a, b) =>
+      Number(healthRatio(b) < 0.25) - Number(healthRatio(a) < 0.25) ||
       Number(b.structureType === STRUCTURE_CONTAINER) -
         Number(a.structureType === STRUCTURE_CONTAINER) ||
       healthRatio(a) - healthRatio(b) ||

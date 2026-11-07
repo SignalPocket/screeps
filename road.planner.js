@@ -1,12 +1,40 @@
 'use strict';
 
+/**
+ * Maintain the colony's legal travel network.
+ *
+ * Strategic paths connect important objects whether or not traffic has already
+ * worn a trail there. Traffic history can add roads, but cannot remove source,
+ * controller, storage, link, container, extension, tower, or outpost routes.
+ * Path costs mark walls, blocking structures, and non-road construction sites
+ * impassable so a dotted desired route always has a placeable road route.
+ */
 const createRoadPlanner = ({
   Game, RoomPosition, scheduledRoomTick, getRoomSources, getRoomCreeps,
   showTrafficHeatmap, FIND_MY_SPAWNS, FIND_STRUCTURES,
   FIND_MY_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+  STRUCTURE_LINK, STRUCTURE_STORAGE, STRUCTURE_TOWER, STRUCTURE_RAMPART,
   LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
 }) => {
+  const applyRoadPlacementCosts = (room, costs) => {
+    const compatibleStructures = new Set([
+      STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_RAMPART
+    ].filter(Boolean));
+    for (const structure of room.find(FIND_STRUCTURES)) {
+      if (!compatibleStructures.has(structure.structureType)) {
+        costs.set(structure.pos.x, structure.pos.y, 255);
+      }
+    }
+    // Only one construction site may occupy a tile. Route around every
+    // non-road site rather than drawing a road that cannot currently queue.
+    for (const site of room.find(FIND_MY_CONSTRUCTION_SITES)) {
+      if (site.structureType !== STRUCTURE_ROAD) {
+        costs.set(site.pos.x, site.pos.y, 255);
+      }
+    }
+    return costs;
+  };
   const getImportantRoadPaths = room => {
     const spawn = room.find(FIND_MY_SPAWNS)
       .slice()
@@ -19,7 +47,7 @@ const createRoadPlanner = ({
       ...(room.storage ? [{ label: 'storage', object: room.storage }] : [])
     ].sort((a, b) => spawn.pos.getRangeTo(b.object) -
       spawn.pos.getRangeTo(a.object));
-    const signature = ['v3-single-network', spawn.id,
+    const signature = ['v4-placeable-single-network', spawn.id,
       ...targets.map(target => target.object.id)].join(':');
     const cached = room.memory.roadPlan;
     if (cached && cached.signature === signature &&
@@ -47,7 +75,7 @@ const createRoadPlanner = ({
             const [x, y] = key.split(':').map(Number);
             costs.set(x, y, 1);
           }
-          return costs;
+          return applyRoadPlacementCosts(room, costs);
         }
       }).map(step => ({ x: step.x, y: step.y }));
       for (const point of points) selectedNetwork.add(`${point.x}:${point.y}`);
@@ -100,15 +128,14 @@ const createRoadPlanner = ({
       }
     }
     for (const [key, anchor] of [
-      ['extension-primary', room.memory.extensionCluster],
-      ['extension-overflow', room.memory.extensionOverflowCluster]
+      ['extension-primary', room.memory.extensionCluster]
     ]) {
       if (!anchor) continue;
       const position = room.getPositionAt
         ? room.getPositionAt(anchor.x, anchor.y) : anchor;
       addPlace(key, 'extensions', position);
     }
-    const signature = ['v2-converging-important-pairs',
+    const signature = ['v3-placeable-converging-pairs',
       ...places.map(place => `${place.key}@${place.position.x},` +
         `${place.position.y}`)].join(':');
     const cached = room.memory.travelPathPlan;
@@ -145,7 +172,7 @@ const createRoadPlanner = ({
             for (const road of existingRoads) {
               costs.set(road.pos.x, road.pos.y, 1);
             }
-            return costs;
+            return applyRoadPlacementCosts(room, costs);
           }
         }).map(step => ({ x: step.x, y: step.y }));
         if (points.length > 0) {
@@ -201,7 +228,9 @@ const createRoadPlanner = ({
             terrain.get(x, y) === TERRAIN_MASK_WALL ||
             room.controller.pos.x === x && room.controller.pos.y === y ||
             room.controller.pos.getRangeTo(x, y) > 4 ||
-            brigadeStops.has(key)) break;
+            brigadeStops.has(key) ||
+            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
+              .some(site => site.structureType !== STRUCTURE_ROAD)) break;
         points.push({ x, y });
       }
       if (points.length > 1) {
@@ -261,6 +290,57 @@ const createRoadPlanner = ({
         uses[`${point.x}:${point.y}`] >= 2)
     })).filter(path => path.points.length > 0);
   };
+  const getInfrastructureServicePaths = room => {
+    const spawn = room.find(FIND_MY_SPAWNS).slice()
+      .sort((a, b) => a.id.localeCompare(b.id))[0];
+    if (!spawn) return [];
+    const serviceTypes = new Set([
+      STRUCTURE_CONTAINER, STRUCTURE_LINK, STRUCTURE_STORAGE, STRUCTURE_TOWER
+    ].filter(Boolean));
+    const endpoints = [
+      ...room.find(FIND_STRUCTURES),
+      ...room.find(FIND_MY_CONSTRUCTION_SITES)
+    ].filter(endpoint => serviceTypes.has(endpoint.structureType))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const signature = ['v3-placeable-infrastructure-service-roads', spawn.id,
+      ...endpoints.map(endpoint => `${endpoint.id}@${endpoint.pos.x},` +
+        `${endpoint.pos.y}`)].join(':');
+    const cached = room.memory.infrastructureServiceRoadPlan;
+    if (cached && cached.signature === signature &&
+        Game.time - cached.updated < 1000 && Array.isArray(cached.paths)) {
+      return cached.paths;
+    }
+    const existingRoads = room.find(FIND_STRUCTURES, {
+      filter: structure => structure.structureType === STRUCTURE_ROAD
+    });
+    const paths = endpoints.map(endpoint => ({
+      label: `service-${endpoint.structureType}-${endpoint.id}`,
+      kinds: ['infrastructure', endpoint.structureType],
+      infrastructure: true,
+      serviceRoad: true,
+      servicePriority: endpoint.structureType === STRUCTURE_LINK
+        ? 3 : endpoint.structureType === STRUCTURE_CONTAINER ? 2 : 1,
+      targetId: endpoint.id,
+      points: room.findPath(spawn.pos, endpoint.pos, {
+        ignoreCreeps: true,
+        range: 1,
+        plainCost: 3,
+        swampCost: 12,
+        maxOps: 4000,
+        maxRooms: 1,
+        costCallback: (roomName, costs) => {
+          for (const road of existingRoads) {
+            costs.set(road.pos.x, road.pos.y, 1);
+          }
+          return applyRoadPlacementCosts(room, costs);
+        }
+      }).map(step => ({ x: step.x, y: step.y }))
+    })).filter(path => path.points.length > 0);
+    room.memory.infrastructureServiceRoadPlan = {
+      signature, updated: Game.time, paths
+    };
+    return paths;
+  };
   const infrastructureRoadPathCache = {};
   const getInfrastructureRoadPaths = room => {
     if (infrastructureRoadPathCache[room.name]) {
@@ -269,8 +349,12 @@ const createRoadPlanner = ({
     const structures = room.find(FIND_STRUCTURES);
     const roads = structures.filter(structure =>
       structure.structureType === STRUCTURE_ROAD);
-    const anchors = structures.filter(structure =>
-      structure.structureType !== STRUCTURE_ROAD);
+    const sites = room.find(FIND_MY_CONSTRUCTION_SITES);
+    const anchors = [
+      ...structures.filter(structure =>
+        structure.structureType !== STRUCTURE_ROAD),
+      ...sites.filter(site => site.structureType !== STRUCTURE_ROAD)
+    ];
     const sources = getRoomSources(room);
     const nearInfrastructure = position =>
       sources.some(source => source.pos.getRangeTo(position) <= 2) ||
@@ -327,7 +411,9 @@ const createRoadPlanner = ({
   };
   const isSingleLaneRoadPosition = (room, target) => {
     if (!target || !target.pos) return false;
+    if (room.memory.roadNetworkPlan?.tiles[`${target.pos.x}:${target.pos.y}`]) return true;
     return [...getConvergedTravelPaths(getImportantTravelPaths(room)),
+      ...getInfrastructureServicePaths(room),
       ...getInfrastructureRoadPaths(room)]
       .some(path => path.points.some(point =>
         point.x === target.pos.x && point.y === target.pos.y));
@@ -339,7 +425,7 @@ const createRoadPlanner = ({
     }
     // Maintain the converged network plus every road serving nearby room
     // infrastructure. Open-field incidental roads can still age out.
-    const tiles = new Set();
+    const tiles = new Set(Object.keys(room.memory.roadNetworkPlan?.tiles || {}));
     for (const path of [...getConvergedTravelPaths(
       getImportantTravelPaths(room)), ...getInfrastructureRoadPaths(room)]) {
       for (const point of path.points) tiles.add(`${point.x}:${point.y}`);
@@ -419,20 +505,39 @@ const createRoadPlanner = ({
     return traffic;
   };
   const drawTravelPaths = (room, paths) => {
+    if (room.memory.roadNetworkPlan) return;
     for (const path of paths) {
-      const kinds = path.kinds || [];
+      // Protected infrastructure is stored as an unordered tile set for road
+      // maintenance. Drawing it as one polyline connects unrelated tiles and
+      // produces room-spanning zigzags that are not real travel corridors.
+      if (path.infrastructure) continue;
+      const kinds = path.kinds || (path.label ? [path.label] : []);
       const stroke = kinds.includes('outpost') ? '#bf5af2' :
         kinds.includes('controller') ? '#64d2ff' :
         kinds.includes('storage') ? '#ffd60a' :
           kinds.includes('extensions') ? '#ff9f0a' :
             kinds.includes('container') ? '#ffcc80' : '#30d158';
-      room.visual.poly(path.points.map(point => [point.x, point.y]), {
-        fill: 'transparent',
-        stroke,
-        strokeWidth: 0.07,
-        opacity: 0.3,
-        lineStyle: 'dotted'
-      });
+      const segments = [];
+      let segment = [];
+      for (const point of path.points || []) {
+        const previous = segment[segment.length - 1];
+        if (previous && Math.max(Math.abs(point.x - previous.x),
+          Math.abs(point.y - previous.y)) > 1) {
+          if (segment.length >= 2) segments.push(segment);
+          segment = [];
+        }
+        segment.push(point);
+      }
+      if (segment.length >= 2) segments.push(segment);
+      for (const contiguous of segments) {
+        room.visual.poly(contiguous.map(point => [point.x, point.y]), {
+          fill: 'transparent',
+          stroke,
+          strokeWidth: 0.07,
+          opacity: 0.3,
+          lineStyle: 'dotted'
+        });
+      }
     }
   };
   const drawInterRoomRoadLinks = homeRoom => {
@@ -493,8 +598,11 @@ const createRoadPlanner = ({
   const getRoadBudget = (room, paths, controllerLevel) => {
     const cached = room.memory.roadBudgetCache;
     const planUpdated = room.memory.roadPlan && room.memory.roadPlan.updated;
+    const servicePlanUpdated = room.memory.infrastructureServiceRoadPlan &&
+      room.memory.infrastructureServiceRoadPlan.updated;
     if (cached && cached.controllerLevel === controllerLevel &&
         cached.planUpdated === planUpdated &&
+        cached.servicePlanUpdated === servicePlanUpdated &&
         Game.time - cached.updated < 100) return cached.value;
     const strategicTiles = new Set();
     for (const path of paths) {
@@ -508,7 +616,8 @@ const createRoadPlanner = ({
       value,
       updated: Game.time,
       controllerLevel,
-      planUpdated
+      planUpdated,
+      servicePlanUpdated
     };
     return value;
   };
@@ -527,11 +636,17 @@ const createRoadPlanner = ({
     const queuedRoadTiles = new Set(roadSites.map(site =>
       `${site.pos.x}:${site.pos.y}`));
     const corridorUses = {};
+    const serviceApproachKeys = new Set();
     for (const path of paths) {
-      for (const point of path.points) {
+      for (const [index, point] of path.points.entries()) {
         const key = `${point.x}:${point.y}`;
+        if (path.serviceRoad && index === path.points.length - 1) {
+          serviceApproachKeys.add(key);
+        }
         corridorUses[key] = (corridorUses[key] || 0) +
-          (path.controllerFan ? 4 : 1);
+          (path.serviceRoad && index === path.points.length - 1
+            ? 10 + (path.servicePriority || 1) * 10
+            : path.controllerFan ? 4 : 1);
       }
     }
     const terrain = room.getTerrain();
@@ -541,7 +656,15 @@ const createRoadPlanner = ({
     const networkSiteCount = roadSites.filter(site =>
       candidateKeys.has(`${site.pos.x}:${site.pos.y}`)).length;
     const budgetRemaining = roadBudget - networkRoadCount - networkSiteCount;
-    const batchLimit = Math.min(2 - networkSiteCount, budgetRemaining);
+    const missingServiceApproaches = [...serviceApproachKeys].filter(key =>
+      !builtRoadTiles.has(key) && !queuedRoadTiles.has(key)).length;
+    // Endpoint approaches have two dedicated queue slots. Ordinary roads keep
+    // the old two-site throttle, so a long service network cannot flood the
+    // construction queue while links and containers remain unreachable.
+    const routineSlots = Math.max(0, 2 - networkSiteCount);
+    const serviceSlots = Math.min(2, missingServiceApproaches);
+    const batchLimit = Math.max(0,
+      Math.min(routineSlots, budgetRemaining)) + serviceSlots;
     if (batchLimit <= 0) return false;
 
     const candidates = [];
@@ -549,16 +672,20 @@ const createRoadPlanner = ({
       room.memory.controllerBrigadePlan.segments || [])
       .flatMap(segment => [segment.pickup, segment.delivery])
       .filter(Boolean).map(point => `${point.x}:${point.y}`));
+    const extensionReserved = new Set((room.memory.singleExtensionLayout?.extensionTiles || [])
+      .map(p=>`${p.x}:${p.y}`));
     for (const key of candidateKeys) {
       const visits = traffic.tiles[key] || 0;
       const corridorCount = corridorUses[key] || 0;
       const [x, y] = key.split(':').map(Number);
       if (x <= 0 || x >= 49 || y <= 0 || y >= 49 ||
           builtRoadTiles.has(key) || queuedRoadTiles.has(key) ||
-          brigadeStopKeys.has(key) ||
+          brigadeStopKeys.has(key) || extensionReserved.has(key) ||
           terrain.get(x, y) === TERRAIN_MASK_WALL &&
             !(room.memory.protectedInfrastructureRoadTiles || {})[key] ||
-          room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
+          room.lookForAt(LOOK_STRUCTURES, x, y).some(structure =>
+            structure.structureType !== STRUCTURE_CONTAINER &&
+              structure.structureType !== STRUCTURE_RAMPART) ||
           room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) continue;
       const swampBonus = terrain.get(x, y) === TERRAIN_MASK_SWAMP ? 50 : 0;
       const score = visits * 20 + corridorCount * 40 + swampBonus;
@@ -592,10 +719,12 @@ const createRoadPlanner = ({
 
   return {
     getImportantRoadPaths,
+    applyRoadPlacementCosts,
     getImportantTravelPaths,
     getControllerFanPaths,
     getInterRoomTravelPaths,
     getConvergedTravelPaths,
+    getInfrastructureServicePaths,
     getInfrastructureRoadPaths,
     isSingleLaneRoadPosition,
     getHeatmapRoadTiles,

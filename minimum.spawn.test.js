@@ -33,7 +33,7 @@ const room = { name: 'W1N1', memory: {}, energyCapacityAvailable: 800 };
 const roles = {
   source: { min: 1 }, refiller: { min: 1 }, upgrader: { min: 1 },
   repairBuilder: { min: 1 }, builder: { min: 0 }, hauler: { min: 0 },
-  tunnelBuilder: { min: 0 }, rebalancer: { min: 0 }
+  tunnelBuilder: { min: 0 }, rebalancer: { min: 0 }, defender: { min: 0 }
 };
 const covered = new Set(['extensions']);
 const baseWorkers = [
@@ -51,7 +51,8 @@ const repair = planner({
   refillerMinimumEnergy: 700
 });
 assert.strictEqual(repair.handled, true);
-assert.strictEqual(repair.gap.role, 'repairBuilder');
+assert.strictEqual(repair.gap.role, 'builder');
+assert.strictEqual(repair.gap.baseline, true);
 assert.strictEqual(repair.request.builderMission, 'repair');
 
 const missingSource = planner({
@@ -80,5 +81,37 @@ const builderGap = planner({
 assert.strictEqual(builderGap.handled, true);
 assert.strictEqual(builderGap.gap.role, 'builder');
 assert.strictEqual(builderGap.request, null);
+
+const withBuilder = [...baseWorkers, creep('builder', { work: 1,
+  memory: { home: 'W1N1', builderScope: 'local',
+    builderMission: 'flexible' } })];
+const rebalancerGap = planner({
+  room, workers: withBuilder,
+  staffingPlan: buildPlan(room, withBuilder, {
+    roles: { ...roles, repairBuilder: { min: 0 },
+      rebalancer: { min: 1 } }, remote: {}
+  }),
+  replacementCluster: null,
+  recoveryEnergy: 500, standardEnergy: 650,
+  refillerMinimumEnergy: 700
+});
+assert.strictEqual(rebalancerGap.handled, true);
+assert.strictEqual(rebalancerGap.gap.role, 'rebalancer');
+assert.strictEqual(rebalancerGap.request.role, 'rebalancer');
+assert.strictEqual(rebalancerGap.request.minimumEnergy, 650);
+
+const defenderGap = planner({
+  room, workers: withBuilder,
+  staffingPlan: buildPlan(room, withBuilder, {
+    roles: { ...roles, repairBuilder: { min: 0 }, defender: { min: 1 } },
+    remote: {}
+  }),
+  replacementCluster: null,
+  recoveryEnergy: 500, standardEnergy: 650,
+  refillerMinimumEnergy: 700
+});
+assert.strictEqual(defenderGap.gap.role, 'defender');
+assert.strictEqual(defenderGap.request.role, 'defender');
+assert.strictEqual(defenderGap.request.minimumEnergy, 500);
 
 console.log('minimum spawn scenarios passed');

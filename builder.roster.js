@@ -8,14 +8,12 @@ const createBuilderRoster = ({
     const creeps = Object.values(Game.creeps);
     for (const creep of creeps) {
       normalizeBuilderMemory(creep.memory);
-      if (creep.memory.role === 'worker' && hasBuilderBody(creep)) {
-        creep.memory.role = 'builder';
-        creep.memory.birthRole = creep.memory.birthRole === 'worker'
-          ? 'builder' : creep.memory.birthRole;
-        creep.memory.builderScope = 'local';
-        creep.memory.builderMission = 'flexible';
-      }
     }
+
+    // This pass repairs builder ownership; it does not create builder demand.
+    // The authoritative room staffing planner promotes exactly the requested
+    // number of compatible workers later in the tick. Converting every legacy
+    // worker here recreated a large builder surplus every ten ticks.
 
     // Preserve one outpost builder per planned slot. A replacement may
     // already be spawning when an old builder becomes visible again; keep the
@@ -49,6 +47,7 @@ const createBuilderRoster = ({
           !retained.has(candidate.name))) {
           creep.memory.builderScope = 'local';
           creep.memory.builderMission = 'flexible';
+          creep.memory.assignmentBuilderMission = 'flexible';
           delete creep.memory.remoteHome;
           delete creep.memory.remoteRoom;
           delete creep.memory.remoteTeam;

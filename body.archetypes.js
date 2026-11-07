@@ -6,7 +6,8 @@ const BODY_TYPES = Object.freeze({
   CONTROLLER: 'controller',
   WORKER: 'worker',
   FIELD: 'field',
-  CLAIMER: 'claimer'
+  CLAIMER: 'claimer',
+  DEFENDER: 'defender'
 });
 
 // Carrier was the old name for the pure transport family. Keep accepting it
@@ -17,8 +18,9 @@ const normalizeBodyType = bodyType => bodyType === 'carrier'
 const getBodyTypeForAssignment = assignment => {
   if (!assignment) return null;
   if (assignment.bodyType) return normalizeBodyType(assignment.bodyType);
-  if (assignment.role === 'claimer') return BODY_TYPES.CLAIMER;
-  if (assignment.role === 'remote-scout') return BODY_TYPES.FIELD;
+  if (['claimer', 'remote-reserver'].includes(assignment.role)) return BODY_TYPES.CLAIMER;
+  if (assignment.role === 'defender') return BODY_TYPES.DEFENDER;
+  if (assignment.role === 'remote-miner') return BODY_TYPES.FIELD;
   if (assignment.role === 'remote-hauler' ||
       assignment.role === 'refiller' ||
       assignment.role === 'controller-relay') return BODY_TYPES.HAULER;
@@ -50,6 +52,8 @@ const inferBodyType = (creep, constants) => {
   const work = count(constants.WORK);
   const carry = count(constants.CARRY);
   const claim = count(constants.CLAIM);
+  const attack = count(constants.ATTACK);
+  if (attack > 0) return BODY_TYPES.DEFENDER;
   if (claim > 0) return BODY_TYPES.CLAIMER;
   if (work === 0 && carry > 0) return BODY_TYPES.HAULER;
   if (carry >= Math.max(2, work * 2)) return BODY_TYPES.HAULER;
@@ -91,7 +95,9 @@ const deriveBodyTargets = demand => {
     [BODY_TYPES.FIELD]: target(demand.remoteMinerMin,
       demand.remoteMinerDesired),
     [BODY_TYPES.CLAIMER]: target(demand.claimerMin,
-      demand.claimerDesired)
+      demand.claimerDesired),
+    [BODY_TYPES.DEFENDER]: target(demand.defenderMin,
+      demand.defenderDesired)
   };
 };
 
@@ -126,9 +132,12 @@ const buildBodyRoster = (creeps, targets, constants, isViable = () => true) => {
   return { counts, viable, targets, shortages };
 };
 
-const canBodyTypeRunLane = (bodyType, lane) => {
+const canBodyTypeRunLane = (bodyType, lane, currentRole) => {
   if (['build', 'repair'].includes(lane)) {
-    return bodyType === BODY_TYPES.WORKER;
+    // An existing WORK/CARRY body may be reassigned from mining to building.
+    // Its birth family does not revoke a current builder job. Callers still
+    // verify active WORK and CARRY; miners and haulers keep their own lanes.
+    return ['builder','worker'].includes(currentRole) || bodyType === BODY_TYPES.WORKER;
   }
   if (lane === 'upgrade') {
     return bodyType === BODY_TYPES.CONTROLLER ||

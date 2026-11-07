@@ -31,6 +31,26 @@ function createRemoteCorridorPlanner({
         }
       }
     }
+    // Reserve enough width on both sides of an exit for opposing lanes.
+    // Check both tangential neighbours so either crossing direction can keep right.
+    const exits=Game.map?.describeExits?.(roomName)||{};
+    const passable=(r,x,y)=>r&&!(r.getTerrain().get(x,y)&1)&&
+      !r.lookForAt(LOOK_STRUCTURES,x,y).some(s=>
+        OBSTACLE_OBJECT_TYPES.includes(s.structureType));
+    if(typeof room.getTerrain==='function'&&typeof room.lookForAt==='function'){
+      for(const [exit,otherName] of Object.entries(exits)){
+        const other=Game.rooms[otherName];if(!other||!allowedRooms.has(otherName))continue;
+        for(let i=1;i<49;i++){
+          const positions=exit==='1'?[[i,0],[i,49]]:exit==='5'?[[i,49],[i,0]]:
+            exit==='3'?[[49,i],[0,i]]:[[0,i],[49,i]];
+          const horizontal=exit==='1'||exit==='5';
+          const wide=[-1,0,1].every(offset=>
+            passable(room,positions[0][0]+(horizontal?offset:0),positions[0][1]+(horizontal?0:offset))&&
+            passable(other,positions[1][0]+(horizontal?offset:0),positions[1][1]+(horizontal?0:offset)));
+          if(!wide)costs.set(positions[0][0],positions[0][1],255);
+        }
+      }
+    }
     return costs;
   };
 
@@ -108,7 +128,11 @@ function createRemoteCorridorPlanner({
   };
 
   const updatePlan = (room, remoteRoom, destination, sources, config) => {
-    const signature = [remoteRoom.name, destination.id,
+    const handoff=room.find(FIND_STRUCTURES).find(s=>s.structureType===STRUCTURE_CONTAINER&&
+      s.pos.x===room.memory.extensionContainerPlan?.x&&
+      s.pos.y===room.memory.extensionContainerPlan?.y);
+    if(handoff)destination=handoff;
+    const signature = ['right-hand-handoff-v2', remoteRoom.name, destination.id,
       ...sources.map(source => source.id)].join(':');
     let plan = room.memory[config.memoryKey];
     const retryIncomplete = config.retryIncompleteAfter && plan &&
@@ -128,7 +152,7 @@ function createRemoteCorridorPlanner({
       room.memory[config.memoryKey] = plan;
       console.log(config.formatLog(room, paths));
     }
-    placeRoadSites(plan.paths, { deduplicate: config.deduplicate });
+    // The shared road network queues both lanes and endpoint loops.
   };
 
   const routeConfigs = [
@@ -208,8 +232,8 @@ function createRemoteCorridorPlanner({
       for (const config of routeConfigs) {
         // Route geometry and corridor construction are background planning.
         // Existing cached paths remain active between these sparse reviews.
-        if (!scheduledRoomTick(room, ROUTE_REFRESH_INTERVAL,
-          config.phase)) continue;
+        if (!scheduledRoomTick(room, 200, config.phase) &&
+            room.memory[config.memoryKey]?.signature?.startsWith('right-hand-handoff-v2')) continue;
         const survey = room.memory[config.surveyKey];
         const remoteRoom = survey && survey.active &&
           Game.rooms[survey.targetRoom];

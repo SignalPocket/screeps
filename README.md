@@ -43,13 +43,28 @@ production and haul-backlog semantics rather than spawn-fill penalties.
 `room.situation.js` is the live-room adapter that gathers structures, sources,
 work queues, remote plans, and learned mining history before calling the pure
 population-policy and room-health modules.
-`worker.limits.js` converts local source tiles, desired roles, remote plans, and
-congestion into the room's minimum and desired total population caps.
+Active threats in owned rooms and their visible outposts immediately prioritize
+at most one attack-capable defender per hostile room, ahead of baseline staffing
+gaps. Defenders travel to the threat room and target its most dangerous hostile;
+surplus defenders recycle, and the war timer alone does not trigger more
+spawns. Nearby noncombat creeps use obstacle-aware flee paths. Observed damage sets the persistent
+`Memory.war` flag (also exposed as `global.war`) for a bounded response window;
+injured creeps seek a friendly healer or tower. Owned rooms and active outposts
+also request a local worker when no resident or assigned remote worker can
+cover the room. New defenders reserve a small carry payload when energy allows;
+after the war window ends, a safe survivor with active CARRY and MOVE parts may
+fill an open slot in an active controller brigade instead of being recycled.
+`worker.limits.js` converts policy-owned local and remote role totals into the
+room's minimum and desired population caps. When optional population is paused,
+the effective cap contracts to the protected minimum while existing auxiliary
+bodies age out through an explicit transition allowance.
 `room.stages.js` is the canonical RCL 0-8 planning record. Each stage declares
 its goal, operating logic, construction order, and advancement gates. The
 active entry is copied to `room.memory.stagePlan` for live inspection.
 `remote.hauling.js` owns outpost readiness, measured route throughput, carrier
-capacity, and buffer-pressure scaling. `energy.phase.js` owns the hysteresis
+capacity, and dispatch ranking. `remote.spawn.js` maps policy-owned minimum and
+desired gaps to one eligible lane; `remote.recovery.js` reuses genuine local
+surplus without exceeding remote minimum budgets. `energy.phase.js` owns the hysteresis
 between filling spawn capacity and releasing workers to normal work.
 `road.planner.js` owns strategic room routes, traffic history, hot-tile
 selection, road visualization, road budgets, and ranked site placement.
@@ -72,8 +87,13 @@ are assigned only while container imbalance exists and return to flexible work
 when the buffers recover.
 Empty remote haulers may switch away from an exhausted lane to the fullest
 visible outpost container; loaded and in-transit carriers finish their trip.
-When the controller buffer reaches 90%, the policy fills every usable controller
-station with a WORK-heavy upgrader, capped by the room's RCL limit.
+An active, visible outpost can also receive a cache container on the corridor
+near its border with the home room. Remote haulers stage source energy there,
+then collect it on a later trip for delivery home; this adds a trip per staged
+load without introducing a separate creep role.
+When the controller buffer reaches 90%, healthy policy raises routine upgrading
+to its two-station operating cap. The larger physical station count remains a
+surge ceiling, not an automatic spawn target.
 
 The room planner places source and controller containers on accessible,
 low-swamp routes, clusters extensions away from established traffic, and queues

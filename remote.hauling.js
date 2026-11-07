@@ -1,12 +1,48 @@
 'use strict';
+const { planHaulCapacity } = typeof Game === 'undefined'
+  ? require('./logistics.capacity') : require('logistics.capacity');
 
 const isRoomBorder = (position, margin = 1) => Boolean(position) &&
   Math.min(position.x, position.y, 49 - position.x, 49 - position.y) <= margin;
 
+/**
+ * Choose the first home handoff for a returning remote carrier.
+ *
+ * A purpose-built relay remains the strongest destination because it names the
+ * outpost this load came from. Without one, distance wins: an eligible
+ * container closer than storage receives the load, while storage wins an exact
+ * tie. The caller retains the chosen object for the rest of the delivery.
+ */
+const selectHomeDeliveryTarget = ({ candidates, storage, preferredRelay,
+  distance }) => {
+  if (preferredRelay && candidates.includes(preferredRelay)) {
+    return preferredRelay;
+  }
+  return candidates.slice().sort((a, b) =>
+    distance(a) - distance(b) ||
+    Number(b === storage) - Number(a === storage) ||
+    String(a.id).localeCompare(String(b.id)))[0] || null;
+};
+
+// An assigned lane must not lose all vision merely because every carrier
+// waits at home for that same vision. One empty roster carrier reopens it.
+const shouldProbeRemoteVision = ({creep,creeps,targetRoomName,readiness,
+  RESOURCE_ENERGY}) => {
+  if(readiness.ready || readiness.reason!=='room not visible' ||
+      creep.memory.remoteRoom!==targetRoomName || creep.memory.remoteRosterSurplus ||
+      creep.store[RESOURCE_ENERGY]>0)return false;
+  const home=creep.memory.remoteHome||creep.memory.home;
+  const leader=creeps.filter(c=>c.memory.role==='remote-hauler'&&!c.spawning&&
+    !c.memory.remoteRosterSurplus&&c.memory.remoteRoom===targetRoomName&&
+    (c.memory.remoteHome||c.memory.home)===home&&c.store[RESOURCE_ENERGY]===0)
+    .sort((a,b)=>a.name.localeCompare(b.name))[0];
+  return leader?.name===creep.name;
+};
+
 const createRemoteHauling = ({
   Game, PathFinder, buildBody, FIND_SOURCES, FIND_STRUCTURES,
   FIND_MY_SPAWNS, STRUCTURE_CONTAINER, RESOURCE_ENERGY, CARRY,
-  CARRY_CAPACITY, ENERGY_REGEN_TIME
+  CARRY_CAPACITY, ENERGY_REGEN_TIME, hasRemoteReplacementLife = () => true
 }) => {
   const getRemoteResourceSummary = targetRoomName => {
     const remoteRoom = Game.rooms[targetRoomName];
@@ -56,7 +92,13 @@ const createRemoteHauling = ({
     if (!remoteRoom) return { ready: false, reason: 'room not visible' };
     const sources = remoteRoom.find(FIND_SOURCES)
       .sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y);
-    const source = sources[slot % Math.max(1, sources.length)];
+    const home = Object.values(Game.rooms).find(room =>
+      room.memory && room.memory.remoteHaulRoutes && room.memory.remoteHaulRoutes[targetRoomName]);
+    const mapped = home && home.memory.remoteHaulRoutes[targetRoomName].slotSources;
+    const planned = home && home.memory.remoteHaulRoutes[targetRoomName];
+    const sourceId = planned && planned.lanes && mapped && planned.lanes[mapped[slot]]?.sourceId;
+    const source = sources.find(source => source.id === sourceId) ||
+      sources[slot % Math.max(1, sources.length)];
     if (!source) return { ready: false, reason: 'source not visible' };
     const container = source.pos.findInRange(FIND_STRUCTURES, 2, {
       filter: structure => structure.structureType === STRUCTURE_CONTAINER
@@ -85,7 +127,7 @@ const createRemoteHauling = ({
     });
     if (!containers.length) return Math.max(1, sources.length);
     const spawn = homeRoom.find(FIND_MY_SPAWNS)[0];
-    const haulSources = sources.filter(source => containers.some(container =>
+    const haulSources = sources.slice().sort((a, b) => a.pos.x - b.pos.x || a.pos.y - b.pos.y).filter(source => containers.some(container =>
       source.pos.getRangeTo(container) <= 2));
     const body = buildBody('remote-hauler', homeRoom.energyCapacityAvailable) ||
       buildBody('remote-hauler', homeRoom.energyAvailable);
@@ -95,7 +137,7 @@ const createRemoteHauling = ({
       homeRoom.memory.remoteHaulRoutes = {};
     }
     let routePlan = homeRoom.memory.remoteHaulRoutes[targetRoomName];
-    const signature = haulSources.map(source => source.id).sort().join(':');
+    const signature = 'capacity-v1:' + haulSources.map(source => source.id).join(':');
     if (!routePlan || routePlan.signature !== signature ||
         routePlan.carryCapacity !== carryCapacity ||
         Game.time - (routePlan.updated || 0) >= 1000) {
@@ -112,34 +154,44 @@ const createRemoteHauling = ({
           plainCost: 2,
           swampCost: 10
         });
-        return search.path.length || linearDistance * 50;
+        const route = Game.map.findRoute && Game.map.findRoute(homeRoomName, targetRoomName);
+        const fallback = Math.max(1, Array.isArray(route) ? route.length : linearDistance) * 50;
+        return search.incomplete ? Math.max(fallback, search.path.length)
+          : search.path.length || fallback;
       });
-      routePlan = { updated: Game.time, signature, carryCapacity, routeLengths };
+      routePlan = { updated: Game.time, signature, carryCapacity, routeLengths,
+        slotSources: routePlan && routePlan.signature === signature ? routePlan.slotSources : [] };
       homeRoom.memory.remoteHaulRoutes[targetRoomName] = routePlan;
     }
-    const throughputEnergy = haulSources.reduce((total, source, index) => {
-      const production = source.energyCapacity / ENERGY_REGEN_TIME;
-      const roundTripTicks = Math.max(20,
-        (routePlan.routeLengths[index] || 25) * 2 + 10);
-      return total + production * roundTripTicks;
-    }, 0);
-    const routeTarget = Math.max(haulSources.length,
-      Math.ceil(throughputEnergy / carryCapacity));
-    const highestPressure = Math.max(...containers.map(container => {
-      const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
-      return container.store[RESOURCE_ENERGY] / capacity;
-    }));
-    // Population follows route throughput, not momentary container pressure.
-    // Pressure spikes are dispatch information; turning them into bodies made
-    // the stable roster grow and shrink faster than a creep lifetime.
-    const target = Math.min(haulSources.length * 6, routeTarget);
-    if (routePlan.target !== target) {
-      console.log(`[${Game.time}] ${targetRoomName} remote hauling -> ` +
-        `${target} carriers; routes ${routePlan.routeLengths.join('/')} ` +
-        `tiles, cargo ${carryCapacity}, pressure ` +
-        `${Math.round(highestPressure * 100)}%`);
-      routePlan.target = target;
-    }
+    const oldSlots = routePlan.slotSources || [];
+    const stats = homeRoom.memory.haulTripStats && homeRoom.memory.haulTripStats[targetRoomName];
+    const lanes = haulSources.map((source, index) => {
+      const observations = Object.entries(stats && stats.slots || {})
+        .filter(([slot, value]) => Game.time - value.updated <= 1500 &&
+          (value.sourceId ? value.sourceId === source.id :
+            (oldSlots[Number(slot)] ?? Number(slot) % haulSources.length) === index))
+        .map(([, value]) => value);
+      const estimated = Math.max(20, (routePlan.routeLengths[index] || 50) * 2 + 10);
+      const measured = observations.length
+        ? observations.reduce((sum, value) => sum + value.roundTripTicks, 0) / observations.length
+        : null;
+      return { sourceId: source.id, production: source.energyCapacity / ENERGY_REGEN_TIME,
+        backlog: containers.filter(container => source.pos.getRangeTo(container) <= 2)
+          .reduce((sum, container) => sum + container.store[RESOURCE_ENERGY], 0),
+        roundTripTicks: measured || estimated, basis: measured ? 'observed' : 'path estimate',
+        utilization: observations.length ? Math.min(0.95, observations.reduce(
+          (sum, value) => sum + value.loadRatio, 0) / observations.length) : 0.85 };
+    });
+    const carriers = Object.values(Game.creeps || {}).filter(creep =>
+      creep.memory.role === 'remote-hauler' &&
+      (creep.memory.remoteHome || creep.memory.home) === homeRoomName &&
+      creep.memory.remoteRoom === targetRoomName && hasRemoteReplacementLife(creep))
+      .map(creep => ({ slot: creep.memory.remoteHaulerSlot,
+        capacity: creep.store.getCapacity(RESOURCE_ENERGY) }));
+    const capacityPlan = planHaulCapacity({ lanes, carriers, newCapacity: carryCapacity,
+      previousSlots: oldSlots });
+    Object.assign(routePlan, capacityPlan, { planned: Game.time, carryCapacity });
+    const target = capacityPlan.target;
     return target;
   };
 
@@ -151,4 +203,9 @@ const createRemoteHauling = ({
   };
 };
 
-module.exports = { createRemoteHauling, isRoomBorder };
+module.exports = {
+  createRemoteHauling,
+  isRoomBorder,
+  selectHomeDeliveryTarget,
+  shouldProbeRemoteVision
+};

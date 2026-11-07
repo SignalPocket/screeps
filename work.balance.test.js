@@ -1,0 +1,13 @@
+'use strict';const assert=require('assert');const {allocateBalancedWork}=require('./work.balance');
+const worker=(name,work=3,lane)=>({name,memory:{workJob:{lane}},getActiveBodyparts:()=>work});
+let crew=[worker('a',7),worker('b',4),worker('c',3),worker('d',3,'build')];
+let p=allocateBalancedWork({workers:crew,repairTargets:20,buildSlots:4});assert.strictEqual(p.repair.size,3);assert.strictEqual(p.build.size,1);assert(p.build.has('d'),'retain one useful construction job');assert(p.repair.has('a'),'strong worker repairs');
+p=allocateBalancedWork({workers:crew,repairTargets:1,buildSlots:4});assert.strictEqual(p.repair.size,1);assert.strictEqual(p.build.size,3,'do not invent more repair targets');
+p=allocateBalancedWork({workers:crew,repairTargets:0,buildSlots:4});assert.strictEqual(p.build.size,4);
+p=allocateBalancedWork({workers:crew,repairTargets:20,buildSlots:0});assert.strictEqual(p.repair.size,4);
+const fs=require('fs');const main=fs.readFileSync(require.resolve('./main'),'utf8');assert(main.includes('balancedWork.repair.has(creep.name)'));assert(main.includes("if(lane==='build'&&creep.memory.workJob?.lane==='repair'"),'the reserved building lane can leave an old repair job');
+console.log('repair-biased staffing keeps construction moving and respects real repair targets');
+const vm=require('vm');const begin=main.indexOf('    const workCreeps = roomCreeps.filter('),end=main.indexOf('    // Carriers may use',begin);
+const roomCreeps=['builder','worker','upgrader','harvester','miner'].map(role=>({name:role,memory:{role,bodyType:'worker'},getActiveBodyparts:()=>3}));
+const eligible=vm.runInNewContext(main.slice(begin,end)+';workCreeps.map(c=>c.name)',{roomCreeps,CARRY:'carry',hasWorkParts:()=>true,canBodyTypeRunLane:()=>true,isBuilder:()=>false,isOutpostBuilder:()=>false,isExpansionBuilder:()=>false});
+assert.deepStrictEqual(Array.from(eligible),['builder','worker','upgrader'],'mining bodies cannot consume the repair/build staffing slots');

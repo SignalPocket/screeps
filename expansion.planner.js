@@ -1,7 +1,7 @@
 'use strict';
 
 const createExpansionPlanner = ({
-  Game, getRoomSources, FIND_STRUCTURES, FIND_MY_SPAWNS,
+  Game, getRoomSources, getRoomSituation, FIND_STRUCTURES, FIND_MY_SPAWNS,
   FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, STRUCTURE_CONTAINER,
   STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
@@ -62,6 +62,11 @@ const createExpansionPlanner = ({
       .sort((a, b) => a.name.localeCompare(b.name))[0];
     if (!primarySpawn) return null;
     const homeRoom = primarySpawn.room;
+    const homePolicy = getRoomSituation
+      ? getRoomSituation(homeRoom).policy : null;
+    const permissions = homePolicy && homePolicy.permissions || {};
+    const expansionAllowed = permissions.expansion === true;
+    const maintenanceAllowed = permissions.expansionMaintenance === true;
     const ownedRoomCount = Object.values(Game.rooms).filter(room =>
       room.controller && room.controller.my).length;
     let plan = homeRoom.memory.expansionPlan;
@@ -85,6 +90,9 @@ const createExpansionPlanner = ({
     plan.gclLevel = Game.gcl.level;
     plan.ownedRooms = ownedRoomCount;
     plan.canClaim = Game.gcl.level > ownedRoomCount;
+    plan.homeRcl = homeRoom.controller && homeRoom.controller.level || 0;
+    plan.homeHealth = homePolicy && homePolicy.health || 'unknown';
+    plan.policyAllowed = expansionAllowed;
     if (targetController && targetController.my) {
       const targetSpawn = targetRoom.find(FIND_MY_SPAWNS)[0];
       const spawnSite = targetRoom.find(FIND_MY_CONSTRUCTION_SITES, {
@@ -94,8 +102,8 @@ const createExpansionPlanner = ({
         plan.status = 'established';
         plan.spawnId = targetSpawn.id;
       } else {
-        plan.status = 'bootstrap';
-        if (!spawnSite) {
+        plan.status = maintenanceAllowed ? 'bootstrap' : 'bootstrap-paused';
+        if (maintenanceAllowed && !spawnSite) {
           for (const candidate of findSpawnSite(targetRoom, targetController)) {
             if (targetRoom.createConstructionSite(candidate.x, candidate.y,
               STRUCTURE_SPAWN) === OK) {
@@ -106,12 +114,14 @@ const createExpansionPlanner = ({
               break;
             }
           }
-        } else {
+        } else if (spawnSite) {
           plan.spawnSiteId = spawnSite.id;
         }
       }
     } else if (!plan.canClaim) {
       plan.status = 'waiting-gcl';
+    } else if (!expansionAllowed) {
+      plan.status = 'waiting-home-policy';
     } else if (homeRoom.energyCapacityAvailable <
         BODYPART_COST[CLAIM] + BODYPART_COST[MOVE]) {
       plan.status = 'waiting-energy-capacity';
@@ -121,7 +131,8 @@ const createExpansionPlanner = ({
     if (plan.lastReportedStatus !== plan.status) {
       console.log(`[${Game.time}] expansion ${plan.targetRoom}: ` +
         `${plan.lastReportedStatus || 'planned'} -> ${plan.status} ` +
-        `(GCL ${plan.gclLevel}, rooms ${plan.ownedRooms})`);
+        `(GCL ${plan.gclLevel}, rooms ${plan.ownedRooms}, ` +
+        `RCL ${plan.homeRcl}, health ${plan.homeHealth})`);
       plan.lastReportedStatus = plan.status;
     }
     return plan;

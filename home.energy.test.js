@@ -1,0 +1,10 @@
+'use strict';const assert=require('assert');const {homePickupCandidates,networkRecoveryNeeded}=require('./home.energy');
+const link={id:'spawn-link',store:{}},buffer={id:'spawn-buffer',store:{}},sourceStore={id:'s2-container',store:{}},storage={id:'storage',store:{}};
+const creep={memory:{role:'hauler'}};const args={creep,candidates:[link,buffer,sourceStore,storage],planned:{id:'s2'},isSpawnReserve:s=>[link,buffer].includes(s),isSourceBuffer:(s,p)=>s===sourceStore&&p.id==='s2'};
+assert.deepStrictEqual(homePickupCandidates(args),[sourceStore],'source assignment survives pickup reservation matching');
+assert.deepStrictEqual(homePickupCandidates({...args,planned:storage}),[storage]);
+assert.deepStrictEqual(homePickupCandidates({...args,planned:null}),[sourceStore,storage],'haulers cannot siphon reserved spawn fuel');
+assert.strictEqual(homePickupCandidates({...args,creep:{memory:{role:'refiller'}}}).length,4);
+assert(networkRecoveryNeeded({energy:800,capacity:1750}));assert(networkRecoveryNeeded({energy:1700,capacity:1750,previous:true}));assert(!networkRecoveryNeeded({energy:1750,capacity:1750,previous:true}));assert(!networkRecoveryNeeded({energy:1700,capacity:1750}));
+const fs=require('fs');const main=fs.readFileSync(require.resolve('./main'),'utf8');assert(main.includes('restoreExtensionReserve || restoreSpawnNetwork'),'refill recovery can cancel a lower-priority loaded delivery');assert(main.includes('getCandidates:c=>homePickupCandidates'));
+console.log('assigned source pickups, protected spawn reserves and sustained network recovery passed');

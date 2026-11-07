@@ -77,3 +77,16 @@ assert.strictEqual(stationLimited.plans[0].promoted.length, 0);
 assert.strictEqual(stationLimited.remainingSurplus.length, 2);
 
 console.log('source recovery scenarios passed');
+
+const weak=worker('weak',4,{role:'harvester',preferredSource:source.id});
+const stronger=worker('surplus-strong',7,{role:'builder'});
+const upgrade=planSourceRecovery({...options,workers:[weak],
+ surplus:[stronger],maxWorkers:()=>1});
+assert.deepStrictEqual(upgrade.plans[0].released.map(w=>w.name),['weak']);
+assert.deepStrictEqual(upgrade.plans[0].promoted.map(w=>w.name),['surplus-strong']);
+assert.strictEqual(upgrade.plans[0].assignedWork,7);
+stronger.memory={role:'harvester',sourceReserve:source.id};
+const settled=planSourceRecovery({...options,workers:[stronger],
+ surplus:[weak],maxWorkers:()=>1});
+assert.strictEqual(settled.plans[0].promoted.length,0);
+assert.deepStrictEqual(settled.plans[0].retained.map(w=>w.name),['surplus-strong']);

@@ -4,7 +4,7 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
   const roleCodes = {
     worker: 'WK', miner: 'LM', harvester: 'LM', hauler: 'LC',
     refiller: 'RF', rebalancer: 'RB', upgrader: 'UP', builder: 'BU',
-    'remote-scout': 'OP', 'remote-hauler': 'OC', claimer: 'CL'
+    'remote-miner': 'OM', 'remote-hauler': 'OC', 'remote-reserver': 'OR', claimer: 'CL'
   };
 
   const nextOrdinal = () => Math.max(0,
@@ -60,7 +60,7 @@ const createCreepNaming = ({ Game, Memory, getRoomSources }) => {
         ? 'BU' : roleCodes[assignment.role] || 'WK'];
     if (assignment.role === 'refiller' && assignment.refillClusterId) {
       parts.push(assignment.refillClusterId === 'primary' ? 'P' : 'O');
-    } else if (assignment.role === 'remote-scout' &&
+    } else if (assignment.role === 'remote-miner' &&
         Number.isInteger(assignment.remoteSlot)) {
       parts.push(`S${assignment.remoteSlot + 1}`);
     } else if (assignment.role === 'remote-hauler' &&

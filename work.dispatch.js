@@ -1,8 +1,17 @@
 'use strict';
 
-// Durable ownership for colony work. A room may recalculate demand every tick,
-// but a creep keeps a useful job until it completes, becomes invalid, or a
-// strictly higher-priority emergency preempts it.
+/**
+ * Durable ownership for colony work.
+ *
+ * Inputs are group-planner proposals keyed by creep name. Output jobs bind one
+ * creep to one lane and, when known, exact source/target object IDs. Re-running
+ * the group planner is not by itself a reassignment reason: a useful existing
+ * job wins until it completes, its object becomes invalid, or a strictly
+ * higher-priority emergency preempts it.
+ *
+ * This module decides whether ownership persists. It does not choose staffing,
+ * find replacement targets, move creeps, or perform Screeps actions.
+ */
 const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
   const durableLanes = new Set([
     'collect', 'refill', 'refill-buffer', 'buffer', 'storage', 'supply',
@@ -48,23 +57,35 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
     targetId: proposal.targetId || null,
     amount: Math.max(0, proposal.amount || 0),
     priority: Number.isFinite(proposal.priority) ? proposal.priority : 100,
+    reason: proposal.reason || 'previous assignment completed or invalid',
     created: Game.time,
     updated: Game.time
   });
 
+  /** Reconcile the whole group before any creep begins execution this tick. */
   const reconcile = (creeps, proposals) => {
     const jobs = {};
     for (const creep of creeps) {
       const proposal = proposals[creep.name];
       let job = creep.memory.workJob;
       if (proposal && proposal.cancelCurrent) job = null;
-      const preempt = proposal && job &&
+      const higherPriority = proposal && job &&
         Number.isFinite(proposal.priority) &&
         proposal.priority < (Number.isFinite(job.priority)
           ? job.priority : 100);
+      // A loaded delivery owns its exact destination for the current load.
+      // Routine Store/StockRC/StockSp priority changes wait for completion;
+      // only priority zero (the room cannot fund a worker body) may preempt.
+      const preempt = higherPriority &&
+        (!deliveryLanes.has(job.lane) || proposal.priority === 0);
       if (!isUseful(creep, job) || preempt) job = null;
       if (!job && proposal && durableLanes.has(proposal.lane)) {
-        job = makeJob(creep, proposal);
+        job = makeJob(creep, {
+          ...proposal,
+          reason: preempt
+            ? 'priority-zero room-energy emergency'
+            : proposal.reason
+        });
       }
       if (job) {
         job.updated = Game.time;
@@ -95,4 +116,42 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
   return { reconcile, bindTarget, complete, isUseful };
 };
 
-module.exports = { createWorkDispatch };
+// Execute a partial carrier's reserved pickup before the loaded-task queue.
+// Use the pickup allocator's target and quantity; never bypass its admission cap.
+const collectPartialHauler = ({ creep, lane, target, resource, canWithdraw,
+  reserve, release, remember, forget, move, OK, ERR_NOT_IN_RANGE }) => {
+  if (creep.memory.role !== 'hauler' || lane !== 'collect' ||
+      !(creep.store[resource] > 0) ||
+      creep.store.getFreeCapacity(resource) <= 0 ||
+      !target || !canWithdraw(creep, target)) return false;
+  const amount = reserve(target, creep.store.getFreeCapacity(resource));
+  if (amount <= 0) return false;
+  const result = creep.withdraw(target, resource, amount);
+  if (result !== OK && result !== ERR_NOT_IN_RANGE) {
+    release(target, amount);
+    forget(target);
+    return false;
+  }
+  remember(target, amount);
+  if (result === ERR_NOT_IN_RANGE) move(creep, target, 1);
+  if (result === OK) {
+    const sources = creep.memory.energySources || [];
+    if (!sources.includes(target.id)) sources.push(target.id);
+    creep.memory.energySources = sources;
+  }
+  creep.memory.taskTarget = target.id;
+  return true;
+};
+
+// Retry only failed assignments, preserving intentional reserve parking.
+// Callers supply capability checks and reservation-aware concrete actions.
+const recoverBlockedWork = ({ creep, lane, actions }) => {
+  if (lane === 'standby' || creep.memory.task &&
+      creep.memory.task !== 'wait-job') return null;
+  for (const action of actions) {
+    if (action.eligible() && action.run()) return action;
+  }
+  return null;
+};
+
+module.exports = { createWorkDispatch, collectPartialHauler, recoverBlockedWork };

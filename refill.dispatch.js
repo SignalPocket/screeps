@@ -4,8 +4,7 @@
 // Persistent valid trips are retained first; remaining carriers are matched by
 // structure priority and distance while accounting for each carrier's load.
 const planRefillTargets = ({ rooms, creeps, roomDemandPlans, Game,
-  RESOURCE_ENERGY, FIND_MY_STRUCTURES, STRUCTURE_SPAWN,
-  STRUCTURE_EXTENSION, STRUCTURE_TOWER, isRefillTargetFor,
+  RESOURCE_ENERGY, getRoomRefillStructures, isRefillTargetFor,
   getRefillPriority }) => {
   const planned = {};
   for (const room of rooms) {
@@ -15,13 +14,10 @@ const planRefillTargets = ({ rooms, creeps, roomDemandPlans, Game,
       creep.room.name === room.name &&
       demandPlan.assignments[creep.name] === 'refill' &&
       creep.store[RESOURCE_ENERGY] > 0);
-    const targets = room.find(FIND_MY_STRUCTURES, {
-      filter: structure =>
-        (structure.structureType === STRUCTURE_SPAWN ||
-          structure.structureType === STRUCTURE_EXTENSION ||
-          structure.structureType === STRUCTURE_TOWER) &&
-        structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0
-    });
+    // This is the shared per-tick spawn/extension/tower list from room.index,
+    // not another room.find for every dispatcher or filler.
+    const targets = getRoomRefillStructures(room).filter(structure =>
+      structure.store.getFreeCapacity(RESOURCE_ENERGY) > 0);
     const remaining = Object.fromEntries(targets.map(target => [target.id,
       target.store.getFreeCapacity(RESOURCE_ENERGY)]));
     const assigned = new Set();
@@ -30,10 +26,13 @@ const planRefillTargets = ({ rooms, creeps, roomDemandPlans, Game,
       const target = Game.getObjectById(carrier.memory.refillTarget);
       const targetPriority = target
         ? getRefillPriority(room, target, carrier) : Infinity;
-      const carrierHigherPriorityNeed = targets.some(candidate =>
-        getRefillPriority(room, candidate, carrier) < targetPriority &&
-        remaining[candidate.id] > 0 &&
-        isRefillTargetFor(carrier, candidate));
+      const carrierHigherPriorityNeed = targets.some(candidate => {
+        const priority = getRefillPriority(room, candidate, carrier);
+        return remaining[candidate.id] > 0 &&
+          isRefillTargetFor(carrier, candidate) &&
+          (priority < targetPriority || target && priority === targetPriority &&
+            carrier.pos.getRangeTo(candidate) < carrier.pos.getRangeTo(target));
+      });
       const isRefilling = carrier.memory.task === 'refill' ||
         carrier.memory.role === 'remote-hauler' &&
           carrier.memory.task === 'remote-haul';

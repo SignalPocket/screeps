@@ -15,13 +15,14 @@ const createMinimumSpawnPlanner = dependencies => {
     const haulers = jobs.hauler.members;
     const sourceWorkers = jobs.source.members;
     const result = request => ({ handled: true, request, gap, haulers });
-    if (!gap || gap.role === 'rebalancer') {
+    if (!gap) {
       return { handled: false, request: null, gap, haulers };
     }
     if (gap.role === 'source') {
       const sourceEntry = getRoomSources(room).map(source => ({
         source,
         count: sourceWorkers.filter(creep =>
+          creep.memory.minerSource === source.id ||
           creep.memory.preferredSource === source.id ||
           creep.memory.harvestSource === source.id ||
           creep.memory.sourceReplacement === source.id ||
@@ -32,6 +33,11 @@ const createMinimumSpawnPlanner = dependencies => {
         forceSpawn: true, minimumEnergy: recoveryEnergy
       } : null);
     }
+    if (gap.role === 'defender') {
+      return result({
+        role: 'defender', forceSpawn: true, minimumEnergy: recoveryEnergy
+      });
+    }
     if (gap.role === 'upgrader') {
       return result({
         role: 'upgrader', forceSpawn: true, minimumEnergy: recoveryEnergy
@@ -41,8 +47,11 @@ const createMinimumSpawnPlanner = dependencies => {
       const convertible = workers.some(creep => !creep.spawning &&
         (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
         hasBuilderBody(creep));
+      const repairNeeded = jobs.repairBuilder &&
+        jobs.repairBuilder.coverageCount < jobs.repairBuilder.min;
       return result(convertible ? null : {
-        role: 'builder', builderScope: 'local', builderMission: 'build',
+        role: 'builder', builderScope: 'local',
+        builderMission: repairNeeded ? 'repair' : 'build',
         forceSpawn: true,
         minimumEnergy: standardEnergy
       });
@@ -59,6 +68,12 @@ const createMinimumSpawnPlanner = dependencies => {
         role: 'hauler', forceSpawn: true,
         minimumEnergy: workers.some(creep => creep.memory.role === 'hauler')
           ? standardEnergy : recoveryEnergy
+      });
+    }
+    if (gap.role === 'rebalancer') {
+      return result({
+        role: 'rebalancer', forceSpawn: true,
+        minimumEnergy: standardEnergy
       });
     }
     if (gap.role === 'refiller') {

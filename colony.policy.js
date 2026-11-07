@@ -38,6 +38,8 @@ const normalize = entry => {
  * @returns {object} mode, health, permissions, budgets, roles, remote, totals
  */
 const derivePopulationPolicy = state => {
+  // Phase 1: normalize raw measurements. Defaults here make an incomplete
+  // observation conservative rather than allowing NaN to spread into staffing.
   const rcl = clamp(state.rcl || 0, 0, 8);
   const sources = Math.max(1, state.sourceCount || 0);
   const energyRatio = clamp(state.energyRatio || 0, 0, 1);
@@ -56,13 +58,21 @@ const derivePopulationPolicy = state => {
   const droppedBacklog = scaleEnergyBudget(energyCapacity, 0.4, {
     minimum: 100
   });
+  const sourceBacklog = scaleEnergyBudget(energyCapacity, 0.75, {
+    minimum: 500
+  });
   const starved = state.energyStarvedHold ||
     energyRatio < 0.35 && bufferRatio < 0.25 &&
       storedEnergy < starvationReserve;
-  const logisticsBacklog = bufferRatio >= 0.65 ||
+  const highestSourceBufferRatio = clamp(
+    state.highestSourceBufferRatio == null
+      ? bufferRatio : state.highestSourceBufferRatio, 0, 1);
+  const logisticsBacklog = highestSourceBufferRatio >= 0.65 ||
+    (state.storedSourceEnergy || 0) >= sourceBacklog ||
     (state.droppedEnergy || 0) >= droppedBacklog;
+  const logisticsRecovery = logisticsBacklog && energyRatio < 0.85;
 
-  // One shared health classification controls optional colony load.  Role
+  // Phase 2: classify economic health. One shared health classification controls optional colony load.  Role
   // modules must not each invent their own interpretation of a low spawn
   // charge, a large reserve, or the current RCL.
   const reserveFloor = scaleReserve(energyCapacity, 2, 600);
@@ -70,25 +80,49 @@ const derivePopulationPolicy = state => {
   let health = 'healthy';
   if (bootstrap || controllerDanger) health = 'critical';
   else if (starved || repair.critical) health = 'recovering';
-  else if (energyRatio < 0.5 ||
-      sourceBufferCapacity > 0 && bufferRatio < 0.2 ||
+  else if (logisticsRecovery ||
+      energyRatio < 0.5 && storedEnergy < reserveSurplus ||
       storedEnergy < reserveFloor) health = 'strained';
-  else if (bufferRatio >= 0.75 && storedEnergy >= reserveSurplus) {
+  else if (!logisticsBacklog && energyRatio >= 0.85 &&
+      bufferRatio >= 0.2 && bufferRatio <= 0.5 &&
+      storedEnergy >= reserveSurplus) {
     health = 'surplus';
   }
   const healthRank = {
     critical: 0, recovering: 1, strained: 2, healthy: 3, surplus: 4
   }[health];
+  const remoteMaintenance = rcl >= 3 && healthRank >= 1;
+  const remoteBacklogThreshold = scaleEnergyBudget(energyCapacity, 2, {
+    minimum: 1000
+  });
+  // Established income routes need their measured carrier capacity before
+  // their containers fill. Home road completion and expansion health gates
+  // must not shrink three productive outposts to one carrier each.
+  const fundedEstablishedRoutes = (state.activeRemoteRooms || 0) > 0 &&
+    (state.remoteHaulerDemand || 0) > (state.activeRemoteRooms || 0) &&
+    storedEnergy >= reserveSurplus;
+  const remoteHaulingRecovery = rcl >= 5 && remoteMaintenance &&
+    (fundedEstablishedRoutes || (state.remoteBlockedRooms || 0) > 0 &&
+      (state.remoteBacklog || 0) >= remoteBacklogThreshold);
   const permissions = {
     // Existing productive outposts are income infrastructure from RCL 3 on.
     // Their floor survives a strained room, while expansion to full route
     // throughput waits for a healthy RCL 5 economy.
-    remoteMaintenance: rcl >= 3 && healthRank >= 1,
+    remoteMaintenance,
+    // Full remote containers are an income outage, not optional expansion.
+    // Permit only the measured carrier surge while established rooms are
+    // blocked; miners, builders, claims, and new remote rooms keep their
+    // ordinary health gates.
+    remoteHaulingRecovery,
     remoteGrowth: rcl >= 5 && healthRank >= 3 &&
       state.coreRoadAccessComplete !== false,
-    controllerBrigade: rcl >= 5 && healthRank >= 3,
+    controllerBrigade: rcl >= 5 && healthRank >= 3 &&
+      !state.extensionMigrationActive,
     optionalConstruction: healthRank >= 2,
-    optionalPopulation: healthRank >= 3
+    optionalPopulation: healthRank >= 3,
+    expansion: rcl >= 7 && healthRank >= 3 &&
+      state.coreRoadAccessComplete !== false,
+    expansionMaintenance: rcl >= 7 && healthRank >= 1
   };
   const budgets = {
     constructionCrewScale: healthRank <= 1 ? 0.25
@@ -123,9 +157,14 @@ const derivePopulationPolicy = state => {
     Math.ceil(routeLoad / 35)) : 0;
   const haulBacklogUnit = Math.max(500,
     Math.round(sourceBufferCapacity * 0.3));
-  const haulerDesired = haulerMinimum + (logisticsBacklog ?
+  const haulerPressure = logisticsBacklog ?
     clamp(Math.ceil((state.storedSourceEnergy || 0) / haulBacklogUnit),
-      1, 3) : 0);
+      1, 3) : 0;
+  // Logistics recovery is itself essential population work. Keep the
+  // measured hauling surge even while unrelated optional growth is paused.
+  const haulerDesired = haulerMinimum +
+    (permissions.optionalPopulation || logisticsRecovery
+      ? haulerPressure : 0);
   const haulerMaximum = haulerDesired + (containerEconomy ? 1 : 0);
 
   const prioritySites = (construction.container || 0) +
@@ -135,12 +174,20 @@ const derivePopulationPolicy = state => {
   const buildUnit = scaleBacklog(8000, energyCapacity);
   const buildMaximumUnit = scaleBacklog(4000, energyCapacity);
   const hasConstruction = buildRemaining > 0 || prioritySites > 0;
-  const builderMinimum = hasConstruction ? 1 : 0;
+  const essentialSites = (construction.spawn || 0) +
+    (construction.container || 0);
+  const roadRecoveryFloor = construction.roadUnqueued > 0 &&
+    !starved && storedEnergy >= reserveSurplus
+      ? clamp(Math.ceil((construction.roadUnqueued * 300) / buildUnit),
+        1, Math.min(4, Math.max(1, rcl))) : 0;
+  const builderMinimum = Math.max(roadRecoveryFloor, essentialSites > 0 ||
+    permissions.optionalConstruction && hasConstruction ? 1 : 0);
   let builderDesired = hasConstruction
     ? clamp(Math.ceil(buildRemaining / buildUnit), 1, Math.max(1, rcl))
     : 0;
   if (prioritySites && builderDesired < 2 && !starved) builderDesired = 2;
   if (starved && !prioritySites) builderDesired = builderMinimum;
+  if (!permissions.optionalPopulation) builderDesired = builderMinimum;
   const builderMaximum = hasConstruction
     ? Math.max(builderDesired, clamp(
       Math.ceil(buildRemaining / buildMaximumUnit), 1,
@@ -170,16 +217,21 @@ const derivePopulationPolicy = state => {
     ? Math.max(repairBuilderDesired, repairBuilderCapacity)
     : Math.max(standingFixerMinimum, repairBuilderDesired);
 
-  const upgraderMinimum = state.controllerOwned === false ? 0 : 1;
+  // Controller labor has two independent halves. Relay/hauler bodies deliver
+  // energy to the controller buffer; upgrader WORK parts consume that energy.
+  // The minimum therefore remains one even with a complete brigade.
+  const baseUpgraderMinimum = state.controllerOwned === false ? 0 : 1;
   const controllerWorkSpots = Math.max(1,
     state.controllerWorkSpots || 1);
-  const upgraderStationCapacity = Math.max(upgraderMinimum,
+  const upgraderStationCapacity = Math.max(baseUpgraderMinimum,
     Math.min(controllerWorkSpots, Math.max(1, rcl + 1)));
+  const upgraderMinimum = controllerDanger
+    ? Math.min(upgraderStationCapacity, Math.max(2, baseUpgraderMinimum))
+    : baseUpgraderMinimum;
   const routineUpgraderCapacity = Math.min(2, upgraderStationCapacity);
   let upgraderDesired = upgraderMinimum;
   const upgraderReserveUnit = scaleReserve(energyCapacity, 5, 1500);
-  if (controllerDanger) upgraderDesired = Math.min(
-    upgraderStationCapacity, Math.max(2, upgraderDesired));
+  if (controllerDanger) upgraderDesired = upgraderMinimum;
   else if (!starved && (bufferRatio >= 0.75 ||
       storedEnergy >= upgraderReserveUnit)) {
     upgraderDesired = clamp(1 + Math.floor(
@@ -188,12 +240,20 @@ const derivePopulationPolicy = state => {
   }
   if (!starved && (state.controllerBufferRatio || 0) >= 0.9) {
     // A persistently full controller buffer means delivery is outrunning RC
-    // consumption. Fill every usable controller station immediately instead
-    // of raising the target one creep at a time across several spawn cycles.
+    // consumption. This is why the current policy can request a second
+    // upgrader even while the brigade and buffer are full: the second body is
+    // meant to drain the buffer, not deliver to it. Raise routine upgrading to
+    // its two-station operating cap; max remains the physical surge ceiling.
     upgraderDesired = Math.max(upgraderDesired, routineUpgraderCapacity);
   }
-  const upgraderMaximum = Math.max(upgraderDesired,
-    upgraderStationCapacity);
+  if (!permissions.optionalPopulation && !controllerDanger) {
+    upgraderDesired = upgraderMinimum;
+  }
+  if (state.extensionMigrationActive && !controllerDanger) {
+    upgraderDesired = baseUpgraderMinimum;
+  }
+  const upgraderMaximum = state.extensionMigrationActive && !controllerDanger
+    ? baseUpgraderMinimum : Math.max(upgraderDesired, upgraderStationCapacity);
 
   const hasBufferNetwork = (state.sourceContainerCount || 0) >= 2;
   const activeOutposts = Math.max(0, state.activeRemoteRooms || 0);
@@ -212,14 +272,18 @@ const derivePopulationPolicy = state => {
   if (hasBufferNetwork && containerImbalance >= 0.75) {
     rebalancerDesired = Math.max(rebalancerDesired, 4);
   }
+  if (!permissions.optionalPopulation) {
+    rebalancerDesired = rebalancerMinimum;
+  }
   const rebalancerMaximum = rebalancerDesired > 0
     ? Math.min(6, rebalancerDesired + 1) : 0;
 
   const activeRemoteRooms = Math.max(0, state.activeRemoteRooms || 0);
   const activeRemoteSources = Math.max(activeRemoteRooms,
     state.activeRemoteSources || 0);
-  const remoteMinerDemand = Math.max(activeRemoteSources,
-    state.remoteMinerDemand || 0);
+  const remoteMinerDemand = Number.isFinite(state.deliveryEligibleMinerDemand)
+    ? Math.max(0, state.deliveryEligibleMinerDemand)
+    : Math.max(activeRemoteSources, state.remoteMinerDemand || 0);
   const remoteHaulerDemand = Math.max(activeRemoteRooms,
     state.remoteHaulerDemand || 0);
   const remoteBuilderDemand = Math.max(0,
@@ -229,13 +293,22 @@ const derivePopulationPolicy = state => {
   const remoteHaulerMinimum = permissions.remoteMaintenance &&
     activeRemoteSources > 0 ? activeRemoteRooms : 0;
   const remoteBuilderMinimum = permissions.remoteMaintenance
-    ? Math.min(activeRemoteRooms,
-      Math.max(0, state.remoteRoomsWithConstruction || 0)) : 0;
+    ? state.mathRemoteBuilders
+      // Measured road/construction throughput is desired work. Preserve at
+      // most one maintenance owner per room as a floor; do not promote every
+      // calculated road worker into survival staffing.
+      ? Math.min(activeRemoteRooms,
+        Math.max(0, state.remoteRoomsWithConstruction || 0))
+      : Math.max(Math.min(activeRemoteRooms,
+      Math.max(0, state.remoteRoomsWithConstruction || 0)),
+      !starved && storedEnergy >= reserveSurplus
+        ? Math.min(activeRemoteRooms * 2,
+          Math.max(0, state.remoteInfrastructureDemand || 0)) : 0) : 0;
+  // Each survey already converts route length, source output, and carrier body
+  // capacity into concrete slots. Do not apply a second room-wide distance
+  // multiplier that creates population with no executable roster slot.
   const remoteHaulerDesired = activeRemoteSources > 0
-    ? Math.max(remoteHaulerDemand, activeRemoteRooms,
-      Math.ceil(activeRemoteSources * Math.max(1,
-        (state.averageRemoteDistance || 25) / 25)))
-    : 0;
+    ? Math.max(remoteHaulerDemand, activeRemoteRooms) : 0;
   const remote = {
     rooms: activeRemoteRooms,
     minersMin: remoteMinerMinimum,
@@ -243,7 +316,9 @@ const derivePopulationPolicy = state => {
       ? remoteMinerDemand : remoteMinerMinimum,
     haulersMin: remoteHaulerMinimum,
     haulers: permissions.remoteGrowth
-      ? remoteHaulerDesired : remoteHaulerMinimum,
+      ? remoteHaulerDesired
+      : permissions.remoteHaulingRecovery
+        ? remoteHaulerDesired : remoteHaulerMinimum,
     buildersMin: remoteBuilderMinimum,
     builders: permissions.remoteGrowth
       ? remoteBuilderDemand
@@ -266,7 +341,9 @@ const derivePopulationPolicy = state => {
       upgraderMaximum, 'controller risk and energy surplus')),
     rebalancer: normalize(role(rebalancerMinimum, rebalancerDesired,
       rebalancerMaximum, 'outpost count and container energy imbalance')),
-    tunnelBuilder: normalize(role(0, state.blockedSourceSite ? 1 : 0,
+    defender: normalize(role(0, 0, 0, 'active owned-room combat threat')),
+    tunnelBuilder: normalize(role(state.blockedSourceSite ? 1 : 0,
+      state.blockedSourceSite ? 1 : 0,
       state.blockedSourceSite ? 1 : 0, 'blocked source access'))
   };
 

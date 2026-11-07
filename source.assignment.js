@@ -8,9 +8,9 @@ const planSourceAssignments = ({ needs, candidates, getWork }) => {
       candidate.sourceReplacement;
     const markedReplacement = reservedSource && workingNeeds.find(need =>
       need.sourceId === reservedSource && need.remaining > 0 &&
-      need.workDeficit > 0);
+      (need.workDeficit > 0 || (need.minimumRemaining || 0) > 0));
     const available = workingNeeds.filter(need =>
-      need.remaining > 0 && need.workDeficit > 0)
+      need.remaining > 0 && (need.workDeficit > 0 || (need.minimumRemaining || 0) > 0))
       .sort((a, b) =>
         b.workDeficit - a.workDeficit ||
         Number(b.sourceId === candidate.preferredSource) -
@@ -23,6 +23,7 @@ const planSourceAssignments = ({ needs, candidates, getWork }) => {
       continue;
     }
     need.remaining--;
+    need.minimumRemaining = Math.max(0, (need.minimumRemaining || 0) - 1);
     need.workDeficit = Math.max(0,
       need.workDeficit - getWork(candidate));
     assignments.push({ candidate, sourceId: need.sourceId });

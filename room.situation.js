@@ -1,4 +1,8 @@
 'use strict';
+const {planLabor,applyLaborPolicy,workRate}=typeof Game==='undefined'
+ ? require('./labor.capacity'):require('labor.capacity');
+const { getRoadBacklog } = typeof Game === 'undefined'
+  ? require('./road.backlog') : require('road.backlog');
 
 const { updateRoomTrends, applyTrendAdjustments } =
   typeof Game === 'undefined'
@@ -9,9 +13,17 @@ const { getOperationalMetrics } = typeof Game === 'undefined'
 const { scaleEnergyBudget } = typeof Game === 'undefined'
   ? require('./room.scaling') : require('room.scaling');
 
+const { updateDeliveryPolicy } = typeof Game === 'undefined'
+  ? require('./outpost.delivery') : require('outpost.delivery');
+const { applySpawnCapacityBudget } = typeof Game === 'undefined'
+  ? require('./spawn.capacity') : require('spawn.capacity');
+
+const { applyOperationPolicy } = typeof Game === 'undefined'
+  ? require('./colony.operations') : require('colony.operations');
+
 const createRoomSituation = dependencies => {
   const {
-    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources,
+    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources, buildBody=null,
     getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
     getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
     isMaintainedRoad = () => true, isMaintainedContainer = () => true,
@@ -21,7 +33,7 @@ const createRoomSituation = dependencies => {
     RESOURCE_ENERGY, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
     OBSTACLE_OBJECT_TYPES, FIND_DROPPED_RESOURCES,
     FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, FIND_MY_SPAWNS,
-    ENERGY_REGEN_TIME, HARVEST_POWER
+    ENERGY_REGEN_TIME, HARVEST_POWER, CREEP_SPAWN_TIME = 3
   } = dependencies;
   const cache = {};
 
@@ -46,13 +58,18 @@ const createRoomSituation = dependencies => {
       const capacity = container.store.getCapacity(RESOURCE_ENERGY) || 1;
       return container.store[RESOURCE_ENERGY] / capacity;
     });
-    const bufferRatio = bufferRatios.length ? Math.max(...bufferRatios) : 0;
+    const highestSourceBufferRatio = bufferRatios.length
+      ? Math.max(...bufferRatios) : 0;
     const storedSourceEnergy = containers.reduce((total, container) =>
       total + container.store[RESOURCE_ENERGY], 0);
     const sourceBufferCapacity = containers.reduce((total, container) =>
       total + (container.store.getCapacity(RESOURCE_ENERGY) || 0), 0);
     const sourceBufferRatio = sourceBufferCapacity > 0
       ? storedSourceEnergy / sourceBufferCapacity : 0;
+    // Controller-buffer fill is measured separately from source buffers. A
+    // full source buffer indicates missing collection; a full controller
+    // buffer indicates delivery is ahead of WORK consumption. Combining them
+    // would make the policy respond to two opposite bottlenecks as one fact.
     const controllerContainers = structures.filter(structure =>
       structure.structureType === STRUCTURE_CONTAINER && room.controller &&
       (getContainerPurpose
@@ -88,11 +105,6 @@ const createRoomSituation = dependencies => {
     const currentUpgraders = Object.values(Game.creeps).filter(creep =>
       creep.memory.home === room.name && creep.memory.role === 'upgrader' &&
       (creep.spawning || hasLocalReplacementLife(creep))).length;
-    const haulingSurgeUnit = Math.max(500,
-      Math.round(sourceBufferCapacity * 0.25));
-    const haulingSurge = bufferRatio >= 0.75
-      ? Math.min(3, Math.ceil(storedSourceEnergy / haulingSurgeUnit))
-      : bufferRatio >= 0.5 ? 1 : 0;
     const droppedEnergy = room.find(FIND_DROPPED_RESOURCES, {
       filter: resource => resource.resourceType === RESOURCE_ENERGY
     }).reduce((total, resource) => total + resource.amount, 0);
@@ -120,7 +132,19 @@ const createRoomSituation = dependencies => {
     const activeRemotePlans = [room.memory.leftSurvey,
       room.memory.southSurvey, room.memory.southwestSurvey]
       .filter(plan => plan && plan.active && plan.targetRoom);
+    for (const plan of activeRemotePlans) {
+      const remoteRoom = Game.rooms[plan.targetRoom];
+      if (!plan.started) plan.started = Game.time;
+      const backlog = remoteRoom ? getRoomStructures(remoteRoom)
+        .filter(s => s.structureType === STRUCTURE_CONTAINER)
+        .reduce((sum, s) => sum + (s.store[RESOURCE_ENERGY] || 0), 0) : 0;
+      const deliveryPolicy = updateDeliveryPolicy({ tick: Game.time,
+        survey: plan, economy: (room.memory.outpostEconomy || {})[plan.targetRoom],
+        backlog, visible: Boolean(remoteRoom) });
+      if (remoteRoom) remoteRoom.memory.deliveryPolicy = deliveryPolicy;
+    }
     const remoteRoomsWithConstruction = activeRemotePlans.filter(plan => {
+      if (plan.deliveryPolicy.blocked) return false;
       const remoteRoom = Game.rooms[plan.targetRoom];
       return remoteRoom && remoteRoom.find(FIND_MY_CONSTRUCTION_SITES).length;
     }).length;
@@ -134,6 +158,7 @@ const createRoomSituation = dependencies => {
     }, 0);
     const roomSpawns = room.find(FIND_MY_SPAWNS);
     const remoteMinerDemand = activeRemotePlans.reduce((total, plan) => {
+      if (plan.deliveryPolicy.blocked) return total;
       const needs = Array.isArray(plan.remoteWorkNeeds)
         ? plan.remoteWorkNeeds : [];
       return total + (needs.length
@@ -156,7 +181,8 @@ const createRoomSituation = dependencies => {
     const efficientSourceWorkers = sources.reduce((total, source) => {
       const requiredWork = Math.ceil(source.energyCapacity /
         ENERGY_REGEN_TIME / HARVEST_POWER);
-      return total + Math.max(1, Math.ceil(requiredWork / maxWorkPerBody));
+      return total + Math.max(Math.min(1, getSourceSpotCount(room, source)),
+        Math.ceil(requiredWork / maxWorkPerBody));
     }, 0);
     const sourceWorkSpots = sources.reduce((total, source) =>
       total + getSourceSpotCount(room, source), 0);
@@ -179,19 +205,23 @@ const createRoomSituation = dependencies => {
       total + (structure.store && structure.store[RESOURCE_ENERGY] || 0), 0);
     const starvationReserve = scaleEnergyBudget(
       room.energyCapacityAvailable, 0.5);
-    const energyStarvedSignal = energyRatio < 0.35 && bufferRatio < 0.25 &&
+    const energyStarvedSignal = energyRatio < 0.35 &&
+      sourceBufferRatio < 0.25 &&
       storedEnergy < starvationReserve;
     if (energyStarvedSignal) {
       room.memory.energyStarvedUntil = Game.time + 25;
     } else if ((room.memory.energyStarvedUntil || 0) <= Game.time) {
       delete room.memory.energyStarvedUntil;
     }
+    const roadBacklog = getRoadBacklog(room.memory.roadNetworkPlan,
+      slowInventory.structures, slowInventory.sites);
+    room.memory.roadBacklog = { ...roadBacklog, updated: Game.time };
     const construction = sites.reduce((summary, site) => {
       summary[site.structureType] = (summary[site.structureType] || 0) + 1;
       return summary;
-    }, { remaining: buildRemaining });
-    const extensionClusters = [room.memory.extensionCluster,
-      room.memory.extensionOverflowCluster].filter(cluster => cluster &&
+    }, { remaining: buildRemaining + roadBacklog.unqueuedBuildLowerBound,
+      roadUnqueued: roadBacklog.unqueued });
+    const extensionClusters = [room.memory.extensionCluster].filter(cluster => cluster &&
       structures.some(structure => structure.my &&
         structure.structureType === STRUCTURE_EXTENSION &&
         Math.max(Math.abs(structure.pos.x - cluster.x),
@@ -210,6 +240,7 @@ const createRoomSituation = dependencies => {
       ? extensionContainers.reduce((total, container) => total +
         container.store[RESOURCE_ENERGY], 0) / extensionBufferCapacity
       : null;
+    const operational = getOperationalMetrics(room.memory);
     const policy = derivePopulationPolicy({
       rcl: room.controller && room.controller.level,
       controllerOwned: Boolean(room.controller && room.controller.my),
@@ -225,7 +256,8 @@ const createRoomSituation = dependencies => {
           sourceDistances.length : 15,
       energyRatio,
       energyCapacity: room.energyCapacityAvailable,
-      bufferRatio,
+      bufferRatio: sourceBufferRatio,
+      highestSourceBufferRatio,
       storedEnergy,
       energyStarvedHold: (room.memory.energyStarvedUntil || 0) > Game.time,
       storedSourceEnergy,
@@ -249,16 +281,88 @@ const createRoomSituation = dependencies => {
       activeRemoteRooms: activeRemotePlans.length,
       activeRemoteSources,
       remoteMinerDemand,
+      deliveryEligibleMinerDemand: remoteMinerDemand,
       remoteHaulerDemand,
       remoteBuilderDemand,
+      mathRemoteBuilders: Boolean(buildBody),
+      remoteBacklog: operational.remoteBacklog,
+      remoteBlockedRooms: operational.remoteBlockedRooms,
       averageRemoteDistance: activeRemotePlans.length > 1 ? 40 : 25,
       remoteRoomsWithConstruction,
+      remoteInfrastructureDemand: activeRemotePlans.reduce((total, plan) => {
+        const backlog = Game.rooms[plan.targetRoom]?.memory.roadBacklog;
+        return total + (backlog && (backlog.missing > 0 || backlog.repairHits > 0)
+          ? Math.max(1, plan.remoteBuilderTarget || 0) : 0);
+      }, 0),
+      extensionMigrationActive: Boolean(room.memory.singleExtensionLayout &&
+        (room.memory.singleExtensionLayout.migration || structures.some(s=>
+          s.my && s.structureType === STRUCTURE_EXTENSION &&
+          !room.memory.singleExtensionLayout.extensionTiles.some(p=>
+            p.x===s.pos.x&&p.y===s.pos.y)))),
       coreRoadAccessComplete
     });
-    const operational = getOperationalMetrics(room.memory);
     // Apply the last completed trend analysis before recording this sample so
     // the snapshot's desired population matches the policy used this tick.
     applyTrendAdjustments(policy, room.memory.roomTrendHistory);
+    if(buildBody && room.controller?.my){
+      const roster=Object.values(Game.creeps).filter(c=>c.memory.home===room.name);
+      if(!room.memory.laborPlan || Game.time-room.memory.laborPlan.updated>=20){
+        const viable=roster.filter(c=>!c.spawning && hasLocalReplacementLife(c));
+        const homeIncome=sources.reduce((total,source)=>{
+          const miners=viable.filter(c=>['miner','harvester'].includes(c.memory.role) &&
+            (c.memory.minerSource||c.memory.preferredSource||c.memory.harvestSource)===source.id);
+          const rate=miners.reduce((sum,c)=>sum+workRate(c.getActiveBodyparts('work'),c.store.getCapacity('energy'),2),0);
+          return total+Math.min(source.energyCapacity/ENERGY_REGEN_TIME,rate);
+        },0);
+        const end=Math.floor(Game.time/100)*100,start=end-500;
+        const remoteIncome=Object.values(room.memory.outpostEconomy||{}).reduce((sum,stats)=>sum+
+          Object.entries(stats.buckets||{}).filter(([tick])=>Number(tick)>=start&&Number(tick)<end)
+            .reduce((value,[,amount])=>value+amount,0)/500,0);
+        const roadWork=roadsPaused(room)?0:(room.memory.roadBacklog?.unqueuedBuildLowerBound||0);
+        const readyStructures=structures.filter(s=>s.my&&[STRUCTURE_SPAWN,STRUCTURE_EXTENSION].includes(s.structureType));
+        const deficit=readyStructures.reduce((sum,s)=>sum+s.store.getFreeCapacity(RESOURCE_ENERGY),0);
+        room.memory.laborPlan=planLabor({tick:Game.time,previous:room.memory.laborPlan,
+          stats:room.memory.laborStats,creeps:viable,buildRemaining:buildRemaining+roadWork,
+          repairEnergy:repairRemaining/100,income:homeIncome+remoteIncome,storedEnergy,
+          reserveFloor:policy.budgets.reserveFloor,deficit,clusters:policy.roles.refiller.min,
+          controllerSpots:Math.max(1,Math.min(2,controllerWorkSpots)),
+          controllerDanger:room.controller.ticksToDowngrade<3000,
+          canBuild:policy.permissions.optionalConstruction||sites.some(s=>[STRUCTURE_SPAWN,STRUCTURE_CONTAINER].includes(s.structureType)),
+          travel:Math.max(8,Math.min(40,sourceDistances.reduce((a,b)=>a+b,0)/Math.max(1,sourceDistances.length))),
+          newBuilder:{body:buildBody('worker',room.energyCapacityAvailable)||[]},
+          newUpgrader:{body:buildBody('controller',room.energyCapacityAvailable)||[]},
+          energyCapacity:room.energyCapacityAvailable});
+      }
+      applyLaborPolicy(policy,room.memory.laborPlan);
+    }
+    applyOperationPolicy(policy, room, Game);
+    if (buildBody && room.controller?.my) {
+      const spawnTicks = (role, options) => {
+        const body = buildBody(role, room.energyCapacityAvailable, options);
+        return Math.max(CREEP_SPAWN_TIME,
+          (body ? body.length : 1) * CREEP_SPAWN_TIME);
+      };
+      applySpawnCapacityBudget(policy, {
+        source: spawnTicks('miner', { miningProduction: 10 }),
+        refiller: spawnTicks('refiller', { maximize: true }),
+        hauler: spawnTicks('hauler'),
+        builder: spawnTicks('builder'),
+        repairBuilder: spawnTicks('builder'),
+        tunnelBuilder: spawnTicks('builder'),
+        upgrader: spawnTicks('upgrader', { maximize: true, operationWork:
+          policy.operations && policy.operations.upgradePush ? policy.operations.upgradeWork : undefined }),
+        rebalancer: spawnTicks('rebalancer'),
+        defender: spawnTicks('defender'),
+        remoteMiner: spawnTicks('remote-miner'),
+        remoteHauler: spawnTicks('remote-hauler'),
+        remoteBuilder: spawnTicks('builder'),
+        remoteReserver: 12
+      }, { spawnCount: Math.max(1, roomSpawns.length), utilization: 0.8,
+        auxiliaryLoad: policy.operations && policy.operations.managed
+          ? Math.max(policy.operations.relayTarget,
+            Object.values(Game.creeps).filter(c => c.memory.home === room.name &&
+              c.memory.role === 'controller-relay').length) * 9 : 0 });
+    }
     const trendHistory = updateRoomTrends(room.memory, Game.time, {
       repair: repairRemaining,
       build: buildRemaining,
@@ -284,8 +388,10 @@ const createRoomSituation = dependencies => {
     });
     const targets = Object.fromEntries(Object.entries(policy.roles)
       .map(([name, staffing]) => [name, staffing.desired]));
-    targets.hauler = Math.max(targets.hauler,
-      policy.roles.hauler.min + haulingSurge);
+    const viableRemoteHaulers = Object.values(Game.creeps).filter(creep =>
+      creep.memory.home === room.name &&
+      creep.memory.role === 'remote-hauler' &&
+      (creep.spawning || hasLocalReplacementLife(creep))).length;
     const status = deriveRoomStatus({
       sourceCount: sources.length,
       energyRatio,
@@ -298,12 +404,14 @@ const createRoomSituation = dependencies => {
         ? sourceStatsTotal('earlyEmptyTicks') / sourceSampleTicks : 0,
       sourceHighEnergyRate: sourceSampleTicks > 0
         ? sourceStatsTotal('highEnergyTicks') / sourceSampleTicks : 0,
-      bufferRatio,
+      bufferRatio: sourceBufferRatio,
       droppedEnergy,
       controllerTicks: room.controller && room.controller.ticksToDowngrade,
       buildRemaining,
       repairCritical: repairCrisis,
-      repairRemaining
+      repairRemaining,
+      policyHealth: policy.health,
+      policyMode: policy.mode
     });
     const situation = {
       mode: policy.mode,
@@ -312,13 +420,23 @@ const createRoomSituation = dependencies => {
       status,
       signals: {
         energyRatio,
-        bufferRatio,
+        bufferRatio: sourceBufferRatio,
         controllerBufferRatio,
+        controllerBufferCapacity,
         droppedEnergy,
         buildRemaining,
         repairRemaining,
         repairCritical: repairCrisis,
-        controllerTicks: room.controller && room.controller.ticksToDowngrade
+        controllerTicks: room.controller && room.controller.ticksToDowngrade,
+        remoteBacklog: operational.remoteBacklog,
+        remoteBlockedRooms: operational.remoteBlockedRooms,
+        remoteRosterGap: operational.remoteRosterGap,
+        remoteHaulerShortfall: Math.max(0,
+          (policy.remote.haulers || 0) - viableRemoteHaulers),
+        operationalSamples: operational.samples,
+        taskFlips: operational.taskFlips,
+        roleChanges: operational.roleChanges,
+        stuckTicks: operational.stuckTicks
       }
     };
     room.memory.populationPolicy = {

@@ -4,6 +4,9 @@
 - [0002: Safety floors and optional work](0002-safety-floors.md)
 - [0003: RCL 5 links and controller brigade](0003-rcl5-energy-automation.md)
 - [0004: Verification requires live ticks](0004-live-verification.md)
+- [0005: Auxiliary bodies use transition allowances](0005-auxiliary-transition-allowance.md)
+- [0006: CPU pressure sheds slow work first](0006-cpu-shedding.md)
+- [0007: Four-job baseline and situational staffing](0007-baseline-and-situational-staffing.md)
 
 Add an ADR when a change moves ownership, creates a new invariant, changes
 priority between subsystems, or deliberately accepts a tradeoff. Small

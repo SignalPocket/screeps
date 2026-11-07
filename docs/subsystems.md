@@ -42,13 +42,18 @@ fallback that preserves ownership.
 
 `outpost.planning.js` discovers and records active remote demand.
 `remote.hauling.js` measures ready lanes, routes, capacity, and throughput.
-`remote.roster.js` assigns existing carriers to stable room/slot ownership.
+`remote.spawn.js` maps aggregate policy gaps to one concrete room and lane.
+`remote.recovery.js` distributes existing surplus across uncovered source
+lanes before filling WORK deficits, bounded by remote minimum totals.
+`remote.roster.js` assigns existing carriers to stable room/slot ownership,
+round-robin across rooms within the current policy hauler budget.
 `outpost.maintenance.js` derives remote repair/build demand.
 `remote.corridors.js` plans inter-room travel infrastructure.
 `outpost.status.js` reports remote production and backlog.
 
 Boundary: survey and route modules measure demand. Policy grants maintenance or
-growth. Staffing and roster modules map the granted totals to lanes.
+growth. Spawn, recovery, staffing, and roster modules map the granted totals to
+lanes; they never reconstruct a larger population from survey memory.
 
 ## Construction and infrastructure
 
@@ -67,7 +72,25 @@ the builder targets.
 ## Controller brigade
 
 `controller.brigade.plan.js` derives the physical pipeline.
-`controller.brigade.readiness.js` verifies essential staffing and work queues.
+`controller.brigade.readiness.js` verifies full rollout readiness and the
+narrower local-energy floor used to restore an established atomic relay line.
+
+## Salvage
+
+`salvage.dispatch.js` normally gives nearby salvage objects unique owners.
+After an Invader battle ends, it instead prioritizes tombstones and assigns
+enough mobile haulers, builders, and workers to cover the remaining store.
+Non-energy loot is returned to storage before ordinary work resumes. Mining,
+refill, controller, and stationary brigade owners remain on their protected
+lanes.
+
+## Defense and recovery
+
+`tower.control.js` attacks the highest weighted threat while hostiles remain,
+then heals the most injured friendly creep before considering repairs. Injured
+creeps suspend ordinary work and move within range 5 of an energized tower for
+maximum healing. Refill dispatch ranks every incomplete tower ahead of spawn
+and extensions and fills the emptiest tower first.
 `controller.brigade.roster.js` owns stable relay slots.
 `controller.brigade.runtime.js` executes handoffs and endpoint feeding.
 `controller.brigade.js` composes the subsystem and exports constants.
@@ -81,6 +104,9 @@ health permission, and staffing readiness control rollout and replacement.
 `task.reservations.js` owns target-level task claims.
 `resource.reservations.js` owns energy/capacity accounting.
 `movement.service.js` owns cached paths, traffic avoidance, and stuck recovery.
+Extension construction sites are traversable at the ordinary plain-terrain
+cost of 4, so planned extension footprints do not prematurely close an aisle.
+Completed extensions are engine-level obstacles and routes must go around them.
 `creep.assignment.js` reconciles role memory without gratuitous churn.
 `creep.routing.js` contains bounded cross-role routing helpers.
 

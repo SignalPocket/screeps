@@ -18,7 +18,7 @@ const createCreepLifecycle = ({ Game, WORK, MOVE, CREEP_SPAWN_TIME }) => {
   };
 
   const hasBuilderBody = creep => Boolean(creep &&
-    creep.getActiveBodyparts(WORK) >= 4 && hasRoadMobility(creep));
+    creep.getActiveBodyparts(WORK) >= 3 && hasRoadMobility(creep));
 
   const getRemoteReplacementLead = creep => {
     if (!creep) return Infinity;
@@ -29,22 +29,48 @@ const createCreepLifecycle = ({ Game, WORK, MOVE, CREEP_SPAWN_TIME }) => {
     const roomTransitions = Array.isArray(route) ? route.length : 1;
     // Include spawning, the cross-room trip, traffic, and time waiting for the
     // spawn behind another already-requested specialist.
-    return creep.body.length * CREEP_SPAWN_TIME + 150 +
-      roomTransitions * 75;
+    const home = Game.rooms && Game.rooms[homeRoomName];
+    const observations = home && home.memory.haulTripStats &&
+      home.memory.haulTripStats[targetRoomName];
+    const measuredTravel = Math.max(0, ...Object.values(observations &&
+      observations.slots || {}).filter(value => Game.time - value.updated <= 1500)
+      .map(value => value.outboundTicks || 0));
+    const queued = Object.values(Game.spawns || {}).filter(spawn =>
+      spawn.room.name === homeRoomName && spawn.spawning)
+      .reduce((longest, spawn) => Math.max(longest, spawn.spawning.remainingTime || 0), 0);
+    return Math.max(creep.body.length, 6) * CREEP_SPAWN_TIME +
+      150 + Math.max(roomTransitions * 75, measuredTravel) + queued;
   };
 
   const hasRemoteReplacementLife = creep => Boolean(creep &&
     (creep.spawning || creep.ticksToLive > getRemoteReplacementLead(creep)));
 
+  const getLocalReplacementLead = creep => {
+    const base = creep.body.length * CREEP_SPAWN_TIME + 50;
+    if (!['miner', 'harvester'].includes(creep.memory.role)) return base;
+    const homeName = creep.memory.home || creep.room.name;
+    const room = Game.rooms && Game.rooms[homeName];
+    const sourceId = creep.memory.minerSource || creep.memory.preferredSource || creep.memory.harvestSource;
+    const path = room && room.memory.roadPlan && room.memory.roadPlan.paths
+      .find(path => path.targetId === sourceId);
+    const move = Math.max(1, creep.getActiveBodyparts(MOVE));
+    const weight = creep.body.filter(part => (typeof part === 'string' ? part : part.type) !== MOVE).length;
+    const roadTicks = Math.max(1, Math.ceil(weight / (move * 2)));
+    const travel = (path ? path.points.length : 25) * roadTicks;
+    const queued = Object.values(Game.spawns || {}).filter(spawn =>
+      spawn.room && spawn.room.name === homeName && spawn.spawning)
+      .reduce((longest, spawn) => Math.max(longest, spawn.spawning.remainingTime || 0), 0);
+    return base + travel + queued;
+  };
   const hasLocalReplacementLife = creep => Boolean(creep &&
-    (creep.spawning || creep.ticksToLive >
-      creep.body.length * CREEP_SPAWN_TIME + 50));
+    (creep.spawning || creep.ticksToLive > getLocalReplacementLead(creep)));
 
   return {
     hasWorkParts,
     hasRoadMobility,
     hasBuilderBody,
     getRemoteReplacementLead,
+    getLocalReplacementLead,
     hasRemoteReplacementLife,
     hasLocalReplacementLife
   };

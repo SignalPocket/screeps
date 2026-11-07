@@ -7,7 +7,8 @@ const { BODY_TYPES, getBodyTypeForAssignment, deriveBodyTargets,
 const WORK = 'work';
 const CARRY = 'carry';
 const CLAIM = 'claim';
-const constants = { WORK, CARRY, CLAIM };
+const ATTACK = 'attack';
+const constants = { WORK, CARRY, CLAIM, ATTACK };
 const creep = (bodyType, ttl = 1000) => ({
   memory: { bodyType },
   ticksToLive: ttl,
@@ -22,8 +23,10 @@ assert.strictEqual(getBodyTypeForAssignment({ bodyType: 'carrier' }),
   BODY_TYPES.HAULER);
 assert.strictEqual(getBodyTypeForAssignment({ role: 'builder' }),
   BODY_TYPES.WORKER);
-assert.strictEqual(getBodyTypeForAssignment({ role: 'remote-scout' }),
+assert.strictEqual(getBodyTypeForAssignment({ role: 'remote-miner' }),
   BODY_TYPES.FIELD);
+assert.strictEqual(getBodyTypeForAssignment({ role: 'defender' }),
+  BODY_TYPES.DEFENDER);
 
 const targets = deriveBodyTargets({
   localMinerMin: 2, localMinerDesired: 2,
@@ -57,3 +60,9 @@ assert.strictEqual(canBodyTypeRunLane('carrier', 'refill'), true);
 assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.MINER, 'refill'), false);
 
 console.log('body archetype scenarios passed');
+
+assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.MINER,'build','builder'),true);
+assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.MINER,'repair','worker'),true);
+assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.MINER,'build','harvester'),false);
+assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.HAULER,'build','hauler'),false);
+assert.strictEqual(canBodyTypeRunLane(BODY_TYPES.MINER,'upgrade','builder'),false);

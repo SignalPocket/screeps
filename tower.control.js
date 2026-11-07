@@ -1,5 +1,15 @@
 'use strict';
 
+const selectHealingTower = ({ creep, structures, RESOURCE_ENERGY,
+  STRUCTURE_TOWER }) => {
+  if (!creep || creep.hits >= creep.hitsMax) return null;
+  return (structures || []).filter(structure => structure.my &&
+    structure.structureType === STRUCTURE_TOWER &&
+    structure.store[RESOURCE_ENERGY] > 0)
+    .sort((a, b) => creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
+      b.store[RESOURCE_ENERGY] - a.store[RESOURCE_ENERGY])[0] || null;
+};
+
 const runTowers = ({ rooms, RESOURCE_ENERGY, FIND_MY_STRUCTURES,
   FIND_HOSTILE_CREEPS, FIND_MY_CREEPS, FIND_STRUCTURES, STRUCTURE_TOWER,
   STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_WALL, STRUCTURE_RAMPART,
@@ -82,4 +92,4 @@ const runTowers = ({ rooms, RESOURCE_ENERGY, FIND_MY_STRUCTURES,
   return statuses;
 };
 
-module.exports = { runTowers };
+module.exports = { selectHealingTower, runTowers };

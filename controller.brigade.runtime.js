@@ -8,11 +8,27 @@ const {
 
 const key = point => `${point.x},${point.y}`;
 
+/**
+ * Execute the already-planned controller energy pipeline.
+ *
+ * Each relay is a tiny transport body with a permanent numbered seat. Intake
+ * relays withdraw from storage, middle relays hand energy to the next seat,
+ * and terminal relays transfer into a controller-side container/link. Relays
+ * never call upgradeController: a separate WORK body consumes the buffer.
+ *
+ * A full destination is normal backpressure. The pipeline waits with its
+ * energy instead of redirecting itself to extensions or dropping resources.
+ */
 const createControllerBrigadeRuntime = dependencies => {
   const {
     Game, RoomPosition, RESOURCE_ENERGY, OK, ERR_NOT_IN_RANGE, moveCreep,
     getSlotOwner
   } = dependencies;
+  // The runtime service is created once per game tick. Slot ownership,
+  // pipeline inventory and provisional receivers are stable until intents are
+  // applied at the tick boundary, so cache their isolate-backed roster scans.
+  const pipelineEnergyCache = new Map();
+  const provisionalBuilderCache = new Map();
 
   const at = (creep, point) => creep.pos.x === point.x &&
     creep.pos.y === point.y && creep.pos.roomName === point.roomName;
@@ -75,7 +91,12 @@ const createControllerBrigadeRuntime = dependencies => {
 
   const getProvisionalBuilders = (creep, plan, finalDelivery) => {
     if (!plan.provisional) return [];
-    return Object.values(Game.creeps).filter(candidate =>
+    const cacheKey = `${creep.memory.home}:${plan.version}:` +
+      `${plan.controllerBufferId}:${finalDelivery.x},${finalDelivery.y}`;
+    if (provisionalBuilderCache.has(cacheKey)) {
+      return provisionalBuilderCache.get(cacheKey);
+    }
+    const builders = Object.values(Game.creeps).filter(candidate =>
       candidate.memory.home === creep.memory.home &&
       candidate.name !== creep.name && candidate.store &&
       candidate.store.getFreeCapacity(RESOURCE_ENERGY) > 0 &&
@@ -91,17 +112,33 @@ const createControllerBrigadeRuntime = dependencies => {
         creep: builder,
         inRange: builder.pos.getRangeTo(finalDelivery) <= 1
       }));
+    provisionalBuilderCache.set(cacheKey, builders);
+    return builders;
   };
 
-  const getPipelineEnergy = (home, plan, pipeline) => Object.values(Game.creeps)
-    .filter(candidate => candidate.memory.home === home &&
-      candidate.memory.role === CONTROLLER_BRIGADE_ROLE &&
+  const getPipelineEnergy = (home, plan, pipeline) => {
+    const cacheKey = `${home}:${plan.version}:${pipeline}`;
+    if (pipelineEnergyCache.has(cacheKey)) {
+      return pipelineEnergyCache.get(cacheKey);
+    }
+    const energy = Object.values(Game.creeps)
+      .filter(candidate => candidate.memory.home === home &&
+      (candidate.memory.role === CONTROLLER_BRIGADE_ROLE ||
+        Number.isInteger(
+          candidate.memory.controllerRelaySubstituteSlot)) &&
       !candidate.memory.controllerRelayStandby &&
-      plan.segments[candidate.memory.controllerRelaySlot] &&
-      plan.segments[candidate.memory.controllerRelaySlot].pipeline ===
+      plan.segments[Number.isInteger(candidate.memory.controllerRelaySlot)
+        ? candidate.memory.controllerRelaySlot
+        : candidate.memory.controllerRelaySubstituteSlot] &&
+      plan.segments[Number.isInteger(candidate.memory.controllerRelaySlot)
+        ? candidate.memory.controllerRelaySlot
+        : candidate.memory.controllerRelaySubstituteSlot].pipeline ===
         pipeline)
-    .reduce((total, candidate) => total +
-      (candidate.store[RESOURCE_ENERGY] || 0), 0);
+      .reduce((total, candidate) => total +
+        (candidate.store[RESOURCE_ENERGY] || 0), 0);
+    pipelineEnergyCache.set(cacheKey, energy);
+    return energy;
+  };
 
   const runPickup = ({ creep, plan, slot, segment, pickup, delivery, stats,
     provisionalBuilders }) => {
@@ -129,6 +166,9 @@ const createControllerBrigadeRuntime = dependencies => {
     const intakeDemand = Math.max(0,
       bufferFree - getPipelineEnergy(creep.memory.home, plan,
         segment.pipeline));
+    // Destination free capacity minus energy already inside the pipeline is
+    // the only safe amount to admit. Zero means the RC side is already funded;
+    // waiting here prevents the brigade from over-pulling storage.
     if (intakeDemand <= 0) {
       stats.backpressureTicks++;
       creep.memory.taskTarget = 'brigade backpressure';
@@ -286,7 +326,9 @@ const createControllerBrigadeRuntime = dependencies => {
   };
 
   const run = (creep, plan) => {
-    const slot = creep.memory.controllerRelaySlot;
+    const slot = Number.isInteger(creep.memory.controllerRelaySlot)
+      ? creep.memory.controllerRelaySlot
+      : creep.memory.controllerRelaySubstituteSlot;
     const segment = plan && plan.segments && plan.segments[slot];
     if (!segment || creep.room.name !== plan.roomName) return false;
     const energy = creep.store[RESOURCE_ENERGY] || 0;
