@@ -2,6 +2,7 @@
 const assert = require('assert');
 const { collectPartialHauler } = require('./work.dispatch');
 const { getWaitSpeech } = require('./creep.reporting');
+const { isExpansionBuilder } = require('./builder.roles');
 const run = (overrides = {}) => {
   const calls = [];
   const creep = { memory: { role: 'hauler' }, store: {
@@ -54,11 +55,15 @@ const partial = n => ({ name: n, memory: { role: 'hauler' },
   store: { energy: 50, getFreeCapacity: () => 150 },
   pos: { getRangeTo: () => 1 } });
 const carriers = ['a', 'b', 'c'].map(partial);
+const pioneer = partial('pioneer');
+pioneer.memory = { role: 'builder', builderScope: 'expansion' };
+pioneer.store.energy = 0;
 const participants = vm.runInNewContext(admission + '\npickupParticipants', {
-  executionCreeps: carriers, RESOURCE_ENERGY: 'energy',
+  executionCreeps: [...carriers, pioneer], RESOURCE_ENERGY: 'energy', isExpansionBuilder,
   roomDemandPlans: { W1N1: { assignments: { a: 'collect', b: 'collect', c: 'collect' } } }
 });
 assert.strictEqual(participants.length, 3);
+assert(!participants.includes(pioneer), 'bootstrap gathering owns its own source cycle');
 const { planPickupJobs } = require('./pickup.jobs');
 const allocated = planPickupJobs({ creeps: participants, tick: 10,
   getCandidates: () => [{ id: 'storage', store: { energy: 1000 } }],
@@ -106,7 +111,7 @@ const reserve = partial('reserve'); reserve.store.energy = 0;
 reserve.memory.role = 'builder';
 const active = partial('active'); active.store.energy = 0;
 const idleParticipants = vm.runInNewContext(admission + '\npickupParticipants', {
-  executionCreeps: [reserve, active], RESOURCE_ENERGY: 'energy',
+  executionCreeps: [reserve, active], RESOURCE_ENERGY: 'energy', isExpansionBuilder,
   roomDemandPlans: { W1N1: { assignments: { reserve: 'standby', active: 'collect' } } }
 });
 assert.strictEqual(idleParticipants.length, 1);

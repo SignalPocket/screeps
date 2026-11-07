@@ -94,6 +94,7 @@ const { createOutpostPlanning } = require('outpost.planning');
 const { reconcileRemoteHaulerRosters, reconcileRemoteMinerRosters } =
   require('remote.roster');
 const { createExpansionPlanner } = require('expansion.planner');
+const { planBootstrapSpawn, selectBootstrapWork } = require('bootstrap.workforce');
 const { createRemoteCorridorPlanner } = require('remote.corridors');
 const { createRcl5Infrastructure } = require('rcl5.infrastructure');
 const { createStaffingPlanner } = require('staffing.plan');
@@ -1026,6 +1027,11 @@ module.exports.loop = function () {
     const urgentReservationRequest = planReservationSpawn({ room, workers,
       policy: spawnSituation.policy, staffingPlan, Game, urgentOnly: true });
     if (urgentReservationRequest) return urgentReservationRequest;
+    const bootstrapRequest = planBootstrapSpawn({ room, workers, Game,
+      permitted: spawnSituation.policy.permissions?.expansionMaintenance,
+      hasSpawn: target => getRoomStructuresByType(target, STRUCTURE_SPAWN)
+        .some(spawn => spawn.my), spawnTime: CREEP_SPAWN_TIME });
+    if (bootstrapRequest) return bootstrapRequest;
     const outpostPresence = getOutpostPresenceGap(room.name, room.memory,
       Object.values(Game.creeps));
     if (outpostPresence) {
@@ -1260,9 +1266,6 @@ module.exports.loop = function () {
     const expansion = room.memory.expansionPlan;
     const expansionAllowed = Boolean(spawnSituation.policy.permissions &&
       spawnSituation.policy.permissions.expansion);
-    const expansionMaintenanceAllowed = Boolean(
-      spawnSituation.policy.permissions &&
-      spawnSituation.policy.permissions.expansionMaintenance);
     if (expansion && expansion.targetRoom) {
       if (expansionAllowed && expansion.status === 'claim-ready' &&
           !workers.some(creep => creep.memory.role === 'claimer' &&
@@ -1272,22 +1275,6 @@ module.exports.loop = function () {
           expansionTarget: expansion.targetRoom,
           forceSpawn: true
         };
-      }
-      if (expansionMaintenanceAllowed && expansion.status === 'bootstrap') {
-        const pioneers = workers.filter(creep =>
-          isExpansionBuilder(creep) &&
-          creep.memory.expansionTarget === expansion.targetRoom);
-        const expansionBuilderTarget = Math.max(1, Math.min(3,
-          Math.ceil(room.energyCapacityAvailable / 600)));
-        if (pioneers.length < expansionBuilderTarget) {
-          return {
-            role: 'builder',
-            builderScope: 'expansion',
-            builderMission: 'bootstrap',
-            expansionTarget: expansion.targetRoom,
-            forceSpawn: true
-          };
-        }
       }
     }
     // No explicit authorized gap means no spawn request. Population budget is
@@ -3911,6 +3898,7 @@ module.exports.loop = function () {
     return new RoomPosition(chosen.x, chosen.y, room.name);
   };
   const pickupParticipants=executionCreeps.filter(c=>!c.spawning&&
+    !isExpansionBuilder(c)&&
     c.room.controller?.my&&
     !(c.memory.role === 'rebalancer' && Boolean(
       c.memory.controllerLinkFeedTarget ||
@@ -4741,7 +4729,7 @@ module.exports.loop = function () {
           return true;
         }
       }];
-    } else if (demandLane === 'standby' &&
+    } else if (demandLane === 'standby' && !isExpansionBuilder(creep) &&
         ['builder', 'worker', 'upgrader'].includes(creep.memory.role)) {
       tasks = [];
     } else if (managedPickup && !pickupJob) {
@@ -5228,33 +5216,42 @@ module.exports.loop = function () {
             creep.memory.role = 'builder';
             creep.memory.builderScope = 'local';
             creep.memory.builderMission = 'flexible';
+            delete creep.memory.assignmentKind;
             delete creep.memory.expansionTarget;
             creep.memory.taskTarget = `${spawn.name} established`;
             return true;
           }
-          const site = getRoomSitesByType(creep.room, STRUCTURE_SPAWN)[0];
-          if (creep.store[RESOURCE_ENERGY] === 0) {
-            creep.memory.expansionBuilding = false;
-          } else if (creep.store.getFreeCapacity(RESOURCE_ENERGY) === 0) {
-            creep.memory.expansionBuilding = true;
+          const work = selectBootstrapWork({ creep,
+            controller: creep.room.controller, crew: creeps,
+            sources: getRoomSources(creep.room),
+            stores: getRoomStructuresByType(creep.room, STRUCTURE_CONTAINER)
+              .filter(store => getUnreservedEnergy(store) > 0),
+            sites: getRoomSites(creep.room), structures: getRoomStructures(creep.room),
+            closest: candidates => creep.pos.findClosestByPath(candidates),
+            harvestFits, resource: RESOURCE_ENERGY });
+          creep.memory.bootstrapAction = work.action;
+          if (!work.target) {
+            creep.memory.bootstrapAction = 'standby';
+            creep.memory.waitState = 'blocked';
+            creep.memory.waitReason = 'bootstrap has no reachable energy source';
+            creep.memory.taskTarget = `${targetRoomName} waiting energy`;
+            return true;
           }
-          if (creep.memory.expansionBuilding && site) {
-            return perform(site, target => budgetedBuild(target), 3);
+          if (work.action === 'withdraw') {
+            const amount = Math.min(creep.store.getFreeCapacity(RESOURCE_ENERGY),
+              getUnreservedEnergy(work.target));
+            if (amount <= 0) return false;
+            reserveEnergyFrom(work.target, amount);
+            return perform(work.target,
+              target => creep.withdraw(target, RESOURCE_ENERGY, amount), 1);
           }
-          const source = creep.pos.findClosestByPath(
-            getRoomSources(creep.room).filter(candidate =>
-              candidate.energy > 0));
-          if (source && creep.store.getFreeCapacity(RESOURCE_ENERGY) > 0) {
-            return perform(source, target => harvestWithoutSpill(target));
-          }
-          if (site && creep.store[RESOURCE_ENERGY] > 0) {
-            creep.memory.expansionBuilding = true;
-            return perform(site, target => budgetedBuild(target), 3);
-          }
-          creep.memory.taskTarget = site
-            ? `${site.id} waiting energy`
-            : `${targetRoomName} waiting spawn site`;
-          return true;
+          const actions = {
+            harvest: target => harvestWithoutSpill(target),
+            upgrade: target => creep.upgradeController(target),
+            build: target => budgetedBuild(target),
+            repair: target => budgetedRepair(target)
+          };
+          return perform(work.target, actions[work.action], work.range);
         }
       }];
     } else if (creep.memory.role === 'remote-miner') {
@@ -6959,6 +6956,11 @@ module.exports.loop = function () {
       creep.memory.task = 'seek-tower-healing';
     } else if (storeNonEnergySalvage()) {
       creep.memory.task = 'store-salvage';
+    } else if (isExpansionBuilder(creep)) {
+      delete creep.memory.bootstrapAction;
+      if (tasks[0] && tasks[0].run()) {
+        creep.memory.task = creep.memory.bootstrapAction || tasks[0].name;
+      }
     } else if (postBattleScavenge()) {
       creep.memory.task = 'battle-salvage';
     } else if (fillPassingExtensionBuffer()) {
