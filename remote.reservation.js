@@ -47,6 +47,7 @@ const planReservationSpawn = ({ room, workers, policy, staffingPlan, Game,
   }).sort((a, b) => (a.reservationTicks === undefined ? Infinity : a.reservationTicks) -
     (b.reservationTicks === undefined ? Infinity : b.reservationTicks));
   for (const { remoteRoom, target, reservationTicks } of candidates) {
+    if (target && target.my) continue;
     if (coverage.members.some(c => c.memory.remoteRoom === remoteRoom)) continue;
     const lead = replacementLead(remoteRoom, room.name, Game);
     if (!Number.isFinite(lead) || lead >= 600) continue;
@@ -76,6 +77,15 @@ const runReservation = ({ creep, Game, move, RoomPosition,
   const targetRoom = creep.memory.remoteRoom;
   if (!targetRoom) return false;
   const visible = Game.rooms[targetRoom];
+  if (visible && visible.controller && visible.controller.my) {
+    creep.memory.role = 'retire';
+    creep.memory.assignmentRole = 'retire';
+    delete creep.memory.assignmentKind;
+    creep.memory.staffingRetire = true;
+    creep.memory.retiredRole = ROLE;
+    creep.memory.taskTarget = `${targetRoom} already owned`;
+    return true;
+  }
   if (visible && visible.find(FIND_HOSTILE_CREEPS).length) {
     creep.memory.reservationRetreatUntil = Game.time + 25;
   }

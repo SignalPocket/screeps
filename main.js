@@ -99,6 +99,8 @@ const { createStaffingPlanner } = require('staffing.plan');
 const { createMinimumSpawnPlanner } = require('minimum.spawn');
 const { selectBalancedRecoveryRequest } = require('recovery.balance');
 const { createRemoteSpawnPlanner } = require('remote.spawn');
+const { ownedTarget, reconcileOwnedRoomTransitions } =
+  require('owned.room.transition');
 const { planRemoteRecovery } = require('remote.recovery');
 const { createBuilderRoster } = require('builder.roster');
 const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
@@ -524,6 +526,7 @@ module.exports.loop = function () {
     createRemoteSpawnPlanner({
       isOutpostBuilder, hasRemoteReplacementLife,
       getRemoteHaulReadiness, getRemoteReplacementLead,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       BODYPART_COST, WORK, CARRY, MOVE
     });
   const { updateEnergyWorkPhase } = createEnergyPhase({ Game, workerCost });
@@ -1338,6 +1341,20 @@ module.exports.loop = function () {
   const visibleRooms = Object.values(Game.rooms);
   const ownedVisibleRooms = visibleRooms.filter(room =>
     room.controller && room.controller.my);
+  const ownershipTransitions = reconcileOwnedRoomTransitions({
+    Game, rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
+    getWork: creep => creep.getActiveBodyparts(WORK),
+    getCarry: creep => creep.getActiveBodyparts(CARRY),
+    getEnergy: creep => creep.store[RESOURCE_ENERGY] || 0
+  });
+  if (ownershipTransitions.rooms.length ||
+      ownershipTransitions.converted.length ||
+      ownershipTransitions.retired.length) {
+    console.log(`[${Game.time}] owned room transition | rooms ` +
+      `${ownershipTransitions.rooms.join(',') || 'stable'} | bootstrap ` +
+      `${ownershipTransitions.converted.join(',') || 'none'} | retired ` +
+      `${ownershipTransitions.retired.join(',') || 'none'}`);
+  }
   const outpostPlansDue = ownedVisibleRooms.filter(room =>
     !room.memory.leftSurvey || !room.memory.southSurvey ||
     !room.memory.southwestSurvey ||
@@ -1357,6 +1374,7 @@ module.exports.loop = function () {
     reconcileRemoteHaulerRosters({
       rooms: remoteRostersDue, creeps: Object.values(Game.creeps),
       Game, RESOURCE_ENERGY,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getRemoteHaulerBudget: room =>
         getRoomSituation(room).policy.remote.haulers
     });
@@ -1365,6 +1383,7 @@ module.exports.loop = function () {
     ? reconcileRemoteMinerRosters({
       rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
       getReplacementLead: getRemoteReplacementLead,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getWork: creep => creep.getActiveBodyparts(WORK)
     }) : {};
   for (const [roomName, result] of Object.entries(
@@ -5425,6 +5444,23 @@ module.exports.loop = function () {
             creep.memory.taskTarget = `${roomName} haul`;
             return true;
           };
+          if (ownedTarget(Game, targetRoomName)) {
+            delete creep.memory.remoteDispatchRoom;
+            delete creep.memory.remoteDispatchSlot;
+            delete creep.memory.remotePickupTarget;
+            delete creep.memory.remotePickupSource;
+            delete creep.memory.remoteDeliveryTarget;
+            delete creep.memory.remoteCargoOrigin;
+            delete creep.memory.remoteCargoRemaining;
+            creep.memory.remoteRosterSurplus = true;
+            if (creep.store[RESOURCE_ENERGY] > 0 &&
+                creep.room.name !== homeRoomName) {
+              creep.memory.remoteHaulReturning = true;
+              return travelTo(homeRoomName);
+            }
+            creep.memory.taskTarget = `${targetRoomName} is a local colony`;
+            return true;
+          }
           const getOutpostBorderCache = () => {
             if (creep.room.name !== targetRoomName) return null;
             const plan = Game.rooms[homeRoomName]?.memory
@@ -5494,7 +5530,8 @@ module.exports.loop = function () {
             const surveys = homeRoom && [homeRoom.memory.leftSurvey,
               homeRoom.memory.southSurvey,
               homeRoom.memory.southwestSurvey].filter(survey =>
-              survey && survey.active && survey.targetRoom);
+              survey && survey.active && survey.targetRoom &&
+              !ownedTarget(Game, survey.targetRoom));
             // Every roster slot serves its own room. Only bodies beyond all
             // current room targets join the shared overflow fleet.
             const flexible = creep.memory.remoteRosterSurplus;
