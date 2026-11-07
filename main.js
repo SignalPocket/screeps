@@ -53,6 +53,7 @@ const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
 const { deriveCpuPolicy, summarizeCreepExecution } = require('cpu.policy');
+const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
   require('creep.execution-order');
 const { getOperationScope, retireCompletedPush, isBrigadePlanActive,
@@ -277,9 +278,11 @@ module.exports.loop = function () {
     STRUCTURE_CONTAINER, RESOURCE_ENERGY, FIND_DROPPED_RESOURCES,
     FIND_MY_CONSTRUCTION_SITES
   });
-  const { moveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
+  const waitAge = createWaitAgeTracker(Game.time);
+  const { moveCreep: rawMoveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
     FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS, STRUCTURE_ROAD,
     STRUCTURE_EXTENSION, OK, ERR_INVALID_TARGET, ERR_TIRED });
+  const moveCreep = waitAge.wrapMovement(rawMoveCreep, ERR_TIRED);
   const { findFleeStep } = createDefenseController({
     PathFinder, FIND_STRUCTURES, FIND_CREEPS, OBSTACLE_OBJECT_TYPES,
     STRUCTURE_ROAD, STRUCTURE_RAMPART
@@ -4034,6 +4037,7 @@ module.exports.loop = function () {
         Game.cpu.getUsed() >= executionCpuCeiling) break;
     executedCreepCount++;
     const pickupJob=pickupPlan.jobs[creep.name];
+    waitAge.markEvaluated(creep);
     const managedPickup=pickupNames.has(creep.name);
     const canWithdrawFrom=(actor,target)=>baseCanWithdraw(actor,target)&&
       (!managedPickup||target?.id===pickupJob?.targetId);
@@ -7503,6 +7507,7 @@ module.exports.loop = function () {
   const garrison = selectDefenderGarrison(defenders, garrisonRequirements);
   for (const creep of defenders) {
     if (creep.memory.role !== 'defender') continue;
+    waitAge.markEvaluated(creep, true);
     const targetRoomName = creep.memory.defenseTargetRoom ||
       creep.room.name;
     if (!(garrison.get(targetRoomName) || []).includes(creep)) {
@@ -7591,6 +7596,7 @@ module.exports.loop = function () {
         creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
         String(a.id).localeCompare(String(b.id)))[0];
       if (healingTarget) {
+        waitAge.markEvaluated(creep, true);
         moveCreep(creep, healingTarget, 1);
         creep.memory.task = 'seek-healing';
         creep.memory.taskTarget = healingTarget.id;
@@ -7602,6 +7608,7 @@ module.exports.loop = function () {
     const hostiles = creep.room.find(FIND_HOSTILE_CREEPS);
     const step = findFleeStep(creep, hostiles);
     if (!step) continue;
+    waitAge.markEvaluated(creep, true);
     const threat = creep.pos.findClosestByRange(hostiles);
     moveCreep(creep, step, 0, { direct: true });
     creep.memory.task = 'flee';
@@ -7609,6 +7616,9 @@ module.exports.loop = function () {
     creep.memory.idleNow = false;
     creep.say('Run!');
   }
+
+  // Always sample final decisions, including CPU skips and safety overrides.
+  Memory.waitAge = waitAge.finish(creeps);
 
   // Dashboard data refreshes every ten ticks for console reporting. Avoid the
   // full build/repair assignment scan on other ticks where it is discarded.
