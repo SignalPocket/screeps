@@ -40,6 +40,8 @@ const { createEnergyPhase } = require('energy.phase');
 const { createEnergyStoreRegistry } = require('energy.store-registry');
 const { createRoadPlanner } = require('road.planner');
 const { createInfrastructurePlanner } = require('infrastructure.planner');
+const { ownedInfrastructureRooms, createOwnedRoomInfrastructure } =
+  require('infrastructure.progression');
 const { createLandmarkFlags } = require('landmark.flags');
 const { createOutpostMaintenance } = require('outpost.maintenance');
 const { createMemoryMaintenance } = require('memory.maintenance');
@@ -577,7 +579,7 @@ module.exports.loop = function () {
     LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, TERRAIN_MASK_WALL, TERRAIN_MASK_SWAMP, OK
   });
-  const { isExtensionClusterTile, placeExtensionSite, placeStorageSite,
+  const { isExtensionClusterTile, placeStorageSite,
     getContainerPurpose, refreshContainerPurposes,
     isExtensionRefillBuffer, placeSourceContainerSite,
     manageExtensionContainer, manageControllerContainer,
@@ -1869,6 +1871,20 @@ module.exports.loop = function () {
     }
   }
 
+  const reconcileInfrastructure = createOwnedRoomInfrastructure({
+    Game, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS,
+    CONTROLLER_STRUCTURES, getRoomSources, getContainerPurpose, OK,
+    manageControllerContainer, manageExtensionContainer, placeSourceContainerSite,
+    placeStorageSite, placeTowerSite, placeLinkSite,
+    isControllerLink: isRcl5ControllerLink, isExtensionLink: isRcl5ExtensionLink
+  });
+  // Progression uses controller ownership, including pre-spawn bootstrap rooms.
+  // Other workforce/registry loops retain their established spawn scope.
+  for (const room of ownedInfrastructureRooms(Game.rooms)) {
+    const situation = getRoomSituation(room);
+    reconcileInfrastructure(room, { allowSlowPlanning,
+      optionalConstruction: situation.policy.permissions.optionalConstruction });
+  }
   const ownedRooms = new Set(Object.values(Game.spawns).map(spawn => spawn.room.name));
   for (const roomName of ownedRooms) {
     const room = Game.rooms[roomName];
@@ -1954,17 +1970,12 @@ module.exports.loop = function () {
         ]);
       }
     }
-    // Site placement and migration are stable planning work. Twenty-tick,
-    // room-staggered checks are responsive enough without rescanning every
-    // structure and construction tile on every game tick.
+    // Core placement is reconciled above on capability changes and bounded
+    // retries. Roads retain the shared corridor budgets and staggered cadence.
     // Link cooldowns are measured in ticks, so operate the completed network
     // every tick even though construction planning remains staggered.
     runLinks(room);
     if (allowSlowPlanning && scheduledRoomTick(room, 20)) {
-      placeExtensionSite(room);
-      manageControllerContainer(room);
-      manageExtensionContainer(room);
-      placeSourceContainerSite(room);
       // Remembered infrastructure paths include source-wall tunnels and other
       // access that keeps harvesting viable. Reopen those even while optional
       // construction is paused; ordinary layout growth remains gated below.
@@ -1972,9 +1983,6 @@ module.exports.loop = function () {
         placeRoadSite(room, infrastructureRoadPaths, traffic, roadBudget);
       }
       if (situation.policy.permissions.optionalConstruction) {
-        placeStorageSite(room);
-        placeTowerSite(room);
-        placeLinkSite(room);
         placeBorderRelaySite(room, interRoomTravelPaths);
         for (const survey of [room.memory.leftSurvey,
           room.memory.southSurvey, room.memory.southwestSurvey]) {
