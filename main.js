@@ -67,7 +67,8 @@ const { applyScenarioPolicy } = require('scenario.policy');
 const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('source.collection');
 const { createRefillManagement } = require('refill.management');
-const { refillRetentionSituation, recoverSpawnFiller } = require('park.recovery');
+const { refillRetentionSituation, recoverSpawnFiller, selectSupplyRecipient,
+  totalSupplyDemand, selectParkingCandidates } = require('park.recovery');
 const { createSpawnPolicy } = require('spawn.policy');
 const { authorizeSpawnAssignment } = require('spawn.authority');
 const { describeSpawnAttempt, recordSpawnDenials } = require('spawn.denial');
@@ -3041,6 +3042,7 @@ module.exports.loop = function () {
         usesControllerBuffer(worker)
           ? 0 : worker.store.getFreeCapacity(RESOURCE_ENERGY);
     }
+    supplyDemand = totalSupplyDemand(recipientRemaining);
     const refillStructures = roomStructures.filter(structure => structure.my &&
         (structure.structureType === STRUCTURE_SPAWN ||
           structure.structureType === STRUCTURE_EXTENSION ||
@@ -3211,15 +3213,9 @@ module.exports.loop = function () {
         assignments[creep.name] = 'buffer';
         bufferDemand = Math.max(0, bufferDemand - carried);
       } else if (supplyDemand > 0) {
-        const recipient = supplyRecipients.filter(worker =>
-          recipientRemaining[worker.name] > 0 &&
-          creep.pos.getRangeTo(worker) <= 1).sort((a, b) => {
-          const rolePriority = worker => worker.memory.role === 'upgrader'
-            ? 0 : worker.memory.role === 'worker' ? 1 : 2;
-          return rolePriority(a) - rolePriority(b) ||
-            creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
-            a.name.localeCompare(b.name);
-        })[0];
+        const recipient = selectSupplyRecipient({ carrier: creep,
+          recipients: supplyRecipients, remaining: recipientRemaining,
+          assignments });
         if (recipient) {
           const committed = Math.min(carried,
             recipientRemaining[recipient.name]);
@@ -3907,30 +3903,14 @@ module.exports.loop = function () {
       const occupied = new Set([
         ...getRoomStructures(room), ...getRoomSites(room)
       ].map(target => `${target.pos.x}:${target.pos.y}`));
-      const candidates = [];
       const spawn = getRoomStructuresByType(room, STRUCTURE_SPAWN)
         .find(s=>s.my);
-      const anchors = [spawn?.pos, room.storage?.pos].filter(Boolean);
       const plannedExtensions = new Set((room.memory.singleExtensionLayout?.extensionTiles||[])
         .map(p=>`${p.x}:${p.y}`));
-      const staging = [];
-      for(let x=2;x<=47;x++)for(let y=2;y<=47;y++){
-        if(anchors.some(anchor=>anchor.getRangeTo(x,y)<=7))staging.push({x,y});
-      }
-      const seen = new Set();
-      for (const { x, y } of staging) {
-        const key = `${x}:${y}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        if (terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            room.controller && room.controller.pos.getRangeTo(x, y) <= 6 ||
-            sources.some(source => source.pos.getRangeTo(x, y) <= 4) ||
-            protectedRoads.has(key) || occupied.has(key) ||
-            plannedExtensions.has(key) ||
-            spawn && spawn.pos.getRangeTo(x,y)<=2 ||
-            room.storage && room.storage.pos.getRangeTo(x,y)<=2) continue;
-        candidates.push({ x, y });
-      }
+      const candidates = selectParkingCandidates({ terrain, sources,
+        protectedRoads, occupied, plannedExtensions, spawn,
+        storage: room.storage, controller: room.controller,
+        wallMask: TERRAIN_MASK_WALL });
       conservationParkingByRoom[room.name] = candidates;
       conservationParkingClaims[room.name] = new Set();
     }
