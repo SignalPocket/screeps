@@ -27,7 +27,7 @@ const applyBrigadeBypassCost = (costs, x, y) => {
 const createMovementService = options => {
   const { Game, Room, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES,
     FIND_MY_CREEPS, STRUCTURE_ROAD, STRUCTURE_EXTENSION,
-    OK, ERR_INVALID_TARGET } = options;
+    OK, ERR_INVALID_TARGET, ERR_TIRED } = options;
   const movementReservations = {};
   const movementRoomCache = {};
   const getMovementRoomCache = roomName => {
@@ -121,6 +121,14 @@ const createMovementService = options => {
     const effectiveRange = range;
     if (targetRoomName === creep.room.name &&
         creep.pos.getRangeTo(position) <= effectiveRange) return OK;
+    // Fatigue prevents a move attempt; it is not evidence of a blocked route.
+    // Break the observation chain so the first recovered tick cannot count
+    // the preceding forced wait as a collision or an oscillation.
+    if (creep.fatigue > 0) {
+      creep.memory.navStuck = 0;
+      delete creep.memory.navLastTick;
+      return ERR_TIRED;
+    }
     if (creep.memory.navCostVersion !== 'brigade-bypass-v10') {
       creep.memory.navCostVersion = 'brigade-bypass-v10';
       delete creep.memory._move;

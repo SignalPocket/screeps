@@ -274,7 +274,7 @@ module.exports.loop = function () {
   });
   const { moveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
     FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS, STRUCTURE_ROAD,
-    STRUCTURE_EXTENSION, OK, ERR_INVALID_TARGET });
+    STRUCTURE_EXTENSION, OK, ERR_INVALID_TARGET, ERR_TIRED });
   const { findFleeStep } = createDefenseController({
     PathFinder, FIND_STRUCTURES, FIND_CREEPS, OBSTACLE_OBJECT_TYPES,
     STRUCTURE_ROAD, STRUCTURE_RAMPART
