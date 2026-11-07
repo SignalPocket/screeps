@@ -86,6 +86,22 @@ const runReservation = ({ creep, Game, move, RoomPosition,
     creep.memory.taskTarget = `${targetRoom} already owned`;
     return true;
   }
+  // Publish every executor outcome, including paths that cannot reserve.
+  // Otherwise a claimed room or a travelling replacement retains an old OK.
+  const report = (state, result = null, reason = null) => {
+    const home = Game.rooms[creep.memory.home];
+    if (!home) return;
+    const controller = visible && visible.controller;
+    if (!home.memory.reservationStatus) home.memory.reservationStatus = {};
+    home.memory.reservationStatus[targetRoom] = { tick: Game.time,
+      creep: creep.name, state, result, reason, room: creep.room.name,
+      controllerId: controller && controller.id || null,
+      owner: controller && controller.owner &&
+        controller.owner.username || null,
+      ticksToEnd: controller && controller.reservation
+        ? controller.reservation.ticksToEnd : null,
+      observedReservation: controller && controller.reservation || null };
+  };
   if (visible && visible.find(FIND_HOSTILE_CREEPS).length) {
     creep.memory.reservationRetreatUntil = Game.time + 25;
   }
@@ -94,35 +110,34 @@ const runReservation = ({ creep, Game, move, RoomPosition,
       move(creep, new RoomPosition(25, 25, creep.memory.home), 20);
     }
     creep.memory.taskTarget = `${creep.memory.home} reservation retreat`;
+    report('retreat', null, 'hostile retreat interval');
     return true;
   }
   if (creep.room.name !== targetRoom) {
     move(creep, new RoomPosition(25, 25, targetRoom), 20);
     creep.memory.taskTarget = `${targetRoom} reservation`;
+    report('travel');
     return true;
   }
   const controller = creep.room.controller;
   if (!controller || controller.owner || controller.reservation &&
       controller.reservation.username !== creep.owner.username) {
     creep.memory.taskTarget = `${targetRoom} reservation unavailable`;
+    report('unavailable', null, !controller ? 'no controller'
+      : controller.owner ? 'owned controller' : 'foreign reservation');
     return true; // Never attack or claim an unexpected owner.
   }
   if (creep.room.find(FIND_HOSTILE_CREEPS).length) {
     move(creep, new RoomPosition(25, 25, creep.memory.home), 20);
     creep.memory.taskTarget = `${creep.memory.home} reservation retreat`;
+    report('retreat', null, 'hostiles in target room');
     return true;
   }
   const result = creep.reserveController(controller);
   if (result === ERR_NOT_IN_RANGE) move(creep, controller, 1);
   creep.memory.taskTarget = controller.id;
-  const home = Game.rooms[creep.memory.home];
-  if (home) {
-    if (!home.memory.reservationStatus) home.memory.reservationStatus = {};
-    home.memory.reservationStatus[targetRoom] = { tick: Game.time,
-      creep: creep.name, result,
-      ticksToEnd: controller.reservation && controller.reservation.ticksToEnd,
-      observedReservation: controller.reservation || null };
-  }
+  report(result === OK ? 'reserving'
+    : result === ERR_NOT_IN_RANGE ? 'approach' : 'failed', result);
   return result === OK || result === ERR_NOT_IN_RANGE;
 };
 
