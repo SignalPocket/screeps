@@ -24,7 +24,7 @@ const defenderC = { name: 'c', room: { name: 'W1N1' },
   memory: { defenseTargetRoom: 'W1N2' }, ticksToLive: 200 };
 assert.strictEqual(selectDefenderGarrison([
   defenderA, defenderB, defenderC
-]).get('W1N2'), defenderB,
+]).get('W1N2')[0], defenderB,
 'keep only one defender per target room and prefer a defender already there');
 const warMemory = {};
 const damagedCreep = {

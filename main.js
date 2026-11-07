@@ -28,6 +28,7 @@ const {planRepairSupply,exportableEnergy,runOutpostRepair,protectRepairAssignmen
 const {dispatchEmergencyRepairs}=require('outpost.rescue');
 const {observeLabor,reconcileLaborBody,runBudgetedWork,runBudgetedUpgrade,selectUpgradeBudget,workRate,countForRate,profileRate,settle}=require('labor.capacity');
 const { createRoomSituation } = require('room.situation');
+const { updateRoomCombat, isActiveDefenseAssignment } = require('room.combat');
 const { createWorkerLimits } = require('worker.limits');
 const { getRoomStagePlan } = require('room.stages');
 const { createRemoteHauling, isRoomBorder, selectHomeDeliveryTarget,
@@ -153,6 +154,18 @@ module.exports.loop = function () {
   // normal recovery policy instead of extending an empty-bucket outage.
   if (cpuPolicy.mode === 'recovery' && Game.cpu.bucket < 250) return;
   const warEvents = collectFriendlyDamageEvents(Object.values(Game.creeps));
+  for (const room of Object.values(Game.rooms)) {
+    const targets = getDefenseTargets(room, FIND_HOSTILE_CREEPS,
+      FIND_HOSTILE_STRUCTURES);
+    const combat = updateRoomCombat(room, Game.time, targets);
+    if (combat.fighting) warEvents.push({ hostile: true, roomName: room.name });
+  }
+  for (const creep of Object.values(Game.creeps)) {
+    if (isActiveDefenseAssignment(creep, Game.rooms)) {
+      creep.memory.role = 'defender';
+      creep.memory.assignmentRole = 'defender';
+    }
+  }
   updateWarState(Memory, Game.time, warEvents);
   retireCompletedPush(Game);
   for (const creep of Object.values(Game.creeps)) {
@@ -314,7 +327,8 @@ module.exports.loop = function () {
       const room = Game.rooms[roomName];
       return room ? getDefenseTargets(room, FIND_HOSTILE_CREEPS,
         FIND_HOSTILE_STRUCTURES).map(creep => ({
-        creep, roomName, homeRoomName
+        creep, roomName, homeRoomName,
+        requiredDefenders: room.memory.combatStatus.requiredDefenders
       })) : [];
     });
     updateWarState(Memory, Game.time, threats.map(threat => ({
@@ -855,14 +869,16 @@ module.exports.loop = function () {
         threatRoom: target.roomName,
         maintenanceReady: brigadeReadiness.maintenanceReady
       });
-    if (target && needsEmergencyDefender(1, defenderCoverage) &&
+    if (target && needsEmergencyDefender(1, defenderCoverage, false,
+        target.requiredDefenders) &&
         (target.creep.structureType === STRUCTURE_INVADER_CORE ||
           !restoringBeforeRemoteDefense &&
           !homeRecoveryBeforeRemoteDefense)) {
       return {
         role: 'defender', forceSpawn: true, emergencyDefense: true,
         minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
-        staffingCurrent: 0, staffingTarget: 1, minimumGap: true,
+        staffingCurrent: defenderCoverage,
+        staffingTarget: target.requiredDefenders, minimumGap: true,
         defenseTargetRoom: target.roomName
       };
     }
@@ -2076,6 +2092,9 @@ module.exports.loop = function () {
   for (const creep of creeps) {
     if (creep.memory.staffingRetire || creep.memory.role === 'retire') {
       assignedCreeps[creep.name] = true;
+    } else if (isActiveDefenseAssignment(creep, Game.rooms) ||
+        creep.memory.role === 'defender') {
+      assignedCreeps[creep.name] = true;
     } else if (enforceAssignmentContract(creep) ||
         creep.memory.assignmentKind) {
       // Spawn selection and workforce allocation consume the same durable
@@ -2654,7 +2673,8 @@ module.exports.loop = function () {
   }
 
   for (const creep of creeps) {
-    if (creep.memory.role === 'remote-miner' ||
+    if (creep.memory.role === 'defender' ||
+        creep.memory.role === 'remote-miner' ||
         creep.memory.role === 'remote-hauler' || creep.memory.role === 'remote-reserver' ||
         isOutpostBuilder(creep) || isExpansionBuilder(creep)) continue;
     if (!creep.room.controller || !creep.room.controller.my) {
@@ -7428,12 +7448,14 @@ module.exports.loop = function () {
   }
   const defenders = creeps.filter(candidate =>
     candidate.memory.role === 'defender');
-  const garrison = selectDefenderGarrison(defenders);
+  const garrison = selectDefenderGarrison(defenders, Object.fromEntries(
+    Object.values(Game.rooms).map(room => [room.name,
+      room.memory.combatStatus && room.memory.combatStatus.requiredDefenders])));
   for (const creep of defenders) {
     if (creep.memory.role !== 'defender') continue;
     const targetRoomName = creep.memory.defenseTargetRoom ||
       creep.room.name;
-    if (garrison.get(targetRoomName) !== creep) {
+    if (!(garrison.get(targetRoomName) || []).includes(creep)) {
       creep.memory.retiredRole = 'defender';
       creep.memory.staffingRetire = true;
       creep.memory.role = 'retire';
