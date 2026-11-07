@@ -68,6 +68,7 @@ const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
 const { createRefillManagement } = require('refill.management');
 const { createSpawnPolicy } = require('spawn.policy');
 const { authorizeSpawnAssignment } = require('spawn.authority');
+const { describeSpawnAttempt, recordSpawnDenials } = require('spawn.denial');
 const { createTaskReservations } = require('task.reservations');
 const { createWorkDispatch, collectPartialHauler, recoverBlockedWork } = require('work.dispatch');
 const { planPickupJobs } = require('pickup.jobs');
@@ -1601,9 +1602,11 @@ module.exports.loop = function () {
     spawnGroups[spawn.room.name].push(spawn);
   }
   const spawnOrder = [];
+  const spawnAttempts = {};
   for (const [roomName, spawns] of Object.entries(spawnGroups)) {
     spawns.sort((a, b) => a.name.localeCompare(b.name));
     const room = Game.rooms[roomName];
+    spawnAttempts[roomName] = [];
     room.memory.spawnLoopTrace = { tick: Game.time, stage: 'planning' };
     updateEnergyWorkPhase(room);
     const roomWorkers = Object.values(Game.creeps).filter(creep =>
@@ -1619,6 +1622,8 @@ module.exports.loop = function () {
   }
   for (const spawn of spawnOrder) {
     if (spawn.spawning) {
+      spawnAttempts[spawn.room.name].push(describeSpawnAttempt({
+        spawn: spawn.name, busy: true }));
       const roomSpawns = spawnGroups[spawn.room.name] || [];
       if (roomSpawns.every(candidate => candidate.spawning)) {
         clearSpawnWait(spawn.room);
@@ -1796,7 +1801,12 @@ module.exports.loop = function () {
       jobKey: authority.jobKey, needsWorker: spawnRequest.needsWorker,
       hasBody: Boolean(spawnRequest.body), waited: spawnRequest.waited,
       waitLimit: spawnRequest.waitLimit };
-    if (!spawnRequest.needsWorker) continue;
+    if (!spawnRequest.needsWorker || !spawnRequest.body) {
+      spawnAttempts[spawn.room.name].push(describeSpawnAttempt({
+        spawn: spawn.name, proposed: proposedAssignment, authority,
+        request: spawnRequest }));
+      continue;
+    }
     const body = spawnRequest.body;
     if (!spawn.spawning && body) {
       const name = getBirthName(spawn, assignment);
@@ -1844,6 +1854,9 @@ module.exports.loop = function () {
           expansionTarget: assignment.expansionTarget
         }
       });
+      spawnAttempts[spawn.room.name].push(describeSpawnAttempt({
+        spawn: spawn.name, proposed: proposedAssignment, authority,
+        request: spawnRequest, result }));
       if (result === OK) {
         clearSpawnWait(spawn.room);
         if (assignment.role === 'defender') {
@@ -1869,6 +1882,10 @@ module.exports.loop = function () {
         console.log(`[${Game.time}] Spawning ${name} (${assignment.role}, ${cost} energy): ${getBodyCode(body)}`);
       }
     }
+  }
+
+  for (const [roomName, attempts] of Object.entries(spawnAttempts)) {
+    recordSpawnDenials(Game.rooms[roomName].memory, Game.time, attempts);
   }
 
   const reconcileInfrastructure = createOwnedRoomInfrastructure({
