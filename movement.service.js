@@ -243,6 +243,20 @@ const createMovementService = options => {
         return costs;
       }
     });
+    // Keep only the latest recovery attempt, with its own tick and goal. A
+    // successful moveTo result accepts an intent; it does not prove movement.
+    // This distinguishes failed path searches from collisions without storing
+    // paths or growing an event log, and survives later CPU-deferred ticks.
+    if (recalculate) creep.memory.navRecovery = {
+      tick: Game.time,
+      reason: oscillating ? 'oscillation' : 'blocked',
+      result,
+      stuck: creep.memory.navStuck,
+      goal,
+      room: creep.room.name,
+      x: creep.pos.x,
+      y: creep.pos.y
+    };
     creep.memory.navGoal = goal;
     creep.memory.navPrevX = creep.memory.navLastX;
     creep.memory.navPrevY = creep.memory.navLastY;
