@@ -1113,7 +1113,7 @@ const expansionPlanner = createExpansionPlanner({
   FIND_STRUCTURES: 'structures', FIND_MY_SPAWNS: 'spawns',
   FIND_MY_CONSTRUCTION_SITES: 'sites', FIND_SOURCES: 'sources',
   STRUCTURE_CONTAINER: 'container', STRUCTURE_ROAD: 'road',
-  STRUCTURE_SPAWN: 'spawn', TERRAIN_MASK_WALL: 1,
+  STRUCTURE_SPAWN: 'spawn', STRUCTURE_RAMPART: 'rampart', FIND_MINERALS: 'minerals',
   LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
   BODYPART_COST: { claim: 600, move: 50 }, CLAIM: 'claim', MOVE: 'move', OK: 0
 });
@@ -1135,7 +1135,7 @@ expansionSouth.controller.my = false;
 expansionMaintenanceAllowed = true;
 
 const bootstrapRoom = {
-  getTerrain: () => ({ get: (x, y) => x === 10 && y === 10 ? 0 : 1 }),
+  getTerrain: () => ({ get: (x, y) => Math.abs(x - 10) <= 1 && Math.abs(y - 10) <= 1 ? 0 : 1 }),
   find: (type, options) => {
     const values = type === 'sources'
       ? [{ pos: expansionPosition(5, 5) }]
