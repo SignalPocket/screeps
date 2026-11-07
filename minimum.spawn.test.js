@@ -53,7 +53,23 @@ const repair = planner({
 assert.strictEqual(repair.handled, true);
 assert.strictEqual(repair.gap.role, 'builder');
 assert.strictEqual(repair.gap.baseline, true);
-assert.strictEqual(repair.request.builderMission, 'repair');
+assert.strictEqual(repair.request.builderMission, 'build',
+  'the selected builder gap must emit the builder job accepted by authority');
+
+const buildWorker = creep('builder', { work: 1, memory: {
+  home: 'W1N1', builderScope: 'local', builderMission: 'build'
+} });
+const selectedRepair = planner({
+  room, workers: [...baseWorkers, buildWorker],
+  staffingPlan: buildPlan(room, [...baseWorkers, buildWorker], {
+    roles: { ...roles, builder: { min: 1 } }, remote: {}
+  }),
+  replacementCluster: null, recoveryEnergy: 700, standardEnergy: 650,
+  refillerMinimumEnergy: 700
+});
+assert.strictEqual(selectedRepair.gap.role, 'repairBuilder');
+assert.strictEqual(selectedRepair.request.builderMission, 'repair',
+  'repair bodies are emitted only when repairBuilder is the selected job');
 
 const missingSource = planner({
   room, workers: [baseWorkers[0], baseWorkers[2]],
@@ -66,6 +82,21 @@ const missingSource = planner({
 assert.strictEqual(missingSource.gap.role, 'source');
 assert.strictEqual(missingSource.request.role, 'harvester');
 assert.strictEqual(missingSource.request.preferredSource, source);
+
+for (const roomName of ['W1N1', 'W2N2']) {
+  const emptyRoom = { name: roomName, memory: {},
+    energyCapacityAvailable: 300 };
+  const emptyPlan = buildPlan(emptyRoom, [], {
+    roles: { ...roles, repairBuilder: { min: 0 } }, remote: {}
+  });
+  const request = planner({ room: emptyRoom, workers: [],
+    staffingPlan: emptyPlan, replacementCluster: null,
+    recoveryEnergy: 300, standardEnergy: 300,
+    refillerMinimumEnergy: 300 });
+  assert.strictEqual(request.gap.role, 'source');
+  assert.strictEqual(request.request.role, 'harvester',
+    'each empty owned room consumes its source baseline independently');
+}
 
 const convertible = creep('hauler', { work: 1 });
 convertible.builderBody = true;

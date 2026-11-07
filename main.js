@@ -902,17 +902,6 @@ module.exports.loop = function () {
         defenseTargetRoom: target.roomName
       };
     }
-    if (!Object.values(Game.creeps).some(creep =>
-      creep.room.name === room.name)) {
-      return {
-        role: 'builder', builderScope: 'local',
-        builderMission: 'repair', forceSpawn: true,
-        emergencyPresence: true,
-        minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
-        staffingCurrent: 0, staffingTarget: 1,
-        minimumGap: true
-      };
-    }
     staffingPlan.scenarios = spawnSituation.scenarios || [];
     const establishedBrigade = Boolean(savedBrigadePlan &&
       Array.isArray(savedBrigadePlan.segments) &&

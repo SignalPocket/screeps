@@ -191,6 +191,9 @@ assert.deepStrictEqual(authorizeSpawnAssignment({ assignment: null,
   staffingPlan: plan({}) }).phase, 'idle');
 
 const mainSource = require('fs').readFileSync(require.resolve('./main'), 'utf8');
+assert(!/if \(!Object\.values\(Game\.creeps\)\.some\(creep =>\s*creep\.room\.name === room\.name\)\)/
+  .test(mainSource),
+  'an empty owned room must use the shared baseline planner instead of a hard-coded repair body');
 const minimumIndex = mainSource.indexOf('    const minimumPlan = planMinimumSpawn({');
 const brigadeMaintenanceIndex = mainSource.indexOf(
   "    if (replacementMode === 'maintenance' && controllerRelayRequest &&");
