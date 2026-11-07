@@ -191,6 +191,9 @@ assert.deepStrictEqual(authorizeSpawnAssignment({ assignment: null,
   staffingPlan: plan({}) }).phase, 'idle');
 
 const mainSource = require('fs').readFileSync(require.resolve('./main'), 'utf8');
+assert(!/if \(!Object\.values\(Game\.creeps\)\.some\(creep =>\s*creep\.room\.name === room\.name\)\)/
+  .test(mainSource),
+  'an empty owned room must use the shared baseline planner instead of a hard-coded repair body');
 const minimumIndex = mainSource.indexOf('    const minimumPlan = planMinimumSpawn({');
 const brigadeMaintenanceIndex = mainSource.indexOf(
   "    if (replacementMode === 'maintenance' && controllerRelayRequest &&");
@@ -221,5 +224,23 @@ const expiringRemoteMinerIndex = mainSource.indexOf(
 assert(emptyRemoteMinimumIndex >= 0 &&
   emptyRemoteMinimumIndex < expiringRemoteMinerIndex,
   'an empty remote minimum lane is restored before due remote replacement');
+assert(mainSource.includes(
+  '    const remoteMinimumRequest = planMinimumRemoteSpawn({'),
+  'the selector must map the authoritative remote gap even when a per-source diagnostic also fires');
+const readyClaimIndex = mainSource.indexOf(
+  '    const readyClaim = room.memory.expansionPlan;');
+const desiredHaulIndex = mainSource.indexOf(
+  '    const establishedHaulRequest =');
+const desiredRefillerIndex = mainSource.indexOf(
+  '    if (!emergencyRefillerGap &&');
+assert(readyClaimIndex >= 0 && readyClaimIndex < desiredHaulIndex &&
+  readyClaimIndex < desiredRefillerIndex,
+  'a healthy prepared claim runs after minimum recovery but before desired hauling and staffing');
+assert(mainSource.includes(
+  "    'claimer', 'remote-reserver', 'defender', 'retire',"),
+  'an active claimer must remain in the protected CPU execution tier');
+assert(/delete creep\.memory\._move;\s+delete creep\.memory\.navGoal;/.test(
+  mainSource),
+  'a claimer must discard its cross-room route before stepping inward from an arrival exit');
 
 console.log('spawn authority rejects every cross-phase priority bypass');

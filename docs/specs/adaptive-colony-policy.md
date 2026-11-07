@@ -63,10 +63,11 @@ The policy publishes permissions consumed by downstream modules:
   healthy; staffing readiness is a second required gate.
 - `optionalConstruction`: permit non-survival construction.
 - `optionalPopulation`: permit growth beyond protected floors.
-- `expansion`: permit a new claim only at RCL 7+, with healthy economy and
-  complete core-road access.
-- `expansionMaintenance`: permit an already-owned expansion bootstrap at RCL
-  7+ unless the home room is critical.
+- `expansion`: permit a new claim when the sponsoring room is healthy. The
+  expansion planner separately requires a valid target, a real GCL slot, and
+  enough energy capacity for a functional claimer; RCL is not a claim gate.
+- `expansionMaintenance`: permit an already-owned expansion bootstrap unless
+  the home room is critical.
 
 No module may infer an equivalent permission from a saved plan, survey target,
 or current creep count.
@@ -203,8 +204,9 @@ assignment behavior. It may add bounded repair or haul demand. It must:
   growth pause; measured hauling pressure remains essential, and otherwise
   idle flexible workers may temporarily cover unmet refill capacity.
 - Trend adjustment cannot turn remote desired staffing into remote minimum.
-- At RCL 6, a healthy room still cannot claim a new room.
-- At RCL 7, expansion waits when home health is strained or core roads lapse;
+- Expansion waits when home health is strained; controller level and core-road
+  completion do not independently block a claim. Capability, GCL, and target
+  validity remain planner gates.
   an owned bootstrap may continue unless home health is critical.
 - Below 1,000 CPU bucket, slow planning and visual work pause while survival
   execution continues.

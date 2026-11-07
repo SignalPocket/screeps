@@ -2,6 +2,7 @@
 const assert = require('assert');
 const { collectPartialHauler } = require('./work.dispatch');
 const { getWaitSpeech } = require('./creep.reporting');
+const { isExpansionBuilder } = require('./builder.roles');
 const run = (overrides = {}) => {
   const calls = [];
   const creep = { memory: { role: 'hauler' }, store: {
@@ -54,11 +55,15 @@ const partial = n => ({ name: n, memory: { role: 'hauler' },
   store: { energy: 50, getFreeCapacity: () => 150 },
   pos: { getRangeTo: () => 1 } });
 const carriers = ['a', 'b', 'c'].map(partial);
+const pioneer = partial('pioneer');
+pioneer.memory = { role: 'builder', builderScope: 'expansion' };
+pioneer.store.energy = 0;
 const participants = vm.runInNewContext(admission + '\npickupParticipants', {
-  executionCreeps: carriers, RESOURCE_ENERGY: 'energy',
+  executionCreeps: [...carriers, pioneer], RESOURCE_ENERGY: 'energy', isExpansionBuilder,
   roomDemandPlans: { W1N1: { assignments: { a: 'collect', b: 'collect', c: 'collect' } } }
 });
 assert.strictEqual(participants.length, 3);
+assert(!participants.includes(pioneer), 'bootstrap gathering owns its own source cycle');
 const { planPickupJobs } = require('./pickup.jobs');
 const allocated = planPickupJobs({ creeps: participants, tick: 10,
   getCandidates: () => [{ id: 'storage', store: { energy: 1000 } }],
@@ -106,7 +111,7 @@ const reserve = partial('reserve'); reserve.store.energy = 0;
 reserve.memory.role = 'builder';
 const active = partial('active'); active.store.energy = 0;
 const idleParticipants = vm.runInNewContext(admission + '\npickupParticipants', {
-  executionCreeps: [reserve, active], RESOURCE_ENERGY: 'energy',
+  executionCreeps: [reserve, active], RESOURCE_ENERGY: 'energy', isExpansionBuilder,
   roomDemandPlans: { W1N1: { assignments: { reserve: 'standby', active: 'collect' } } }
 });
 assert.strictEqual(idleParticipants.length, 1);
@@ -143,4 +148,90 @@ assert.strictEqual(plan.collectionSources.carrier, undefined);
 assert.strictEqual(recoveringCarrier.room.memory.demandPlan.lanes.collect, 0);
 assert.strictEqual(recoveringCarrier.room.memory.demandPlan.lanes.refill, 1);
 console.log('main-loop recovery transfers ownership and updates the saved assignment');
+
+// Reproduce the live split between an abstract source-area proposal and the
+// concrete store admitted by pickup.jobs. Exercise the installed main blocks,
+// not just the dispatcher in isolation.
+const stores = {
+  old: { id: 'old', store: { energy: 800 },
+    pos: { getRangeTo: () => 30 } },
+  next: { id: 'next', store: { energy: 900 },
+    pos: { getRangeTo: () => 30 } }
+};
+const pickupGame = { time: 200, getObjectById: id => stores[id] || null };
+const pickupDispatch = require('./work.dispatch').createWorkDispatch({
+  Game: pickupGame, RESOURCE_ENERGY: 'energy' });
+const courier = { name: 'courier', room: { name: 'W1N1', memory: {} },
+  memory: { role: 'refiller' },
+  store: { energy: 0, getFreeCapacity: () => 300 } };
+const courierPlan = { assignments: { courier: 'collect' },
+  collectionSources: { courier: 'next' }, demand: {} };
+courier.room.memory.demandPlan = { collectionSources: {}, jobs: {},
+  commitments: {} };
+pickupDispatch.reconcile([courier], { courier: {
+  lane: 'collect', sourceId: 'old', priority: 6 } });
+const tripId = courier.memory.workJob.id;
+const proposalStart = main.indexOf('  for (const creep of creeps) {',
+  main.indexOf('  const lanePriority ='));
+const proposalBlock = main.slice(proposalStart,
+  main.indexOf('  const ownedWorkJobs =', proposalStart));
+const pickupBindingStart = main.indexOf('  for (const creep of pickupParticipants) {');
+const pickupBindingBlock = main.slice(pickupBindingStart,
+  main.indexOf('  for(const room of Object.values(Game.rooms)', pickupBindingStart));
+assert(pickupBindingStart >= 0, 'the main loop must bind admitted pickups');
+for (let tick = 201; tick <= 205; tick++) {
+  pickupGame.time = tick;
+  const proposals = {};
+  vm.runInNewContext(proposalBlock, {
+    creeps: [courier], roomDemandPlans: { W1N1: courierPlan },
+    Game: pickupGame, RESOURCE_ENERGY: 'energy', workProposals: proposals,
+    workDispatch: pickupDispatch, lanePriority: () => 6
+  });
+  assert.strictEqual(proposals.courier.cancelCurrent, false,
+    'another source thirty tiles away must not cancel a useful pickup');
+  pickupDispatch.reconcile([courier], proposals);
+  assert.strictEqual(courier.memory.workJob.id, tripId);
+  vm.runInNewContext(pickupBindingBlock, {
+    pickupParticipants: [courier], workDispatch: pickupDispatch,
+    pickupPlan: { jobs: { courier: { targetId: 'old', amount: 75 } } },
+    roomDemandPlans: { W1N1: courierPlan }
+  });
+  assert.strictEqual(courier.memory.workJob.sourceId, 'old');
+  assert.strictEqual(courier.memory.dispatchCommitment.targetId, 'old');
+  assert.strictEqual(courier.memory.workJob.amount, 75);
+  assert.strictEqual(courierPlan.collectionSources.courier, 'old');
+  assert.strictEqual(courier.room.memory.demandPlan.jobs.courier.sourceId, 'old');
+  courierPlan.collectionSources.courier = 'next';
+}
+assert.strictEqual(courier.memory.dispatchCommitment.since, 201);
+stores.old.store.energy = 0;
+pickupGame.time++;
+pickupDispatch.reconcile([courier], { courier: {
+  lane: 'collect', sourceId: 'next', priority: 6 } });
+assert.notStrictEqual(courier.memory.workJob.id, tripId,
+  'exhaustion releases the old trip without a timer');
+assert.strictEqual(courier.memory.workJob.sourceId, 'next');
+assert.strictEqual(pickupDispatch.bindPickup(courier, undefined), null,
+  'no admission must not invent a pickup');
+
+// The actual continuation must withdraw only the allocator's admitted amount
+// and preserve cargo origin, including refiller pickups from a reserve buffer.
+stores.old.store.energy = 800;
+pickupDispatch.bindPickup(courier, { targetId: 'old', amount: 75 });
+const withdrawals = [];
+courier.withdraw = (...args) => { withdrawals.push(args); return 0; };
+const continuationStart = main.indexOf('    const continueDispatchCommitment =');
+const continuation = main.slice(continuationStart,
+  main.indexOf('    const scavenge =', continuationStart));
+const success = vm.runInNewContext(continuation + '\ncontinueDispatchCommitment()', {
+  creep: courier, demandLane: 'collect', Game: pickupGame,
+  RESOURCE_ENERGY: 'energy', getRoomSources: () => [],
+  managedPickup: true, pickupJob: { targetId: 'old', amount: 75 },
+  canWithdrawFrom: () => true, reserveEnergyFrom: () => 75,
+  rememberDispatchCommitment: () => {}, OK: 0, ERR_NOT_IN_RANGE: -9
+});
+assert.strictEqual(success, true);
+assert.deepStrictEqual(withdrawals[0], [stores.old, 'energy', 75]);
+assert.deepStrictEqual(Array.from(courier.memory.energySources), ['old']);
+console.log('collection ownership survives pressure changes and binds admitted quantities before execution');
 

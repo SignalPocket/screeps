@@ -7,7 +7,7 @@ const createRemoteSpawnPlanner = dependencies => {
   const {
     isOutpostBuilder, hasRemoteReplacementLife,
     getRemoteHaulReadiness, getRemoteReplacementLead,
-    BODYPART_COST, WORK, CARRY, MOVE
+    isOwnedRoom = () => false, BODYPART_COST, WORK, CARRY, MOVE
   } = dependencies;
 
   const getPlans = room => [
@@ -15,7 +15,7 @@ const createRemoteSpawnPlanner = dependencies => {
     { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
     { survey: room.memory.southwestSurvey, team: 'southwest' }
   ].filter(entry => entry.survey && entry.survey.active &&
-    entry.survey.targetRoom);
+    entry.survey.targetRoom && !isOwnedRoom(entry.survey.targetRoom));
 
   const getNeeds = survey => Array.isArray(survey.remoteWorkNeeds) &&
     survey.remoteWorkNeeds.length ? survey.remoteWorkNeeds :

@@ -1,4 +1,6 @@
 'use strict';
+const { withCombatStatus } = typeof Game === 'undefined'
+  ? require('./room.combat') : require('room.combat');
 const {planLabor,applyLaborPolicy,workRate}=typeof Game==='undefined'
  ? require('./labor.capacity'):require('labor.capacity');
 const { getRoadBacklog } = typeof Game === 'undefined'
@@ -449,6 +451,7 @@ const createRoomSituation = dependencies => {
       remote: policy.remote,
       totals: policy.totals
     };
+    Object.assign(status, withCombatStatus(status, room.memory.combatStatus));
     room.memory.roomStatus = Object.assign({ updated: Game.time }, status);
     cache[room.name] = situation;
     return situation;

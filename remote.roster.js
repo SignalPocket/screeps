@@ -2,7 +2,9 @@
 
 const reconcileRemoteHaulerRosters = ({
   rooms, creeps, Game, RESOURCE_ENERGY,
-  getRemoteHaulerBudget = null
+  getRemoteHaulerBudget = null,
+  isOwnedRoom = roomName => Boolean(Game.rooms && Game.rooms[roomName] &&
+    Game.rooms[roomName].controller && Game.rooms[roomName].controller.my)
 }) => {
   const results = {};
   for (const room of rooms.filter(candidate =>
@@ -12,7 +14,8 @@ const reconcileRemoteHaulerRosters = ({
       { survey: room.memory.southSurvey, team: 'south', delivery: 's2' },
       { survey: room.memory.southwestSurvey, team: 'southwest' }
     ].filter(entry => entry.survey && entry.survey.active &&
-      entry.survey.targetRoom && entry.survey.remoteHaulerTarget > 0);
+      entry.survey.targetRoom && !isOwnedRoom(entry.survey.targetRoom) &&
+      entry.survey.remoteHaulerTarget > 0);
     const measuredTarget = rosterPlans.reduce((total, entry) =>
       total + entry.survey.remoteHaulerTarget, 0);
     const policyBudget = getRemoteHaulerBudget
@@ -111,14 +114,16 @@ const reconcileRemoteHaulerRosters = ({
 
 const reconcileRemoteMinerRosters = ({
   rooms, creeps, getReplacementLead = () => 100,
-  getWork = creep => creep.getActiveBodyparts('work')
+  getWork = creep => creep.getActiveBodyparts('work'),
+  isOwnedRoom = () => false
 }) => {
   const results = {};
   for (const room of rooms.filter(candidate =>
     candidate.controller && candidate.controller.my)) {
     const surveys = [room.memory.leftSurvey, room.memory.southSurvey,
       room.memory.southwestSurvey].filter(survey =>
-      survey && survey.active && survey.targetRoom);
+      survey && survey.active && survey.targetRoom &&
+      !isOwnedRoom(survey.targetRoom));
     const needs = surveys.flatMap(survey => {
       const lanes = Array.isArray(survey.remoteWorkNeeds) &&
         survey.remoteWorkNeeds.length ? survey.remoteWorkNeeds :

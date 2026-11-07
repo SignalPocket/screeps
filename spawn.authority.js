@@ -120,6 +120,13 @@ const authorizeSpawnAssignment = ({ assignment, staffingPlan }) => {
       reason: `local minimum ${localGap.key} precedes ${jobKey}`,
       assignment: null };
   }
+  if (!baselineGap && !localGap && assignment.bootstrapMaintenance &&
+      assignment.role === 'builder' && assignment.builderScope === 'expansion' &&
+      assignment.expansionTarget) {
+    return { authorized: true, phase: 'owned-bootstrap', jobKey,
+      reason: 'claimed room workforce precedes remote staffing and growth',
+      assignment };
+  }
   // A funded stationary line is an atomic capability: a partial roster moves
   // no energy to the controller. Once every local minimum is covered, finish
   // its active maintenance pass before ordinary remote roster gaps. The

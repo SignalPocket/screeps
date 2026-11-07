@@ -23,4 +23,33 @@ const deriveCpuPolicy = bucket => {
   };
 };
 
-module.exports = { deriveCpuPolicy };
+// The executor visits a prefix of its final, rotated queue. These are visits,
+// not successful game actions: a visited creep may still wait or fail an action.
+// Retain only current deferred creeps, so telemetry stays bounded by the roster.
+const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
+  const executed = Math.max(0, Math.min(creeps.length, executedCount));
+  const prior = new Map(previous && previous.updated === tick - 1
+    ? (previous.deferredCreeps || []).map(entry => [entry.name, entry]) : []);
+  const roles = {};
+  const deferredCreeps = [];
+  creeps.forEach((creep, index) => {
+    const role = creep.memory.role || 'unknown';
+    if (!Object.prototype.hasOwnProperty.call(roles, role)) {
+      Object.defineProperty(roles, role, { enumerable: true, value:
+        { available: 0, executed: 0, deferred: 0 } });
+    }
+    roles[role].available++;
+    if (index < executed) {
+      roles[role].executed++;
+    } else {
+      roles[role].deferred++;
+      const last = prior.get(creep.name);
+      deferredCreeps.push({ name: creep.name, role, room: creep.room.name,
+        consecutiveTicks: last ? last.consecutiveTicks + 1 : 1 });
+    }
+  });
+  return { updated: tick, available: creeps.length, executed,
+    deferred: creeps.length - executed, roles, deferredCreeps };
+};
+
+module.exports = { deriveCpuPolicy, summarizeCreepExecution };

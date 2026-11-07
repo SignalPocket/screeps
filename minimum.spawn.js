@@ -47,11 +47,9 @@ const createMinimumSpawnPlanner = dependencies => {
       const convertible = workers.some(creep => !creep.spawning &&
         (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
         hasBuilderBody(creep));
-      const repairNeeded = jobs.repairBuilder &&
-        jobs.repairBuilder.coverageCount < jobs.repairBuilder.min;
       return result(convertible ? null : {
         role: 'builder', builderScope: 'local',
-        builderMission: repairNeeded ? 'repair' : 'build',
+        builderMission: 'build',
         forceSpawn: true,
         minimumEnergy: standardEnergy
       });

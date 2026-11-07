@@ -1,4 +1,6 @@
 'use strict';
+const { selectRoomExitWaypoint } = typeof Game === 'undefined'
+  ? require('./movement.route') : require('movement.route');
 const { isBrigadePlanActive } = typeof Game === 'undefined'
   ? require('./colony.operations') : require('colony.operations');
 const { laneCost } = typeof Game==='undefined' ? require('./road.network') : require('road.network');
@@ -27,7 +29,7 @@ const applyBrigadeBypassCost = (costs, x, y) => {
 const createMovementService = options => {
   const { Game, Room, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES,
     FIND_MY_CREEPS, STRUCTURE_ROAD, STRUCTURE_EXTENSION,
-    OK, ERR_INVALID_TARGET } = options;
+    OK, ERR_INVALID_TARGET, ERR_TIRED } = options;
   const movementReservations = {};
   const movementRoomCache = {};
   const getMovementRoomCache = roomName => {
@@ -115,12 +117,26 @@ const createMovementService = options => {
     }
   };
   const moveCreep = (creep, target, range = 1, movementOptions = {}) => {
-    const position = target.pos || target;
+    let position = target.pos || target;
     if (!position) return ERR_INVALID_TARGET;
-    const targetRoomName = position.roomName || creep.room.name;
-    const effectiveRange = range;
+    let targetRoomName = position.roomName || creep.room.name;
+    let effectiveRange = range;
     if (targetRoomName === creep.room.name &&
-        creep.pos.getRangeTo(position) <= effectiveRange) return OK;
+        creep.pos.getRangeTo(position) <= effectiveRange) {
+      if (creep.memory.navRoomWaypoint) {
+        delete creep.memory.navRoomWaypoint;
+        delete creep.memory._move;
+      }
+      return OK;
+    }
+    // Fatigue prevents a move attempt; it is not evidence of a blocked route.
+    // Break the observation chain so the first recovered tick cannot count
+    // the preceding forced wait as a collision or an oscillation.
+    if (creep.fatigue > 0) {
+      creep.memory.navStuck = 0;
+      delete creep.memory.navLastTick;
+      return ERR_TIRED;
+    }
     if (creep.memory.navCostVersion !== 'brigade-bypass-v10') {
       creep.memory.navCostVersion = 'brigade-bypass-v10';
       delete creep.memory._move;
@@ -141,12 +157,28 @@ const createMovementService = options => {
       consecutiveMove && sameGoal
       ? (creep.memory.navStuck || 0) + 1 : 0;
     const recalculate = oscillating || creep.memory.navStuck >= 2;
+    let movementTarget = target;
+    let roomWaypoint = false;
+    if (targetRoomName !== creep.room.name && Game.map &&
+        typeof Game.map.findRoute === 'function') {
+      const waypoint = selectRoomExitWaypoint({ Game, creep,
+        targetRoom: targetRoomName, recalculate });
+      if (!waypoint) return options.ERR_NO_PATH ?? -2;
+      movementTarget = position = waypoint.position;
+      targetRoomName = creep.room.name;
+      effectiveRange = 0;
+      roomWaypoint = true;
+    } else if (targetRoomName === creep.room.name && creep.memory.navRoomWaypoint) {
+      delete creep.memory.navRoomWaypoint;
+      delete creep.memory._move;
+    }
     const carryingCargo = creep.store.getUsedCapacity() > 0;
     const direct = movementOptions.direct === true;
     const routeReuse = carryingCargo ? 50 : 25;
     if (recalculate) delete creep.memory._move;
-    const result = creep.moveTo(target, {
+    const result = creep.moveTo(movementTarget, {
       range: effectiveRange,
+      ...(roomWaypoint ? { maxRooms: 1 } : {}),
       reusePath: recalculate ? 0 : routeReuse,
       ignoreCreeps: !recalculate,
       // The normal hierarchy is preferred road 1, ordinary road 2, plain 4,
@@ -235,6 +267,20 @@ const createMovementService = options => {
         return costs;
       }
     });
+    // Keep only the latest recovery attempt, with its own tick and goal. A
+    // successful moveTo result accepts an intent; it does not prove movement.
+    // This distinguishes failed path searches from collisions without storing
+    // paths or growing an event log, and survives later CPU-deferred ticks.
+    if (recalculate) creep.memory.navRecovery = {
+      tick: Game.time,
+      reason: oscillating ? 'oscillation' : 'blocked',
+      result,
+      stuck: creep.memory.navStuck,
+      goal,
+      room: creep.room.name,
+      x: creep.pos.x,
+      y: creep.pos.y
+    };
     creep.memory.navGoal = goal;
     creep.memory.navPrevX = creep.memory.navLastX;
     creep.memory.navPrevY = creep.memory.navLastY;

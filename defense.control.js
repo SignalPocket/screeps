@@ -1,5 +1,13 @@
 'use strict';
 
+// Invader cores reserve controllers without any hostile creep being present.
+// Use the same target set for discovery, deployment, combat and retirement.
+const getDefenseTargets = (room, hostileCreeps, hostileStructures) => [
+  ...room.find(hostileCreeps),
+  ...room.find(hostileStructures).filter(structure =>
+    structure.structureType === 'invaderCore' && structure.hits > 0)
+];
+
 const threatScore = (creep, constants) => [
   [constants.HEAL, 8], [constants.RANGED_ATTACK, 6],
   [constants.ATTACK, 5], [constants.WORK, 2], [constants.CLAIM, 1]
@@ -14,38 +22,35 @@ const selectCombatTarget = (creep, hostiles, constants) =>
     a.hits - b.hits || String(a.id).localeCompare(String(b.id)))[0] || null;
 
 const needsEmergencyDefender = (hostileCount, defenderCoverage,
-  spawnQueuedThisTick = false) => hostileCount > 0 &&
-    defenderCoverage === 0 && !spawnQueuedThisTick;
+  spawnQueuedThisTick = false, requiredDefenders = 1) => hostileCount > 0 &&
+    defenderCoverage < requiredDefenders && !spawnQueuedThisTick;
 
 // A garrison in one outpost must not hide an uncovered hostile in another.
 const selectUndefendedThreat = (threats, defenders, constants) => {
-  const coveredRooms = new Set((defenders || [])
-    .filter(defender => !defender.spawning)
-    .map(defender => defender.memory.defenseTargetRoom ||
-      defender.room.name));
+  const coverage = new Map();
+  for (const defender of defenders || []) {
+    const room = defender.memory.defenseTargetRoom || defender.room.name;
+    coverage.set(room, (coverage.get(room) || 0) + 1);
+  }
   return (threats || []).filter(threat => threat && threat.creep &&
-    !coveredRooms.has(threat.roomName)).sort((a, b) =>
+    (coverage.get(threat.roomName) || 0) <
+      (threat.requiredDefenders || 1)).sort((a, b) =>
     threatScore(b.creep, constants) - threatScore(a.creep, constants) ||
     String(a.roomName).localeCompare(String(b.roomName)) ||
     String(a.creep.id).localeCompare(String(b.creep.id)))[0] || null;
 };
 
-const selectDefenderGarrison = defenders => {
+const selectDefenderGarrison = (defenders, requiredByRoom = {}) => {
   const selected = new Map();
   for (const creep of defenders || []) {
     const targetRoom = creep.memory.defenseTargetRoom || creep.room.name;
-    const current = selected.get(targetRoom);
-    if (!current ||
-        Number(creep.room.name === targetRoom) >
-          Number(current.room.name === targetRoom) ||
-        creep.room.name === targetRoom &&
-          current.room.name === targetRoom &&
-          (creep.ticksToLive || 0) > (current.ticksToLive || 0) ||
-        creep.room.name !== targetRoom &&
-          current.room.name !== targetRoom &&
-          (creep.ticksToLive || 0) > (current.ticksToLive || 0)) {
-      selected.set(targetRoom, creep);
-    }
+    if (!selected.has(targetRoom)) selected.set(targetRoom, []);
+    selected.get(targetRoom).push(creep);
+  }
+  for (const [room, members] of selected) {
+    members.sort((a, b) => Number(b.room.name === room) -
+      Number(a.room.name === room) || (b.ticksToLive || 0) - (a.ticksToLive || 0));
+    selected.set(room, members.slice(0, Math.max(1, requiredByRoom[room] || 1)));
   }
   return selected;
 };
@@ -94,6 +99,10 @@ const updateWarState = (memory, tick, events, duration = 100) => {
 
 const getDefenseRoomNames = (homeRoomName, homeMemory, creeps) => {
   const roomNames = new Set([homeRoomName]);
+  for (const [roomName, objective] of Object.entries(
+    homeMemory && homeMemory.combatObjectives || {})) {
+    if (objective && objective.active !== false) roomNames.add(roomName);
+  }
   for (const survey of Object.values(homeMemory || {})) {
     if (survey && survey.active && survey.targetRoom) {
       roomNames.add(survey.targetRoom);
@@ -178,6 +187,7 @@ const createDefenseController = ({
 };
 
 module.exports = {
+  getDefenseTargets,
   selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   selectDefenderGarrison, collectFriendlyDamageEvents,
   updateWarState, getDefenseRoomNames,

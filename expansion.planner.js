@@ -3,7 +3,7 @@
 const createExpansionPlanner = ({
   Game, getRoomSources, getRoomSituation, FIND_STRUCTURES, FIND_MY_SPAWNS,
   FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, STRUCTURE_CONTAINER,
-  STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+  STRUCTURE_ROAD, STRUCTURE_SPAWN, STRUCTURE_RAMPART, FIND_MINERALS, LOOK_STRUCTURES,
   LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
 }) => {
   const scoreCandidate = room => getRoomSources(room).length * 100 +
@@ -29,17 +29,36 @@ const createExpansionPlanner = ({
   const findSpawnSite = (room, controller) => {
     const terrain = room.getTerrain();
     const sources = room.find(FIND_SOURCES);
+    const minerals = room.find(FIND_MINERALS);
     const roads = room.find(FIND_STRUCTURES, {
       filter: structure => structure.structureType === STRUCTURE_ROAD
     });
     const candidates = [];
+    const walkable = object => object.structureType === STRUCTURE_ROAD ||
+      object.structureType === STRUCTURE_CONTAINER ||
+      (object.structureType === STRUCTURE_RAMPART && (object.my || object.isPublic));
+    const clearApproaches = (x, y) => {
+      // Spawning and daily traffic need a complete plain-terrain neighborhood.
+      // Never trade that clearance for a shorter source route or an adjacent road.
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          if (terrain.get(x + dx, y + dy) !== 0 ||
+              room.lookForAt(LOOK_STRUCTURES, x + dx, y + dy).some(object => !walkable(object)) ||
+              room.lookForAt(LOOK_CONSTRUCTION_SITES, x + dx, y + dy).some(object => !walkable(object))) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
     for (let x = 3; x <= 46; x++) {
       for (let y = 3; y <= 46; y++) {
-        if (terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            controller.pos.getRangeTo(x, y) < 3 ||
+        if (controller.pos.getRangeTo(x, y) < 3 ||
             sources.some(source => source.pos.getRangeTo(x, y) < 3) ||
+            minerals.some(mineral => mineral.pos.getRangeTo(x, y) <= 1) ||
             room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) {
+            room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0 ||
+            !clearApproaches(x, y)) {
           continue;
         }
         const sourceRange = sources.reduce((total, source) =>
