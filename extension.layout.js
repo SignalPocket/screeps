@@ -5,7 +5,7 @@ const distance = (a,b) => Math.max(Math.abs(a.x-b.x),Math.abs(a.y-b.y));
 // Alternating extension/road tiles keep every extension adjacent to a lane.
 // Diagonal movement connects the road lattice without solid extension walls.
 const planExtensionLayout = ({ spawn, buffer, link, terrain, structures,
-  sources = [], controller, capacity = 60 }) => {
+  sources = [], controller, capacity = 60, excludedTiles = [] }) => {
   const center = {x:Math.round((spawn.x+buffer.x)/2),
     y:Math.round((spawn.y+buffer.y)/2)};
   const permanent = structures.filter(s => !['extension','road','rampart']
@@ -16,7 +16,8 @@ const planExtensionLayout = ({ spawn, buffer, link, terrain, structures,
   for(let x=Math.max(2,center.x-7);x<=Math.min(47,center.x+7);x++) {
     for(let y=Math.max(2,center.y-7);y<=Math.min(47,center.y+7);y++) {
       const p={x,y};
-      if((terrain(x,y)&1)||permanent.some(s=>key(s)===key(p))||
+      if((terrain(x,y)&1)||excludedTiles.some(s=>key(s)===key(p))||
+          permanent.some(s=>key(s)===key(p))||
           sources.some(s=>distance(s,p)<3)||controller&&distance(controller,p)<4)
         continue;
       candidates.push(p);
@@ -161,4 +162,82 @@ const createExtensionLayoutManager = ({Game,FIND_STRUCTURES,
   }
   return placed>0;
 };
-module.exports={planExtensionLayout,createExtensionLayoutManager};
+// Growth is deliberately separate from the historical migration manager.
+// A room must not need a valid RCL8 layout before adding its RCL2 capacity,
+// and reaching a new level never authorizes retiring user infrastructure.
+const createExtensionGrowthPlanner = ({ Game, FIND_STRUCTURES,
+  FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS, CONTROLLER_STRUCTURES,
+  getRoomSources, OK }) => room => {
+  if (!room.controller?.my) return { reason: 'not-owned' };
+  const structures = room.find(FIND_STRUCTURES);
+  const sites = room.find(FIND_MY_CONSTRUCTION_SITES);
+  const extensions = structures.filter(s => s.my &&
+    s.structureType === 'extension');
+  const pending = sites.filter(s => s.structureType === 'extension');
+  const limit = CONTROLLER_STRUCTURES.extension?.[room.controller.level] || 0;
+  const missing = Math.max(0, limit - extensions.length - pending.length);
+  const report = { tick: Game.time, limit, built: extensions.length,
+    pending: pending.length, missing, placed: 0 };
+  const finish = (reason, retry, extra = {}) => {
+    Object.assign(report, { reason, retry }, extra);
+    room.memory.extensionGrowth = report;
+    return report;
+  };
+  if (!missing) return finish(limit ? 'capacity-covered' : 'controller-level',
+    'controller level, structure or site inventory changes');
+  const spawn = room.find(FIND_MY_SPAWNS)[0];
+  if (!spawn) return finish('awaiting-first-spawn',
+    'expansion authority completes the first spawn');
+  // Complete outstanding extensions first, including manual placements.
+  if (pending.length) return finish('extensions-under-construction',
+    'existing extension sites complete');
+  const terrain = room.getTerrain();
+  const sources = getRoomSources(room).map(s => s.pos);
+  // Existing extensions and every pending site are permanent obstacles for
+  // this pass. The old planner otherwise treats extensions as movable.
+  const obstacles = [...structures.map(s => ({ x: s.pos.x, y: s.pos.y,
+    type: s.structureType === 'extension' ? 'preserved-extension' :
+      s.structureType })), ...sites.map(s => ({ x: s.pos.x, y: s.pos.y,
+    type: 'preserved-site' })), ...sources.map(p => ({ ...p,
+    type: 'source' })), ...(room.controller.pos ? [{
+    x: room.controller.pos.x, y: room.controller.pos.y, type: 'controller'
+  }] : [])];
+  const plan = planExtensionLayout({ spawn: spawn.pos, buffer: spawn.pos,
+    terrain: (x, y) => terrain.get(x, y), structures: obstacles, sources,
+    controller: room.controller.pos, capacity: missing,
+    excludedTiles: [...structures.filter(s => s.structureType !== 'rampart'),
+      ...sites].map(s => s.pos) });
+  if (!plan.valid) return finish('no-connected-layout',
+    'periodic retry after terrain or infrastructure changes');
+  // The graph search already proves spawn access. Also preserve service access
+  // beside every existing extension, including those outside the new lattice.
+  const blocked = new Set(obstacles.filter(s =>
+    !['road', 'rampart', 'container'].includes(s.type)).map(key));
+  const extensionKeys = new Set(plan.extensionTiles.map(key));
+  const seen = new Set();
+  const queue = [];
+  const enqueue = (x, y) => {
+    const k = `${x}:${y}`;
+    if (x <= 0 || x >= 49 || y <= 0 || y >= 49 || seen.has(k) ||
+      (terrain.get(x, y) & 1) || blocked.has(k) || extensionKeys.has(k)) return;
+    seen.add(k); queue.push({ x, y });
+  };
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++)
+    enqueue(spawn.pos.x + dx, spawn.pos.y + dy);
+  for (let i = 0; i < queue.length; i++)
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++)
+      enqueue(queue[i].x + dx, queue[i].y + dy);
+  const endpoints = structures.filter(s => ['extension', 'container', 'link',
+    'storage', 'spawn'].includes(s.structureType));
+  if (!endpoints.every(s => queue.some(p => distance(p, s.pos) <= 1)))
+    return finish('existing-service-access',
+      'periodic retry after an accessible layout becomes possible');
+  const target = plan.extensionTiles[0];
+  const result = room.createConstructionSite(target.x, target.y, 'extension');
+  return result === OK ? finish('site-placed',
+    'new extension site completes', { placed: 1, target, result }) :
+    finish('placement-rejected', 'next bounded planning pass', { target, result });
+};
+
+module.exports={planExtensionLayout,createExtensionLayoutManager,
+  createExtensionGrowthPlanner};
