@@ -1,5 +1,13 @@
 'use strict';
 
+// Invader cores reserve controllers without any hostile creep being present.
+// Use the same target set for discovery, deployment, combat and retirement.
+const getDefenseTargets = (room, hostileCreeps, hostileStructures) => [
+  ...room.find(hostileCreeps),
+  ...room.find(hostileStructures).filter(structure =>
+    structure.structureType === 'invaderCore' && structure.hits > 0)
+];
+
 const threatScore = (creep, constants) => [
   [constants.HEAL, 8], [constants.RANGED_ATTACK, 6],
   [constants.ATTACK, 5], [constants.WORK, 2], [constants.CLAIM, 1]
@@ -178,6 +186,7 @@ const createDefenseController = ({
 };
 
 module.exports = {
+  getDefenseTargets,
   selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   selectDefenderGarrison, collectFriendlyDamageEvents,
   updateWarState, getDefenseRoomNames,

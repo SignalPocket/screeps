@@ -85,7 +85,7 @@ const { getPopulationLimit, getCapabilityTransitionAllowance,
   getRequiredPopulationTransitionAllowance, selectRetirementCandidates } =
   require('population.control');
 const { selectHealingTower, runTowers } = require('tower.control');
-const { selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap, selectDefenderGarrison,
   createDefenseController } =
@@ -311,7 +311,8 @@ module.exports.loop = function () {
       home && home.memory, Object.values(Game.creeps));
     const threats = [...roomNames].flatMap(roomName => {
       const room = Game.rooms[roomName];
-      return room ? room.find(FIND_HOSTILE_CREEPS).map(creep => ({
+      return room ? getDefenseTargets(room, FIND_HOSTILE_CREEPS,
+        FIND_HOSTILE_STRUCTURES).map(creep => ({
         creep, roomName, homeRoomName
       })) : [];
     });
@@ -854,8 +855,9 @@ module.exports.loop = function () {
         maintenanceReady: brigadeReadiness.maintenanceReady
       });
     if (target && needsEmergencyDefender(1, defenderCoverage) &&
-        !restoringBeforeRemoteDefense &&
-        !homeRecoveryBeforeRemoteDefense) {
+        (target.creep.structureType === STRUCTURE_INVADER_CORE ||
+          !restoringBeforeRemoteDefense &&
+          !homeRecoveryBeforeRemoteDefense)) {
       return {
         role: 'defender', forceSpawn: true, emergencyDefense: true,
         minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
@@ -7414,7 +7416,8 @@ module.exports.loop = function () {
   // dispatch. After the war window, surviving carriers can join an active
   // brigade; other temporary defenders recycle.
   const threatenedRooms = Object.values(Game.rooms).filter(room =>
-    room.find(FIND_HOSTILE_CREEPS).length > 0).map(room => room.name);
+    getDefenseTargets(room, FIND_HOSTILE_CREEPS,
+      FIND_HOSTILE_STRUCTURES).length > 0).map(room => room.name);
   const reactivatedDefenders = reactivateDefenders(Game, threatenedRooms);
   if (reactivatedDefenders.length) {
     console.log(`[${Game.time}] defense reactivated ${
@@ -7451,7 +7454,8 @@ module.exports.loop = function () {
       creep.memory.idleNow = false;
       continue;
     }
-    const hostiles = targetRoom.find(FIND_HOSTILE_CREEPS);
+    const hostiles = getDefenseTargets(targetRoom, FIND_HOSTILE_CREEPS,
+      FIND_HOSTILE_STRUCTURES);
     if (hostiles.length === 0) {
       if (Memory.war === true) {
         creep.memory.task = 'defend-standby';
@@ -7475,7 +7479,8 @@ module.exports.loop = function () {
             const defendedRoom = Game.rooms[
               candidate.memory.defenseTargetRoom || candidate.room.name];
             return candidate.room.name === homeRoomName && defendedRoom &&
-              defendedRoom.find(FIND_HOSTILE_CREEPS).length === 0;
+              getDefenseTargets(defendedRoom, FIND_HOSTILE_CREEPS,
+                FIND_HOSTILE_STRUCTURES).length === 0;
           });
         if (adopted.some(entry => entry.creep === creep.name)) continue;
       }
