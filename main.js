@@ -3842,9 +3842,9 @@ module.exports.loop = function () {
   }
   const sortedExecutionCreeps = sortExecutionRecords(executionOrderRecords)
     .map(record => record.creep);
-  // Under CPU pressure, always run the home survival economy first. Rotate
-  // everything else so a hard ceiling cannot starve the same remote creeps on
-  // every tick while the bucket rebuilds.
+  // Under CPU pressure, preserve the complete funded energy chain: production,
+  // transport and home delivery. Only surplus empty carriers and optional work
+  // rotate behind the ceiling while the bucket rebuilds.
   const survivalExecutionRoles = new Set([
     'refiller', 'harvester', 'miner', 'hauler', 'rebalancer', 'upgrader',
     // Established remote production is recurring income, not optional work.
@@ -3858,7 +3858,10 @@ module.exports.loop = function () {
   ]);
   const survivalExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     creep.memory.emergencyRepairRoom ||
-    survivalExecutionRoles.has(creep.memory.role));
+    survivalExecutionRoles.has(creep.memory.role) ||
+    creep.memory.role === 'remote-hauler' &&
+      (!creep.memory.remoteRosterSurplus || creep.memory.refillSpecialist ||
+        creep.store[RESOURCE_ENERGY] > 0));
   const deferredExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     !survivalExecutionCreeps.includes(creep));
   const executionRotation = deferredExecutionCreeps.length
