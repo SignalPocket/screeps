@@ -251,18 +251,65 @@ const createRcl5Infrastructure = ({
       receiver = controllerLink;
       requestedAmount = controllerDemand;
     }
+    // Two possible endpoint directions, replaced each tick rather than an
+    // accumulating history. Capture gates before issuing any intent. These
+    // observations explain selection; they do not prove resolved delivery.
+    const explain = (route, source, target, demand, minimumEnergy, gates) => {
+      const sourceEnergy = source ? source.store[RESOURCE_ENERGY] : null;
+      const receiverFree = target
+        ? target.store.getFreeCapacity(RESOURCE_ENERGY) : null;
+      const blockers = [...gates];
+      if (!source) blockers.push('missing-source-endpoint');
+      if (!target) blockers.push('missing-receiver-endpoint');
+      if (target && target.id === retiringLinkId)
+        blockers.push('receiver-retiring');
+      if (source && sourceEnergy <= 0) blockers.push('no-source-energy');
+      else if (source && sourceEnergy < minimumEnergy)
+        blockers.push('below-send-threshold');
+      if (source && source.cooldown !== 0) blockers.push('cooldown');
+      if (target && receiverFree <= 0) blockers.push('no-receiver-capacity');
+      return {
+        route, source: source ? source.id : null,
+        receiver: target ? target.id : null,
+        sourceEnergy, cooldown: source ? source.cooldown : null,
+        receiverFree, demand, minimumEnergy,
+        chosen: Boolean(sender && source === sender && target === receiver &&
+          (route === 'controller-to-extensions'
+            ? spawnDemand > 0 : spawnDemand === 0)),
+        blockers, attemptedAmount: 0, result: null, outcome: 'skipped'
+      };
+    };
+    const decisions = [
+      explain('controller-to-extensions', controllerLink, extensionLink,
+        spawnDemand, 1, [
+          ...(spawnDemand <= 0 ? ['no-spawn-demand'] : []),
+          ...(controllerDemand > 0 ? ['controller-reserve'] : [])
+        ]),
+      explain('extensions-to-controller', extensionLink, controllerLink,
+        controllerDemand, 200, [
+          ...(spawnDemand > 0 ? ['competing-spawn-demand'] : []),
+          ...(controllerDemand <= 0 ? ['no-controller-demand'] : [])
+        ])
+    ];
     if (sender && sender.cooldown === 0) {
       const amount = Math.min(sender.store[RESOURCE_ENERGY],
         receiver.store.getFreeCapacity(RESOURCE_ENERGY), requestedAmount);
-      if (amount > 0 && sender.transferEnergy(receiver, amount) === OK) {
-        transfers = 1;
+      if (amount > 0) {
+        const result = sender.transferEnergy(receiver, amount);
+        const decision = decisions.find(entry => entry.chosen);
+        decision.attemptedAmount = amount;
+        decision.result = result;
+        decision.outcome = result === OK ? 'intent-accepted' : 'intent-rejected';
+        if (result === OK) transfers = 1;
       }
     }
     room.memory.linkNetworkStatus = {
       updated: Game.time, controller: controllerLink && controllerLink.id,
       extensions: extensionLink && extensionLink.id, transfers,
       direction: sender && receiver ? `${sender.id}->${receiver.id}` : null,
-      spawnDemand, controllerDemand
+      spawnDemand, controllerDemand, decisions,
+      // Legacy transfers counts accepted intents, never resolved arrivals.
+      transferEvidence: 'intent-results-only', linkCount: links.length
     };
     return { controllerLink, extensionLink, transfers };
   };
