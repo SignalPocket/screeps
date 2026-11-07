@@ -221,5 +221,23 @@ const expiringRemoteMinerIndex = mainSource.indexOf(
 assert(emptyRemoteMinimumIndex >= 0 &&
   emptyRemoteMinimumIndex < expiringRemoteMinerIndex,
   'an empty remote minimum lane is restored before due remote replacement');
+assert(mainSource.includes(
+  '    const remoteMinimumRequest = planMinimumRemoteSpawn({'),
+  'the selector must map the authoritative remote gap even when a per-source diagnostic also fires');
+const readyClaimIndex = mainSource.indexOf(
+  '    const readyClaim = room.memory.expansionPlan;');
+const desiredHaulIndex = mainSource.indexOf(
+  '    const establishedHaulRequest =');
+const desiredRefillerIndex = mainSource.indexOf(
+  '    if (!emergencyRefillerGap &&');
+assert(readyClaimIndex >= 0 && readyClaimIndex < desiredHaulIndex &&
+  readyClaimIndex < desiredRefillerIndex,
+  'a healthy prepared claim runs after minimum recovery but before desired hauling and staffing');
+assert(mainSource.includes(
+  "    'claimer', 'remote-reserver', 'defender', 'retire',"),
+  'an active claimer must remain in the protected CPU execution tier');
+assert(/delete creep\.memory\._move;\s+delete creep\.memory\.navGoal;/.test(
+  mainSource),
+  'a claimer must discard its cross-room route before stepping inward from an arrival exit');
 
 console.log('spawn authority rejects every cross-phase priority bypass');

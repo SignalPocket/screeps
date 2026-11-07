@@ -120,9 +120,12 @@ const derivePopulationPolicy = state => {
       !state.extensionMigrationActive,
     optionalConstruction: healthRank >= 2,
     optionalPopulation: healthRank >= 3,
-    expansion: rcl >= 7 && healthRank >= 3 &&
-      state.coreRoadAccessComplete !== false,
-    expansionMaintenance: rcl >= 7 && healthRank >= 1
+    // A new claim is governed by actual claim capability and GCL in the
+    // expansion planner. Policy contributes only the sponsor-health gate.
+    expansion: healthRank >= 3,
+    // Once the controller is owned, keep bootstrap support available unless
+    // the sponsoring room has fallen into a critical survival state.
+    expansionMaintenance: healthRank >= 1
   };
   const budgets = {
     constructionCrewScale: healthRank <= 1 ? 0.25

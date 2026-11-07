@@ -20,11 +20,11 @@ has passed live multi-tick observation.
 | Links precede new extensions when link work is pending | Implemented | `main.js`, `construction.priority.js` | infrastructure scenarios in `common.test.js` and `rcl5.infrastructure.test.js` |
 | Roads around essential infrastructure remain repair-eligible | Implemented | repair target selection in `main.js` | common construction/repair scenarios; live decay observation remains |
 | Duplicate structure/site overlap is rejected | Implemented | `infrastructure.planner.js` | placement scenarios in `common.test.js` |
-| Expansion obeys RCL, health, and core-road policy | Implemented | `colony.policy.js`, `expansion.planner.js`, `main.js` | RCL 6/7, strained, and bootstrap-pause scenarios |
+| Expansion obeys GCL capacity, functional claimer capacity, target validity, and sponsor health | Implemented | `colony.policy.js`, `expansion.planner.js`, `main.js` | healthy/strained sponsor and bootstrap-pause scenarios |
 | CPU exhaustion sheds optional work before survival | Implemented locally | `cpu.policy.js`, `main.js` | bucket boundary cases in `cpu.policy.test.js`; live recovery remains |
 | One retirement authority removes surplus safely | Implemented | `population.control.js`, recycle path in `main.js` | direct idle `suicide()` path removed; temporary defenders explicitly enter the same recycle path |
 | RCL 6 industry | Specified; runtime missing | no executable owner | terminal, labs, extractor, minerals, and reserve gates are cataloged but need planners and executors |
-| RCL 7 factory and multi-room sponsorship | Partial | expansion policy/planner only | claim/bootstrap are gated; factory and colony-wide allocation are missing |
+| RCL 7 factory and mature multi-room sponsorship | Partial | expansion claim/bootstrap is capability- and health-gated, independent of RCL | factory and colony-wide allocation are missing |
 | RCL 8 mature-room systems | Missing | no executable owner | observer, power, market, final defense, and support policy remain declarative |
 
 ## Audit rule

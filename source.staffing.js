@@ -1,4 +1,6 @@
 'use strict';
+const { isProtectedAssignment } = typeof Game === 'undefined'
+  ? require('./assignment.contract') : require('assignment.contract');
 
 /**
  * Convert source geometry and regeneration into local mining demand.
@@ -154,6 +156,12 @@ const createSourceStaffing = ({
     haulerTarget
   }) => {
     for (const creep of candidates) {
+      // Expansion ownership survives ordinary home labor allocation. A
+      // WORK/CARRY/CLAIM body is deliberately useful after arrival, but it
+      // must remain a claimer until the controller is actually owned.
+      if (isProtectedAssignment(creep.memory)) {
+        continue;
+      }
       const activeWork = creep.getActiveBodyparts(WORK);
       const hasWork = activeWork > 0;
       if(hasWork&&['builder','upgrader'].includes(creep.memory.role))continue;

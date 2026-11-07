@@ -14,6 +14,16 @@ const planner = createRemoteSpawnPlanner({
   WORK: 'work', CARRY: 'carry', MOVE: 'move'
 });
 
+const ownershipAwarePlanner = createRemoteSpawnPlanner({
+  isOutpostBuilder: creep => creep.memory.builderScope === 'outpost',
+  hasRemoteReplacementLife: creep => creep.viable !== false,
+  getRemoteHaulReadiness: () => ({ ready: true }),
+  getRemoteReplacementLead: () => 100,
+  isOwnedRoom: roomName => roomName === 'W2N1',
+  BODYPART_COST: { work: 100, carry: 50, move: 50 },
+  WORK: 'work', CARRY: 'carry', MOVE: 'move'
+});
+
 const room = {
   energyCapacityAvailable: 650,
   memory: {
@@ -45,6 +55,10 @@ const staffing = (remoteBuilder, remoteHauler, remoteMiner,
     minimum: selected.min
   } };
 };
+
+assert.deepStrictEqual(ownershipAwarePlanner.getPlans(room)
+  .map(entry => entry.survey.targetRoom), ['W2N2'],
+'an owned neighbor is no longer a remote staffing or export plan');
 
 assert.strictEqual(planner.planMinimumRemoteSpawn({
   room, workers: [], staffingPlan: staffing(job(0, 1, 1),

@@ -153,18 +153,16 @@ assert.strictEqual(roadBlockedRemote.permissions.remoteGrowth, false);
 assert.strictEqual(roadBlockedRemote.remote.haulers, 7,
   'unfinished home roads must not throttle funded established export routes');
 
-const rcl6Expansion = derivePopulationPolicy({ ...base, rcl: 6,
-  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true });
-assert.strictEqual(rcl6Expansion.permissions.expansion, false);
-const rcl7Expansion = derivePopulationPolicy({ ...base, rcl: 7,
-  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: true });
-assert.strictEqual(rcl7Expansion.permissions.expansion, true);
-const strainedExpansion = derivePopulationPolicy({ ...base, rcl: 7,
+const healthyExpansion = derivePopulationPolicy({ ...base, rcl: 4,
+  storedEnergy: 10000, bufferRatio: 0.4, coreRoadAccessComplete: false });
+assert.strictEqual(healthyExpansion.permissions.expansion, true,
+  'claim permission depends on sponsor health; capability and GCL are checked by the expansion planner');
+const strainedExpansion = derivePopulationPolicy({ ...base, rcl: 5,
   energyRatio: 0.4, bufferRatio: 0.1, storedEnergy: 1000,
   coreRoadAccessComplete: true });
 assert.strictEqual(strainedExpansion.permissions.expansion, false);
 assert.strictEqual(strainedExpansion.permissions.expansionMaintenance, true);
-const criticalExpansion = derivePopulationPolicy({ ...base, rcl: 7,
+const criticalExpansion = derivePopulationPolicy({ ...base, rcl: 5,
   controllerTicks: 2500, storedEnergy: 10000, bufferRatio: 0.4,
   coreRoadAccessComplete: true });
 assert.strictEqual(criticalExpansion.permissions.expansion, false);

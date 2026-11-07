@@ -17,8 +17,8 @@ assert.strictEqual(deriveCpuPolicy(1000).executionCpuRatio, 0.75);
 assert.strictEqual(deriveCpuPolicy(3000).mode, 'normal');
 assert.strictEqual(deriveCpuPolicy(3000).executionCpuRatio, 0.8);
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
-  /'remote-reserver', 'defender', 'retire', CONTROLLER_BRIGADE_ROLE/,
-  'remote reservers remain in the CPU-protected execution set');
+  /'claimer', 'remote-reserver', 'defender', 'retire',\s+CONTROLLER_BRIGADE_ROLE/,
+  'claimers and remote reservers remain in the CPU-protected execution set');
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
   /cpuPolicy\.mode === 'recovery' && Game\.cpu\.bucket < 250/,
   'an empty-bucket emergency yields before broad per-tick scans');

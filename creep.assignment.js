@@ -1,4 +1,6 @@
 'use strict';
+const { enforceAssignmentContract } = typeof Game === 'undefined'
+  ? require('./assignment.contract') : require('assignment.contract');
 
 /**
  * Remove memory that is incompatible with a creep's current durable role.
@@ -40,6 +42,7 @@ const clear = (memory, fields) => {
 
 const reconcileCreepAssignment = creep => {
   if (!creep || !creep.memory) return false;
+  const contractRestored = enforceAssignmentContract(creep);
   const memory = creep.memory;
   // Pre-policy left-outpost identity is obsolete; remoteTeam + remoteSlot are
   // now the shared identity for every outpost.
@@ -47,7 +50,7 @@ const reconcileCreepAssignment = creep => {
   const role = memory.role;
   const changed = Boolean(memory.assignmentRole &&
     memory.assignmentRole !== role);
-  if (changed) clear(memory, transientFields);
+  if (changed || contractRestored) clear(memory, transientFields);
 
   const sourceRole = role === 'miner' || role === 'harvester' ||
     role === 'rebalancer';
@@ -80,7 +83,7 @@ const reconcileCreepAssignment = creep => {
     delete memory.retiredRole;
   }
   memory.assignmentRole = role;
-  return changed;
+  return changed || contractRestored;
 };
 
 const reconcileCreepAssignments = creeps => {

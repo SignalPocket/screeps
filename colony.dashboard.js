@@ -49,14 +49,49 @@ const formatRoleEntry = ({ role, count, usable, coverage, target, status }) => {
 const countBrigadeMembers = creeps => creeps.filter(creep =>
   creep.memory.role === 'controller-relay').length;
 
+const compactDashboardValue = value => value >= 1000
+  ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
+
+const getDashboardVisualLines = (dashboard, roomHealth) => [
+  `COLONY · creeps ${dashboard.creeps} · spawn ${dashboard.spawning} · need ${dashboard.needed}`,
+  `Energy ${compactDashboardValue(dashboard.totalEnergy)} · ready ` +
+    `${dashboard.readyEnergy}/${dashboard.readyCapacity}`,
+  roomHealth ? roomHealth.dashboard : 'health unavailable',
+  dashboard.alerts && dashboard.alerts.length
+    ? `Alert: ${dashboard.alerts.join(' | ')}` : 'Alert: none'
+];
+
+const formatDashboardConsole = dashboard => {
+  const roles = Object.keys(dashboard.roleTargets || {}).sort().map(role => {
+    const target = dashboard.roleTargets[role];
+    return formatRoleEntry({ role, count: dashboard.roleCounts[role] || 0,
+      usable: dashboard.roleUsableCounts[role] || 0,
+      coverage: dashboard.roleCoverage[role] || 0, target,
+      status: dashboard.roleStatuses[role] });
+  });
+  const emergency = (dashboard.emergencyRosters || []).flatMap(roster =>
+    roster.entries.filter(entry => entry.target > 0).map(entry =>
+      `${roster.roomName} ${entry.label}${entry.coverageCount}/${entry.target}`));
+  return [
+    `Alerts ${(dashboard.alerts || []).join(' | ') || 'none'}`,
+    `Waits ${(dashboard.waits || []).join(' | ') || 'none'}`,
+    `Dashboard detail | build L${dashboard.localBuildTargets}/O${dashboard.outpostBuildTargets} ` +
+      `remain ${compactDashboardValue(dashboard.buildRemaining)} assigned ${dashboard.buildAssigned} active ${dashboard.buildActive}`,
+    `Repair L${dashboard.localFixTargets}/O${dashboard.outpostFixTargets} ` +
+      `energy ${compactDashboardValue(dashboard.repairEnergy)} assigned ${dashboard.repairAssigned} active ${dashboard.repairActive}`,
+    `Emergency ${emergency.join(' | ') || 'none'}`,
+    `Roles ${roles.join(' | ') || 'none'}`,
+    `Health ${(dashboard.healthSummaries || []).map(summary => summary.console).join(' | ') || 'unavailable'}`
+  ].join('\n');
+};
+
 const createColonyDashboard = ({
   Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures, shortRoles,
   buildRoomStaffingPlan,
   maxSpawnWait, RESOURCE_ENERGY, STRUCTURE_SPAWN, STRUCTURE_EXTENSION,
   FIND_DROPPED_RESOURCES
 }) => {
-  const compact = value => value >= 1000
-    ? `${(value / 1000).toFixed(1).replace('.0', '')}k` : `${value}`;
+  const compact = compactDashboardValue;
   // Roles are grouped by the body template they should ideally use. This
   // makes shortages legible as capability shortages instead of a flat list
   // of labels that happen to compete for the same spawn body.
@@ -314,6 +349,7 @@ const createColonyDashboard = ({
         `fix L${dashboard.localFixTargets}/O${dashboard.outpostFixTargets} | Roles ` +
         `${roleOrder.filter(role => roleCounts[role]).map(role =>
           `${role}${roleCounts[role]}`).join(' ')}`);
+      console.log(formatDashboardConsole(dashboard));
     }
     return dashboard;
   };
@@ -321,6 +357,22 @@ const createColonyDashboard = ({
   const drawDashboard = () => {
     const dashboard = Memory.colonyDashboard;
     if (!dashboard) return;
+    for (const room of Object.values(Game.rooms).filter(candidate =>
+      candidate.controller && candidate.controller.my)) {
+      const roomHealth = (dashboard.healthSummaries || []).find(summary =>
+        summary.roomName === room.name);
+      const lines = getDashboardVisualLines(dashboard, roomHealth);
+      room.visual.rect(0.5, 8.5, 48, 3.7, {
+        fill: '#101820', opacity: 0.22, stroke: '#64d2ff', strokeWidth: 0.08
+      });
+      lines.forEach((line, index) => room.visual.text(line, 1.2,
+        9.25 + index * 0.78, {
+          align: 'left', color: index === 3 && dashboard.alerts.length
+            ? '#ff9f0a' : '#d1d1d6', font: 'bold 0.68 monospace',
+          opacity: textOpacity
+        }));
+    }
+    return;
     const offsetY = 4;
     const waitText = dashboard.waits && dashboard.waits.length
       ? `Wait ${dashboard.waits.join(' | ')}` : 'Wait none';
@@ -487,6 +539,6 @@ const createColonyDashboard = ({
 
 module.exports = {
   calculateStaffingDemand, getStaffingStatus, formatRoleEntry,
-  countBrigadeMembers,
+  countBrigadeMembers, getDashboardVisualLines, formatDashboardConsole,
   createColonyDashboard
 };

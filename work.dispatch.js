@@ -108,12 +108,34 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
     return job;
   };
 
+  // The quantity allocator chooses the concrete store, while room planning
+  // may propose only a source area. Publish that admitted pickup everywhere
+  // before execution so the job and its commitment cannot send different moves.
+  const bindPickup = (creep, pickup) => {
+    const job = creep.memory.workJob;
+    const source = pickup && getTarget(pickup.targetId);
+    if (!job || job.lane !== 'collect' || !source ||
+        !source.store || pickup.amount <= 0) return null;
+    job.sourceId = source.id;
+    job.amount = pickup.amount;
+    job.updated = Game.time;
+    const previous = creep.memory.dispatchCommitment;
+    creep.memory.dispatchCommitment = {
+      lane: 'collect', targetId: source.id, roomName: creep.room.name,
+      amount: pickup.amount,
+      since: previous && previous.lane === 'collect' &&
+        previous.targetId === source.id ? previous.since : Game.time,
+      updated: Game.time
+    };
+    return job;
+  };
+
   const complete = creep => {
     delete creep.memory.workJob;
     delete creep.memory.dispatchCommitment;
   };
 
-  return { reconcile, bindTarget, complete, isUseful };
+  return { reconcile, bindTarget, bindPickup, complete, isUseful };
 };
 
 // Execute a partial carrier's reserved pickup before the loaded-task queue.

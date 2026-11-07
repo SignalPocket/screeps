@@ -3,6 +3,7 @@ const { getRoadBacklog } = typeof Game === 'undefined'
 'use strict';
 
 const { derivePopulationPolicy } = require('colony.policy');
+const { getSpawnActivityStatus } = require('spawn.status');
 const { createBodyFactory } = require('body.factory');
 const { createResourceReservations } = require('resource.reservations');
 const { createRoomIndex } = require('room.index');
@@ -46,7 +47,7 @@ const { summarizeRoomHealth } = require('health.reporting');
 const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
-const { deriveCpuPolicy } = require('cpu.policy');
+const { deriveCpuPolicy, summarizeCreepExecution } = require('cpu.policy');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
   require('creep.execution-order');
 const { getOperationScope, retireCompletedPush, isBrigadePlanActive,
@@ -99,12 +100,16 @@ const { createStaffingPlanner } = require('staffing.plan');
 const { createMinimumSpawnPlanner } = require('minimum.spawn');
 const { selectBalancedRecoveryRequest } = require('recovery.balance');
 const { createRemoteSpawnPlanner } = require('remote.spawn');
+const { ownedTarget, reconcileOwnedRoomTransitions } =
+  require('owned.room.transition');
 const { planRemoteRecovery } = require('remote.recovery');
 const { createBuilderRoster } = require('builder.roster');
 const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
   deriveBodyTargets, buildBodyRoster, canBodyTypeRunLane } =
   require('body.archetypes');
 const { reconcileCreepAssignments } = require('creep.assignment');
+const { enforceAssignmentContract, contractForSpawnAssignment } =
+  require('assignment.contract');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget,
@@ -139,6 +144,7 @@ module.exports.loop = function () {
     ? Game.cpu.getUsed() : null;
   const cpuPolicy = deriveCpuPolicy(Game.cpu && Game.cpu.bucket);
   const allowSlowPlanning = cpuPolicy.allowSlowPlanning;
+  const previousCpuExecution = Memory.cpuPolicy && Memory.cpuPolicy.execution;
   Memory.cpuPolicy = { updated: Game.time, ...cpuPolicy };
   // The local engine is terminating the script after the bucket reaches zero,
   // which prevents even the recovery scheduler from running. Yield before any
@@ -155,6 +161,7 @@ module.exports.loop = function () {
         ? 'remote-miner' : creep.memory.birthRole;
       creep.memory.assignmentRole = 'remote-miner';
     }
+    enforceAssignmentContract(creep);
     observeOutpostExport({ tick: Game.time, roomName: creep.room.name,
       energy: creep.store[RESOURCE_ENERGY] || 0, memory: creep.memory,
       homeMemory: Memory.rooms && Memory.rooms[
@@ -503,7 +510,7 @@ module.exports.loop = function () {
     };
     return room.memory.bodyRosterPlan;
   };
-  const { updateDashboard, drawDashboard } = createColonyDashboard({
+  const { updateDashboard } = createColonyDashboard({
     Game, Memory, getWorkerLimits, getRoomSituation, getRoomStructures,
     shortRoles, buildRoomStaffingPlan,
     maxSpawnWait: MAX_SPAWN_CHARGE_WAIT, RESOURCE_ENERGY, STRUCTURE_SPAWN,
@@ -521,6 +528,7 @@ module.exports.loop = function () {
     createRemoteSpawnPlanner({
       isOutpostBuilder, hasRemoteReplacementLife,
       getRemoteHaulReadiness, getRemoteReplacementLead,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       BODYPART_COST, WORK, CARRY, MOVE
     });
   const { updateEnergyWorkPhase } = createEnergyPhase({ Game, workerCost });
@@ -1046,10 +1054,14 @@ module.exports.loop = function () {
     // maintenance while remote replacements consume every spawn cycle.
     if (!coreIncomeGap && replacementMode === 'maintenance' &&
         controllerRelayRequest) return controllerRelayRequest;
-    const remoteMinimumRequest = !coreIncomeGap
-      ? planMinimumRemoteSpawn({
-        room, workers, staffingPlan, maintainRemotes
-      }) : null;
+    // Ask the remote adapter to map the authoritative staffing gap even when
+    // the per-source diagnostic below sees an additional local WORK hole.
+    // The adapter returns null for a local selected gap. Skipping it here can
+    // make the selector propose a source body while final authority correctly
+    // requires the already-selected remote minimum, deadlocking an idle spawn.
+    const remoteMinimumRequest = planMinimumRemoteSpawn({
+      room, workers, staffingPlan, maintainRemotes
+    });
     const remoteMinimumGap = staffingPlan.minimumGap ||
       staffingPlan.ordinaryMinimumGap;
     const remoteMinimumJob = remoteMinimumGap && staffingPlan.jobs &&
@@ -1069,6 +1081,19 @@ module.exports.loop = function () {
     const controllerRelief=!coreIncomeGap&&planControllerRelief({room,workers,viable:hasLocalReplacementLife,
       operationWork:spawnSituation.policy.operations?.upgradePush?spawnSituation.policy.operations.upgradeWork:0});
     if(controllerRelief)return controllerRelief;
+    // An explicitly prepared, healthy claim is a bounded capability action.
+    // Once every local and remote minimum plus due replacement work is
+    // covered, launch it before desired hauling or other optional growth.
+    const readyClaim = room.memory.expansionPlan;
+    if (spawnSituation.policy.permissions?.expansion && readyClaim &&
+        readyClaim.status === 'claim-ready' &&
+        !workers.some(creep => creep.memory.role === 'claimer' &&
+          creep.memory.expansionTarget === readyClaim.targetRoom)) {
+      return {
+        role: 'claimer', expansionTarget: readyClaim.targetRoom,
+        forceSpawn: true
+      };
+    }
     const missingCoreBuilder=staffingPlan.jobs?.builder &&
       staffingPlan.jobs.builder.coverageCount<staffingPlan.jobs.builder.min;
     const missingCoreUpgrader=staffingPlan.jobs?.upgrader &&
@@ -1318,6 +1343,20 @@ module.exports.loop = function () {
   const visibleRooms = Object.values(Game.rooms);
   const ownedVisibleRooms = visibleRooms.filter(room =>
     room.controller && room.controller.my);
+  const ownershipTransitions = reconcileOwnedRoomTransitions({
+    Game, rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
+    getWork: creep => creep.getActiveBodyparts(WORK),
+    getCarry: creep => creep.getActiveBodyparts(CARRY),
+    getEnergy: creep => creep.store[RESOURCE_ENERGY] || 0
+  });
+  if (ownershipTransitions.rooms.length ||
+      ownershipTransitions.converted.length ||
+      ownershipTransitions.retired.length) {
+    console.log(`[${Game.time}] owned room transition | rooms ` +
+      `${ownershipTransitions.rooms.join(',') || 'stable'} | bootstrap ` +
+      `${ownershipTransitions.converted.join(',') || 'none'} | retired ` +
+      `${ownershipTransitions.retired.join(',') || 'none'}`);
+  }
   const outpostPlansDue = ownedVisibleRooms.filter(room =>
     !room.memory.leftSurvey || !room.memory.southSurvey ||
     !room.memory.southwestSurvey ||
@@ -1337,6 +1376,7 @@ module.exports.loop = function () {
     reconcileRemoteHaulerRosters({
       rooms: remoteRostersDue, creeps: Object.values(Game.creeps),
       Game, RESOURCE_ENERGY,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getRemoteHaulerBudget: room =>
         getRoomSituation(room).policy.remote.haulers
     });
@@ -1345,6 +1385,7 @@ module.exports.loop = function () {
     ? reconcileRemoteMinerRosters({
       rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
       getReplacementLead: getRemoteReplacementLead,
+      isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getWork: creep => creep.getActiveBodyparts(WORK)
     }) : {};
   for (const [roomName, result] of Object.entries(
@@ -1746,6 +1787,7 @@ module.exports.loop = function () {
           working: false,
           role: assignment.role,
           birthRole: assignment.role,
+          ...contractForSpawnAssignment(assignment),
           qualityFor: assignment.qualityFor,
           bodyType: assignment.bodyType,
           builderScope: assignment.builderScope,
@@ -2044,6 +2086,12 @@ module.exports.loop = function () {
 
   for (const creep of creeps) {
     if (creep.memory.staffingRetire || creep.memory.role === 'retire') {
+      assignedCreeps[creep.name] = true;
+    } else if (enforceAssignmentContract(creep) ||
+        creep.memory.assignmentKind) {
+      // Spawn selection and workforce allocation consume the same durable
+      // contract. General allocation may count this creep, but may not infer a
+      // different job from its body shape.
       assignedCreeps[creep.name] = true;
     } else if (creep.memory.role === CONTROLLER_BRIGADE_ROLE) {
       assignedCreeps[creep.name] = true;
@@ -3581,15 +3629,8 @@ module.exports.loop = function () {
     if (lane !== 'collect' && Array.isArray(creep.memory.energySources)) {
       sourceId = creep.memory.energySources[creep.memory.energySources.length - 1];
     }
-    const plannedCollectionSource = lane === 'collect' && sourceId
-      ? Game.getObjectById(sourceId) : null;
-    const currentCollectionSource = lane === 'collect' &&
-      creep.memory.workJob && creep.memory.workJob.lane === 'collect'
-      ? Game.getObjectById(creep.memory.workJob.sourceId) : null;
-    const rerouteCollection = plannedCollectionSource &&
-      currentCollectionSource && plannedCollectionSource.pos &&
-      currentCollectionSource.pos &&
-      plannedCollectionSource.pos.getRangeTo(currentCollectionSource) > 2;
+    // Source pressure is a proposal for the next trip, not permission to
+    // cancel a useful admitted pickup. workDispatch owns its completion.
     const restoreExtensionReserve = lane === 'refill-buffer' &&
       demandPlan.demand.extensionBufferStored <
         Math.min(500, demandPlan.demand.extensionBufferCapacity * 0.25) &&
@@ -3613,12 +3654,10 @@ module.exports.loop = function () {
         : creep.store[RESOURCE_ENERGY],
       priority: lanePriority(creep.room, demandPlan, lane),
       cancelCurrent: Boolean(creep.memory.waitState === 'blocked' ||
-        rerouteCollection || rerouteBuffer || rerouteRefill ||
+        rerouteBuffer || rerouteRefill ||
         restoreExtensionReserve || restoreSpawnNetwork),
       reason: rerouteRefill
         ? 'refill matcher selected a nearer or higher-priority target'
-        : rerouteCollection
-        ? 'assigned collection source changed rooms'
         : rerouteBuffer
           ? 'assigned controller buffer became invalid'
           : 'previous assignment completed or invalid'
@@ -3663,7 +3702,7 @@ module.exports.loop = function () {
   // Let logistics reserve source energy before general workers withdraw it.
   // The controller buffer remains protected for the dedicated upgrader.
   const taskPriority = (_creep, memory) => memory.emergencyRepairRoom
-    ? -1 : memory.role === 'refiller'
+    ? -1 : memory.role === 'refiller' || memory.role === 'claimer'
       ? 0 : memory.role === 'hauler' || memory.role === 'remote-hauler'
         ? 1 : memory.role === CONTROLLER_BRIGADE_ROLE ||
           memory.role === 'rebalancer'
@@ -3790,7 +3829,8 @@ module.exports.loop = function () {
     // A reserver is the sole actuator that prevents a running outpost from
     // losing its controller reservation. It cannot be rotated behind optional
     // work while constrained CPU is shedding deferred executors.
-    'remote-reserver', 'defender', 'retire', CONTROLLER_BRIGADE_ROLE
+    'claimer', 'remote-reserver', 'defender', 'retire',
+    CONTROLLER_BRIGADE_ROLE
   ]);
   const survivalExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     creep.memory.emergencyRepairRoom ||
@@ -3900,6 +3940,20 @@ module.exports.loop = function () {
       c.memory.refillPickupTarget||c.memory.withdrawTarget||
       c.memory.workJob?.sourceId,
     maxCollectors:2});
+  for (const creep of pickupParticipants) {
+    const job = workDispatch.bindPickup(creep, pickupPlan.jobs[creep.name]);
+    if (!job) continue;
+    const plan = roomDemandPlans[creep.room.name];
+    plan.collectionSources[creep.name] = job.sourceId;
+    const saved = creep.room.memory.demandPlan;
+    if (saved) {
+      saved.collectionSources[creep.name] = job.sourceId;
+      saved.jobs[creep.name] = { lane: job.lane, sourceId: job.sourceId,
+        targetId: job.targetId, amount: job.amount, priority: job.priority,
+        created: job.created };
+      saved.commitments[creep.name] = creep.memory.dispatchCommitment;
+    }
+  }
   for(const room of Object.values(Game.rooms).filter(r=>r.controller?.my)){
     room.memory.pickupReservations={tick:Game.time,jobs:Object.fromEntries(
       Object.entries(pickupPlan.jobs).filter(([name])=>Game.creeps[name].room.name===room.name)),
@@ -4102,7 +4156,8 @@ module.exports.loop = function () {
           target.id === creep.room.storage.id;
         const validPickup = creep.store[RESOURCE_ENERGY] === 0 &&
           canWithdrawFrom(creep, target) &&
-          target.store[RESOURCE_ENERGY] > 0 && (storagePickup ||
+          target.store[RESOURCE_ENERGY] > 0 && (
+            managedPickup && pickupJob?.targetId === target.id || storagePickup ||
             isExtensionLink(target) ||
             target.structureType === STRUCTURE_CONTAINER &&
               sources.some(source => source.pos.getRangeTo(target) <= 2));
@@ -4114,12 +4169,17 @@ module.exports.loop = function () {
           creep.store.getFreeCapacity(RESOURCE_ENERGY));
         if (amount <= 0) return false;
         rememberDispatchCommitment(target, amount);
-        const result = creep.withdraw(target, RESOURCE_ENERGY);
+        const result = creep.withdraw(target, RESOURCE_ENERGY, amount);
         if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
         if (result !== OK && result !== ERR_NOT_IN_RANGE) {
           releaseAmount(reservedEnergy, target, amount);
           forgetDispatchCommitment(target);
           return false;
+        }
+        if (result === OK) {
+          const sources = creep.memory.energySources || [];
+          if (!sources.includes(target.id)) sources.push(target.id);
+          creep.memory.energySources = sources;
         }
         creep.memory.taskTarget = target.id;
         return true;
@@ -5101,10 +5161,37 @@ module.exports.loop = function () {
           }
           const target = creep.room.controller;
           if (!target) return false;
+          const onArrivalExit = creep.pos.x === 0 || creep.pos.x === 49 ||
+            creep.pos.y === 0 || creep.pos.y === 49;
+          if (onArrivalExit && !target.my) {
+            // The cross-room cached path ends on the exit tile. Reusing it can
+            // send the claimer straight back home before it gets an inward
+            // step, especially when remote traffic shares the doorway.
+            delete creep.memory._move;
+            delete creep.memory.navGoal;
+            moveCreep(creep, target, 1, { direct: true });
+            creep.memory.taskTarget = `${targetRoomName} enter room`;
+            return true;
+          }
           if (target.my) {
             const homeRoom = Game.rooms[creep.memory.home];
             if (homeRoom && homeRoom.memory.expansionPlan) {
               homeRoom.memory.expansionPlan.status = 'bootstrap';
+            }
+            if (creep.getActiveBodyparts(WORK) > 0 &&
+                creep.getActiveBodyparts(CARRY) > 0) {
+              creep.memory.role = 'builder';
+              creep.memory.birthRole = 'builder';
+              creep.memory.assignmentRole = 'builder';
+              creep.memory.assignmentKind = 'expansion-bootstrap';
+              creep.memory.builderScope = 'expansion';
+              creep.memory.builderMission = 'bootstrap';
+            } else {
+              creep.memory.role = 'retire';
+              creep.memory.assignmentRole = 'retire';
+              delete creep.memory.assignmentKind;
+              delete creep.memory.expansionTarget;
+              creep.memory.staffingRetire = true;
             }
             creep.memory.taskTarget = `${targetRoomName} claimed`;
             return true;
@@ -5370,6 +5457,23 @@ module.exports.loop = function () {
             creep.memory.taskTarget = `${roomName} haul`;
             return true;
           };
+          if (ownedTarget(Game, targetRoomName)) {
+            delete creep.memory.remoteDispatchRoom;
+            delete creep.memory.remoteDispatchSlot;
+            delete creep.memory.remotePickupTarget;
+            delete creep.memory.remotePickupSource;
+            delete creep.memory.remoteDeliveryTarget;
+            delete creep.memory.remoteCargoOrigin;
+            delete creep.memory.remoteCargoRemaining;
+            creep.memory.remoteRosterSurplus = true;
+            if (creep.store[RESOURCE_ENERGY] > 0 &&
+                creep.room.name !== homeRoomName) {
+              creep.memory.remoteHaulReturning = true;
+              return travelTo(homeRoomName);
+            }
+            creep.memory.taskTarget = `${targetRoomName} is a local colony`;
+            return true;
+          }
           const getOutpostBorderCache = () => {
             if (creep.room.name !== targetRoomName) return null;
             const plan = Game.rooms[homeRoomName]?.memory
@@ -5439,7 +5543,8 @@ module.exports.loop = function () {
             const surveys = homeRoom && [homeRoom.memory.leftSurvey,
               homeRoom.memory.southSurvey,
               homeRoom.memory.southwestSurvey].filter(survey =>
-              survey && survey.active && survey.targetRoom);
+              survey && survey.active && survey.targetRoom &&
+              !ownedTarget(Game, survey.targetRoom));
             // Every roster slot serves its own room. Only bodies beyond all
             // current room targets join the shared overflow fleet.
             const flexible = creep.memory.remoteRosterSurplus;
@@ -7296,9 +7401,9 @@ module.exports.loop = function () {
   }
 
   Memory.cpuPolicy.execution = {
-    available: executionCreeps.length,
-    executed: executedCreepCount,
-    deferred: executionCreeps.length - executedCreepCount,
+    ...summarizeCreepExecution({ creeps: executionCreeps,
+      executedCount: executedCreepCount, tick: Game.time,
+      previous: previousCpuExecution }),
     ceiling: executionCpuCeiling,
     usedAfterCreeps: Game.cpu && typeof Game.cpu.getUsed === 'function'
       ? Game.cpu.getUsed() : null
@@ -7426,9 +7531,8 @@ module.exports.loop = function () {
     creep.say('Run!');
   }
 
-  // The dashboard only refreshes its stored data every ten ticks. Avoid the
-  // full build/repair assignment scan on the other ticks where that data would
-  // immediately be discarded; the visual itself is still redrawn every tick.
+  // Dashboard data refreshes every ten ticks for console reporting. Avoid the
+  // full build/repair assignment scan on other ticks where it is discarded.
   const optionalReportingCpuAvailable = () => !Game.cpu ||
     typeof Game.cpu.getUsed !== 'function' ||
     !Number.isFinite(Game.cpu.limit) ||
@@ -7478,7 +7582,6 @@ module.exports.loop = function () {
   }
   if (allowSlowPlanning && optionalReportingCpuAvailable()) {
     updateDashboard(creeps, workMetrics || {});
-    drawDashboard();
   }
 
   if (Game.time % 100 === 0) {
@@ -7600,11 +7703,9 @@ module.exports.loop = function () {
         ? (room.memory.busySummaryStreak || 0) + 1
         : 0;
       const reportedWorkerLimit = workerLimit;
-      const blockers = [];
-      if (idleCount > 0) blockers.push(`${idleCount} idle; spawn paused`);
-      if (congestionCount > 0) blockers.push(`${congestionCount} congested`);
-      if (roomCreeps.length >= reportedWorkerLimit) blockers.push('pop target');
-      if (roomSpawns.every(spawn => spawn.spawning)) blockers.push('spawns busy');
+      const blockers = getSpawnActivityStatus({ idleCount, congestionCount,
+        population: roomCreeps.length, workerLimit: reportedWorkerLimit,
+        spawns: roomSpawns });
       if (Number.isInteger(room.memory.spawnWaitSince) &&
           room.energyAvailable < room.energyCapacityAvailable) {
         blockers.push(`charging body ${Math.min(25,
@@ -7614,6 +7715,9 @@ module.exports.loop = function () {
         blockers.push(`energy<${workerCost}`);
       }
       const status = blockers.length ? blockers.join(', ') : 'spawn ready';
+      room.memory.spawnActivityStatus = { updated: Game.time, status,
+        idleCount, congestionCount, spawnCount: roomSpawns.length,
+        busySpawns: roomSpawns.filter(spawn => spawn.spawning).length };
       const expansion = room.memory.expansionPlan;
       const expansionStatus = expansion
         ? `  Expand ${expansion.targetRoom} ${expansion.status} ` +
