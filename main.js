@@ -713,7 +713,7 @@ module.exports.loop = function () {
   const { updateExpansionPlan } = createExpansionPlanner({
     Game, getRoomSources, getRoomSituation, FIND_STRUCTURES, FIND_MY_SPAWNS,
     FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, STRUCTURE_CONTAINER,
-    STRUCTURE_ROAD, STRUCTURE_SPAWN, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+    STRUCTURE_ROAD, STRUCTURE_SPAWN, STRUCTURE_RAMPART, FIND_MINERALS, LOOK_STRUCTURES,
     LOOK_CONSTRUCTION_SITES, BODYPART_COST, CLAIM, MOVE, OK
   });
   const { planRemoteCorridors } = createRemoteCorridorPlanner({

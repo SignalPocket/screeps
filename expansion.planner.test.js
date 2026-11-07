@@ -16,13 +16,14 @@ const setup = () => {
   const room = (name, my = false) => ({ name, memory: {},
     controller: { my, owner: my ? { username: 'colony' } : null,
       level: my ? 5 : 0, pos: pos(10, 10) },
-    energyCapacityAvailable: 1800, sources: [], structures: [], sites: [], spawns: [],
+    energyCapacityAvailable: 1800, sources: [], minerals: [], structures: [], sites: [], spawns: [],
     find(kind, options) {
       const values = { structures: this.structures, sites: this.sites,
-        sources: this.sources, spawns: this.spawns }[kind] || [];
+        sources: this.sources, minerals: this.minerals, spawns: this.spawns }[kind] || [];
       return options?.filter ? values.filter(options.filter) : values;
     },
-    getTerrain: () => ({ get: (x, y) => y === 20 && [20, 21].includes(x) ? 0 : 1 }),
+    getTerrain: () => ({ get: (x, y) => Math.abs(y - 20) <= 1 &&
+      [16, 20].some(center => Math.abs(x - center) <= 1) ? 0 : 1 }),
     lookForAt(kind, x, y) {
       return (kind === 'structures' ? this.structures : this.sites)
         .filter(value => value.pos.x === x && value.pos.y === y);
@@ -49,7 +50,8 @@ const setup = () => {
     FIND_STRUCTURES: 'structures', FIND_MY_SPAWNS: 'spawns',
     FIND_MY_CONSTRUCTION_SITES: 'sites', FIND_SOURCES: 'sources',
     STRUCTURE_CONTAINER: 'container', STRUCTURE_ROAD: 'road', STRUCTURE_SPAWN: 'spawn',
-    TERRAIN_MASK_WALL: 1, LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
+    STRUCTURE_RAMPART: 'rampart', FIND_MINERALS: 'minerals',
+    LOOK_STRUCTURES: 'structures', LOOK_CONSTRUCTION_SITES: 'sites',
     BODYPART_COST: { claim: 600, move: 50 }, CLAIM: 'claim', MOVE: 'move', OK: 0 });
   const update = () => { Game.time++; return planner.updateExpansionPlan(); };
   const requestWorker = () => planBootstrapSpawn({ room: home, workers: [], Game,
@@ -158,4 +160,56 @@ const setup = () => {
   assert.strictEqual(f.home.memory.expansionPlan, undefined);
 }
 
-console.log('expansion lifecycle preserves policy gates, unique construction and established-spawn handoff');
+// Every tile in the 3x3 footprint matters, including diagonal approaches.
+for (const terrainMask of [1, 2, 3]) {
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const f = setup();
+      const base = f.target.getTerrain();
+      f.target.getTerrain = () => ({ get: (x, y) =>
+        x === 20 + dx && y === 20 + dy ? terrainMask : base.get(x, y) });
+      const candidates = f.planner.findSpawnSite(f.target, f.target.controller);
+      assert.deepStrictEqual(candidates.map(c => [c.x, c.y]), [[16, 20]],
+        `wall/swamp mask ${terrainMask} at ${dx},${dy} excludes the preferred site`);
+    }
+  }
+}
+
+for (const kind of ['structures', 'sites']) {
+  for (const structureType of ['spawn', 'extension', 'wall', 'storage']) {
+    const f = setup();
+    f.target[kind].push({ structureType, pos: f.pos(21, 21) });
+    assert.deepStrictEqual(f.planner.findSpawnSite(f.target, f.target.controller)
+      .map(c => [c.x, c.y]), [[16, 20]], 'adjacent obstacles and future obstacles are excluded');
+  }
+  for (const object of [
+    { structureType: 'road' }, { structureType: 'container' },
+    { structureType: 'rampart', my: true }, { structureType: 'rampart', isPublic: true }
+  ]) {
+    const f = setup();
+    f.target[kind].push({ ...object, pos: f.pos(21, 20) });
+    const candidates = f.planner.findSpawnSite(f.target, f.target.controller);
+    assert.deepStrictEqual(candidates.map(c => [c.x, c.y]), [[20, 20], [16, 20]],
+      'walkable infrastructure preserves ranking and clearance');
+  }
+}
+{
+  const f = setup();
+  f.target.structures.push({ structureType: 'rampart', my: false, isPublic: false, pos: f.pos(19, 20) });
+  f.target.minerals.push({ pos: f.pos(17, 20) });
+  assert.deepStrictEqual(f.planner.findSpawnSite(f.target, f.target.controller), [],
+    'private hostile ramparts and minerals obstruct approaches');
+}
+{
+  const f = setup();
+  f.target.controller.my = true;
+  f.target.getTerrain = () => ({ get: () => 2 });
+  assert.deepStrictEqual(f.planner.findSpawnSite(f.target, f.target.controller), []);
+  f.update();
+  assert.strictEqual(f.calls.length, 0, 'no safe site means no unsafe fallback');
+  f.target.sites.push({ id: 'existing-swamp-site', structureType: 'spawn', pos: f.pos(22, 32) });
+  assert.strictEqual(f.update().spawnSiteId, 'existing-swamp-site');
+  assert.strictEqual(f.target.sites.length, 1, 'existing construction is preserved even on unsafe terrain');
+}
+
+console.log('expansion lifecycle and spawn clearance preserve safe terrain, walkable approaches and existing construction');
