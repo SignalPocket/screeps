@@ -67,6 +67,7 @@ const { applyScenarioPolicy } = require('scenario.policy');
 const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('source.collection');
 const { createRefillManagement } = require('refill.management');
+const { refillRetentionSituation, recoverSpawnFiller } = require('park.recovery');
 const { createSpawnPolicy } = require('spawn.policy');
 const { authorizeSpawnAssignment } = require('spawn.authority');
 const { describeSpawnAttempt, recordSpawnDenials } = require('spawn.denial');
@@ -732,7 +733,8 @@ module.exports.loop = function () {
   const { getRefillClusters, isRefillTargetFor, getRefillerCarryFloor,
     reconcileRefillerClusters, releaseUndersizedRefillers } =
     createRefillManagement({
-      Game, getRoomStructures, isExtensionClusterTile, getRoomSituation,
+      Game, getRoomStructures, isExtensionClusterTile,
+      getRoomSituation: room => refillRetentionSituation(getRoomSituation(room)),
       FIND_MY_SPAWNS, STRUCTURE_SPAWN, STRUCTURE_EXTENSION, STRUCTURE_TOWER,
       RESOURCE_ENERGY, BODYPART_COST, CARRY, MOVE, CARRY_CAPACITY
     });
@@ -1652,6 +1654,8 @@ module.exports.loop = function () {
     }
     releaseSurplusRebalancers(spawn.room, workers);
     releaseUndersizedRefillers(spawn.room, workers);
+    recoverSpawnFiller({ room: spawn.room, workers,
+      viable: hasLocalReplacementLife, energy: RESOURCE_ENERGY });
     reconcileRefillerClusters(spawn.room, workers);
     const { workerLimit } = getWorkerLimits(spawn.room);
     const populationTransitionAllowance = getPopulationTransitionAllowance(
