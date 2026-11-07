@@ -222,4 +222,8 @@ assert(emptyRemoteMinimumIndex >= 0 &&
   emptyRemoteMinimumIndex < expiringRemoteMinerIndex,
   'an empty remote minimum lane is restored before due remote replacement');
 
+assert(mainSource.includes(
+  '    const remoteMinimumRequest = planMinimumRemoteSpawn({'),
+  'the selector must map the authoritative remote gap even when a per-source diagnostic also fires');
+
 console.log('spawn authority rejects every cross-phase priority bypass');

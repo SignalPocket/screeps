@@ -1046,10 +1046,14 @@ module.exports.loop = function () {
     // maintenance while remote replacements consume every spawn cycle.
     if (!coreIncomeGap && replacementMode === 'maintenance' &&
         controllerRelayRequest) return controllerRelayRequest;
-    const remoteMinimumRequest = !coreIncomeGap
-      ? planMinimumRemoteSpawn({
-        room, workers, staffingPlan, maintainRemotes
-      }) : null;
+    // Ask the remote adapter to map the authoritative staffing gap even when
+    // the per-source diagnostic below sees an additional local WORK hole.
+    // The adapter returns null for a local selected gap. Skipping it here can
+    // make the selector propose a source body while final authority correctly
+    // requires the already-selected remote minimum, deadlocking an idle spawn.
+    const remoteMinimumRequest = planMinimumRemoteSpawn({
+      room, workers, staffingPlan, maintainRemotes
+    });
     const remoteMinimumGap = staffingPlan.minimumGap ||
       staffingPlan.ordinaryMinimumGap;
     const remoteMinimumJob = remoteMinimumGap && staffingPlan.jobs &&
