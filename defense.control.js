@@ -99,6 +99,10 @@ const updateWarState = (memory, tick, events, duration = 100) => {
 
 const getDefenseRoomNames = (homeRoomName, homeMemory, creeps) => {
   const roomNames = new Set([homeRoomName]);
+  for (const [roomName, objective] of Object.entries(
+    homeMemory && homeMemory.combatObjectives || {})) {
+    if (objective && objective.active !== false) roomNames.add(roomName);
+  }
   for (const survey of Object.values(homeMemory || {})) {
     if (survey && survey.active && survey.targetRoom) {
       roomNames.add(survey.targetRoom);

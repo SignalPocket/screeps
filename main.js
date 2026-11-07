@@ -29,6 +29,8 @@ const {dispatchEmergencyRepairs}=require('outpost.rescue');
 const {observeLabor,reconcileLaborBody,runBudgetedWork,runBudgetedUpgrade,selectUpgradeBudget,workRate,countForRate,profileRate,settle}=require('labor.capacity');
 const { createRoomSituation } = require('room.situation');
 const { updateRoomCombat, isActiveDefenseAssignment } = require('room.combat');
+const { reconcileCombatObjectives, getObjectiveDefenderRequirements } =
+  require('combat.objectives');
 const { createWorkerLimits } = require('worker.limits');
 const { getRoomStagePlan } = require('room.stages');
 const { createRemoteHauling, isRoomBorder, selectHomeDeliveryTarget,
@@ -331,6 +333,16 @@ module.exports.loop = function () {
         requiredDefenders: room.memory.combatStatus.requiredDefenders
       })) : [];
     });
+    const objectiveThreats = home ? reconcileCombatObjectives({
+      homeRoom: home, Game,
+      getTargets: room => getDefenseTargets(room, FIND_HOSTILE_CREEPS,
+        FIND_HOSTILE_STRUCTURES),
+      invaderCoreType: STRUCTURE_INVADER_CORE
+    }) : [];
+    for (const threat of objectiveThreats) {
+      if (!threats.some(existing => existing.roomName === threat.roomName &&
+          existing.creep.id === threat.creep.id)) threats.push(threat);
+    }
     updateWarState(Memory, Game.time, threats.map(threat => ({
       hostile: true, roomName: threat.roomName,
       homeRoomName: threat.homeRoomName
@@ -7451,9 +7463,16 @@ module.exports.loop = function () {
   }
   const defenders = creeps.filter(candidate =>
     candidate.memory.role === 'defender');
-  const garrison = selectDefenderGarrison(defenders, Object.fromEntries(
-    Object.values(Game.rooms).map(room => [room.name,
-      room.memory.combatStatus && room.memory.combatStatus.requiredDefenders])));
+  const objectiveDefenderRequirements = getObjectiveDefenderRequirements(
+    Object.values(Game.rooms).filter(room => room.controller &&
+      room.controller.my));
+  const garrisonRequirements = Object.fromEntries(Object.values(Game.rooms)
+    .map(room => [room.name, Math.max(
+      room.memory.combatStatus && room.memory.combatStatus.requiredDefenders || 0,
+      objectiveDefenderRequirements[room.name] || 0)]));
+  for (const [roomName, required] of Object.entries(
+    objectiveDefenderRequirements)) garrisonRequirements[roomName] = required;
+  const garrison = selectDefenderGarrison(defenders, garrisonRequirements);
   for (const creep of defenders) {
     if (creep.memory.role !== 'defender') continue;
     const targetRoomName = creep.memory.defenseTargetRoom ||
