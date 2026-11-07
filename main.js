@@ -68,7 +68,7 @@ const { buildSourceGroups, selectSourceGroup, selectPassingSourceBuffer } =
   require('source.collection');
 const { createRefillManagement } = require('refill.management');
 const { refillRetentionSituation, recoverSpawnFiller, selectSupplyRecipient,
-  selectParkingCandidates } = require('park.recovery');
+  totalSupplyDemand, selectParkingCandidates } = require('park.recovery');
 const { createSpawnPolicy } = require('spawn.policy');
 const { authorizeSpawnAssignment } = require('spawn.authority');
 const { describeSpawnAttempt, recordSpawnDenials } = require('spawn.denial');
@@ -3042,6 +3042,7 @@ module.exports.loop = function () {
         usesControllerBuffer(worker)
           ? 0 : worker.store.getFreeCapacity(RESOURCE_ENERGY);
     }
+    supplyDemand = totalSupplyDemand(recipientRemaining);
     const refillStructures = roomStructures.filter(structure => structure.my &&
         (structure.structureType === STRUCTURE_SPAWN ||
           structure.structureType === STRUCTURE_EXTENSION ||

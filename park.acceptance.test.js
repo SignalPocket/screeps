@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert');
 const fs = require('fs');
-const { selectSupplyRecipient, selectParkingCandidates } =
+const { selectSupplyRecipient, totalSupplyDemand, selectParkingCandidates } =
   require('./park.recovery');
 
 const position = (x, y) => ({ x, y,
@@ -23,6 +23,8 @@ const worker = (name, role, x, y) => ({ name, memory: { role },
   const remaining = { upgrader: 50, builder: 50, repairer: 50 };
   const assignments = { upgrader: 'upgrade', builder: 'build', repairer: 'repair' };
   const before = JSON.stringify({ remaining, assignments });
+  assert.strictEqual(totalSupplyDemand(remaining), 150,
+    'production demand opens the direct-supply admission gate');
   assert.strictEqual(selectSupplyRecipient({ carrier, recipients, remaining,
     assignments }), distantBuilder,
   'active construction receives a direct handoff even when it is not adjacent');
@@ -35,6 +37,8 @@ const worker = (name, role, x, y) => ({ name, memory: { role },
   assert.strictEqual(selectSupplyRecipient({ carrier, recipients, remaining,
     assignments }), adjacentUpgrader);
   remaining.upgrader = 0;
+  assert.strictEqual(totalSupplyDemand(remaining), 0,
+    'zero recipient capacity keeps the supply gate closed');
   assert.strictEqual(selectSupplyRecipient({ carrier, recipients, remaining,
     assignments }), null, 'no worker capacity produces no invented handoff');
 }
@@ -75,5 +79,6 @@ const worker = (name, role, x, y) => ({ name, memory: { role },
 
 const main = fs.readFileSync(require.resolve('./main'), 'utf8');
 assert(main.includes('selectSupplyRecipient({ carrier: creep,'));
+assert(main.includes('supplyDemand = totalSupplyDemand(recipientRemaining);'));
 assert(main.includes('selectParkingCandidates({ terrain, sources,'));
 console.log('park acceptance covers distant construction supply and safe whole-room fallback');

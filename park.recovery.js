@@ -51,6 +51,9 @@ const selectSupplyRecipient = ({ carrier, recipients, remaining,
       a.name.localeCompare(b.name);
   })[0] || null;
 
+const totalSupplyDemand = remaining => Object.values(remaining)
+  .reduce((total, capacity) => total + Math.max(0, capacity || 0), 0);
+
 const selectParkingCandidates = ({ terrain, sources, protectedRoads,
   occupied, plannedExtensions, spawn, storage, controller, wallMask }) => {
   const anchors = [spawn?.pos, storage?.pos].filter(Boolean);
@@ -78,4 +81,4 @@ const selectParkingCandidates = ({ terrain, sources, protectedRoads,
 };
 
 module.exports = { refillRetentionSituation, recoverSpawnFiller,
-  selectSupplyRecipient, selectParkingCandidates };
+  selectSupplyRecipient, totalSupplyDemand, selectParkingCandidates };
