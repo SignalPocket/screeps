@@ -23,6 +23,9 @@ const remoteMiner = { memory: {
   remoteSlot: 1, leftScoutSlot: 1,
   remoteHaulerSlot: 1, remoteBuilderSlot: 1
 } };
+assert.strictEqual(reconcileCreepAssignment(remoteMiner), true,
+  'legacy remote identity is migrated into the shared assignment contract');
+assert.strictEqual(remoteMiner.memory.assignmentKind, 'remote-miner');
 assert.strictEqual(reconcileCreepAssignment(remoteMiner), false);
 assert.strictEqual(remoteMiner.memory.remoteRoom, 'W1N2');
 assert.strictEqual(remoteMiner.memory.remoteSlot, 1);
@@ -51,5 +54,15 @@ assert.strictEqual(repairBuilder.memory.builderMission, 'repair');
 repairBuilder.memory.role = 'hauler';
 reconcileCreepAssignment(repairBuilder);
 assert.strictEqual(repairBuilder.memory.assignmentBuilderMission, undefined);
+
+const relabeledClaimer = { memory: {
+  role: 'builder', birthRole: 'claimer', assignmentRole: 'builder',
+  expansionTarget: 'W8N4', builderScope: 'local', task: 'builder-return'
+} };
+assert.strictEqual(reconcileCreepAssignment(relabeledClaimer), true);
+assert.strictEqual(relabeledClaimer.memory.role, 'claimer');
+assert.strictEqual(relabeledClaimer.memory.assignmentRole, 'claimer');
+assert.strictEqual(relabeledClaimer.memory.assignmentKind, 'expansion-claim');
+assert.strictEqual(relabeledClaimer.memory.task, undefined);
 
 console.log('creep assignment scenarios passed');

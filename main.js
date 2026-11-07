@@ -105,6 +105,8 @@ const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
   deriveBodyTargets, buildBodyRoster, canBodyTypeRunLane } =
   require('body.archetypes');
 const { reconcileCreepAssignments } = require('creep.assignment');
+const { enforceAssignmentContract, contractForSpawnAssignment } =
+  require('assignment.contract');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
 const { selectRebalancerSurplus, getWithdrawalApproachTarget,
@@ -155,6 +157,7 @@ module.exports.loop = function () {
         ? 'remote-miner' : creep.memory.birthRole;
       creep.memory.assignmentRole = 'remote-miner';
     }
+    enforceAssignmentContract(creep);
     observeOutpostExport({ tick: Game.time, roomName: creep.room.name,
       energy: creep.store[RESOURCE_ENERGY] || 0, memory: creep.memory,
       homeMemory: Memory.rooms && Memory.rooms[
@@ -1073,6 +1076,19 @@ module.exports.loop = function () {
     const controllerRelief=!coreIncomeGap&&planControllerRelief({room,workers,viable:hasLocalReplacementLife,
       operationWork:spawnSituation.policy.operations?.upgradePush?spawnSituation.policy.operations.upgradeWork:0});
     if(controllerRelief)return controllerRelief;
+    // An explicitly prepared, healthy claim is a bounded capability action.
+    // Once every local and remote minimum plus due replacement work is
+    // covered, launch it before desired hauling or other optional growth.
+    const readyClaim = room.memory.expansionPlan;
+    if (spawnSituation.policy.permissions?.expansion && readyClaim &&
+        readyClaim.status === 'claim-ready' &&
+        !workers.some(creep => creep.memory.role === 'claimer' &&
+          creep.memory.expansionTarget === readyClaim.targetRoom)) {
+      return {
+        role: 'claimer', expansionTarget: readyClaim.targetRoom,
+        forceSpawn: true
+      };
+    }
     const missingCoreBuilder=staffingPlan.jobs?.builder &&
       staffingPlan.jobs.builder.coverageCount<staffingPlan.jobs.builder.min;
     const missingCoreUpgrader=staffingPlan.jobs?.upgrader &&
@@ -1750,6 +1766,7 @@ module.exports.loop = function () {
           working: false,
           role: assignment.role,
           birthRole: assignment.role,
+          ...contractForSpawnAssignment(assignment),
           qualityFor: assignment.qualityFor,
           bodyType: assignment.bodyType,
           builderScope: assignment.builderScope,
@@ -2048,6 +2065,12 @@ module.exports.loop = function () {
 
   for (const creep of creeps) {
     if (creep.memory.staffingRetire || creep.memory.role === 'retire') {
+      assignedCreeps[creep.name] = true;
+    } else if (enforceAssignmentContract(creep) ||
+        creep.memory.assignmentKind) {
+      // Spawn selection and workforce allocation consume the same durable
+      // contract. General allocation may count this creep, but may not infer a
+      // different job from its body shape.
       assignedCreeps[creep.name] = true;
     } else if (creep.memory.role === CONTROLLER_BRIGADE_ROLE) {
       assignedCreeps[creep.name] = true;
@@ -3667,7 +3690,7 @@ module.exports.loop = function () {
   // Let logistics reserve source energy before general workers withdraw it.
   // The controller buffer remains protected for the dedicated upgrader.
   const taskPriority = (_creep, memory) => memory.emergencyRepairRoom
-    ? -1 : memory.role === 'refiller'
+    ? -1 : memory.role === 'refiller' || memory.role === 'claimer'
       ? 0 : memory.role === 'hauler' || memory.role === 'remote-hauler'
         ? 1 : memory.role === CONTROLLER_BRIGADE_ROLE ||
           memory.role === 'rebalancer'
@@ -3794,7 +3817,8 @@ module.exports.loop = function () {
     // A reserver is the sole actuator that prevents a running outpost from
     // losing its controller reservation. It cannot be rotated behind optional
     // work while constrained CPU is shedding deferred executors.
-    'remote-reserver', 'defender', 'retire', CONTROLLER_BRIGADE_ROLE
+    'claimer', 'remote-reserver', 'defender', 'retire',
+    CONTROLLER_BRIGADE_ROLE
   ]);
   const survivalExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     creep.memory.emergencyRepairRoom ||
@@ -5105,10 +5129,37 @@ module.exports.loop = function () {
           }
           const target = creep.room.controller;
           if (!target) return false;
+          const onArrivalExit = creep.pos.x === 0 || creep.pos.x === 49 ||
+            creep.pos.y === 0 || creep.pos.y === 49;
+          if (onArrivalExit && !target.my) {
+            // The cross-room cached path ends on the exit tile. Reusing it can
+            // send the claimer straight back home before it gets an inward
+            // step, especially when remote traffic shares the doorway.
+            delete creep.memory._move;
+            delete creep.memory.navGoal;
+            moveCreep(creep, target, 1, { direct: true });
+            creep.memory.taskTarget = `${targetRoomName} enter room`;
+            return true;
+          }
           if (target.my) {
             const homeRoom = Game.rooms[creep.memory.home];
             if (homeRoom && homeRoom.memory.expansionPlan) {
               homeRoom.memory.expansionPlan.status = 'bootstrap';
+            }
+            if (creep.getActiveBodyparts(WORK) > 0 &&
+                creep.getActiveBodyparts(CARRY) > 0) {
+              creep.memory.role = 'builder';
+              creep.memory.birthRole = 'builder';
+              creep.memory.assignmentRole = 'builder';
+              creep.memory.assignmentKind = 'expansion-bootstrap';
+              creep.memory.builderScope = 'expansion';
+              creep.memory.builderMission = 'bootstrap';
+            } else {
+              creep.memory.role = 'retire';
+              creep.memory.assignmentRole = 'retire';
+              delete creep.memory.assignmentKind;
+              delete creep.memory.expansionTarget;
+              creep.memory.staffingRetire = true;
             }
             creep.memory.taskTarget = `${targetRoomName} claimed`;
             return true;

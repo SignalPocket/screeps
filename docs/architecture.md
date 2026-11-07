@@ -113,6 +113,7 @@ adapter such as `applyTrendAdjustments`.
   generic policy budget. New infrastructure must not add another independent
   affordability rule.
 - RCL 6 industry and most RCL 7-8 mature-room structures remain declarative
-  stage intent only. Expansion gating is active at RCL 7; terminal, laboratory,
+  stage intent only. Expansion is gated by capability, GCL, target validity,
+  and sponsor health rather than RCL; terminal, laboratory,
   mineral, factory, observer, power, and final-defense planners are not yet
   implemented.

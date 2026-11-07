@@ -375,6 +375,17 @@ rosterStaffing.assignUnallocatedRoles({
 assert.strictEqual(restingRepairBuilder.memory.role, 'builder');
 assert.strictEqual(restingRepairBuilder.memory.builderMission, 'repair',
   'a valid builder specialty survives an idle allocation pass');
+const expansionClaimer = roleCandidate('claimer', 1, 1, {
+  role: 'claimer', expansionTarget: 'W1N2'
+});
+rosterStaffing.assignUnallocatedRoles({
+  candidates: [expansionClaimer], sourceWorkerCount: 0,
+  sourceWorkerLimit: 1, sourceWorkCount: 0, sourceWorkTarget: 1,
+  haulerCount: 0, haulerTarget: 1
+});
+assert.strictEqual(expansionClaimer.memory.role, 'claimer');
+assert.strictEqual(expansionClaimer.memory.expansionTarget, 'W1N2',
+  'ordinary labor allocation must preserve a live expansion assignment');
 
 const refillRoom = {
   memory: {
