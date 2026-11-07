@@ -58,6 +58,10 @@ assert.strictEqual(walker.memory.navStuck, 2);
 assert.strictEqual(calls.at(-1).reusePath, 0, 'two real blocked attempts replan');
 assert.strictEqual(calls.at(-1).ignoreCreeps, false);
 assert.strictEqual(walker.memory._move, undefined);
+assert.deepStrictEqual(walker.memory.navRecovery, {
+  tick: 109, reason: 'blocked', result: 0, stuck: 2,
+  goal: 'repair', room: 'W7N3', x: 18, y: 14
+}, 'an accepted recovery intent is evidence, not proof of displacement');
 game.time = 110;
 walker.pos.x++;
 service.moveCreep(walker, destination);
@@ -65,6 +69,8 @@ game.time = 111;
 walker.pos.x--;
 service.moveCreep(walker, destination);
 assert.strictEqual(calls.at(-1).reusePath, 0, 'real oscillation still replans');
+assert.strictEqual(walker.memory.navRecovery.reason, 'oscillation');
+assert.strictEqual(walker.memory.navRecovery.tick, 111);
 game.time = 112;
 service.moveCreep(walker, {id: 'other', pos: destination.pos});
 assert.strictEqual(walker.memory.navStuck, 0, 'a new goal resets congestion');
@@ -74,3 +80,35 @@ walker.pos.y = 20;
 assert.strictEqual(service.moveCreep(walker, destination), 0,
   'an already reached destination needs no move even when fatigued');
 console.log('fatigue preserves routes; recovered collisions and oscillation still replan');
+
+// Failed searches must retain their error code, replacing one bounded record.
+walker.pos.x = 18;
+walker.pos.y = 14;
+walker.fatigue = 0;
+walker.memory.navStuck = 2;
+walker.memory.navGoal = 'repair';
+walker.memory.navLastX = 18;
+walker.memory.navLastY = 14;
+walker.memory.navLastRoom = 'W7N3';
+walker.memory.navLastTick = 112;
+walker.moveTo = () => -2;
+game.time = 113;
+assert.strictEqual(service.moveCreep(walker, destination), -2);
+assert.deepStrictEqual(walker.memory.navRecovery, {
+  tick: 113, reason: 'blocked', result: -2, stuck: 3,
+  goal: 'repair', room: 'W7N3', x: 18, y: 14
+});
+const recovery = walker.memory.navRecovery;
+game.time = 114;
+walker.fatigue = 4;
+assert.strictEqual(service.moveCreep(walker, destination), -11);
+assert.strictEqual(walker.memory.navRecovery, recovery,
+  'forced waits preserve the timestamped attempt rather than invent a search');
+game.time = 116; // Includes a CPU-deferred tick with no movement call.
+walker.fatigue = 0;
+walker.moveTo = () => 0;
+service.moveCreep(walker, {id: 'new-goal', pos: destination.pos});
+assert.strictEqual(walker.memory.navRecovery, recovery,
+  'normal movement retains historical evidence with its original goal and tick');
+assert.strictEqual(walker.memory.navStuck, 0);
+console.log('bounded recovery evidence separates rejected searches and accepted intents');
