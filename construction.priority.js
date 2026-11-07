@@ -5,6 +5,11 @@ const createConstructionPriority = ({
 }) => {
   const isDeferred = (site, linksPending) => Boolean(site && linksPending &&
     site.structureType === STRUCTURE_EXTENSION);
+  const requiresExtensionFirst = (roomName, sites) => roomName === 'W8N4' &&
+    sites.some(site => site.structureType === STRUCTURE_EXTENSION);
+  const allowsSite = (roomName, sites, site) =>
+    !requiresExtensionFirst(roomName, sites) ||
+    site?.structureType === STRUCTURE_EXTENSION;
   const priority = site => site.structureType === STRUCTURE_CONTAINER
     ? 0 : site.structureType === STRUCTURE_LINK ? 1
       : site.structureType === STRUCTURE_EXTENSION ? 2
@@ -19,10 +24,12 @@ const createConstructionPriority = ({
       ? Math.min(crewLimit(site), Math.max(1, Math.ceil(remaining / 1000)))
       : 0;
   };
-  const desiredCrewTotal = (sites, linksPending) => sites
-    .filter(site => !isDeferred(site, linksPending))
+  const desiredCrewTotal = (sites, linksPending, roomName) => sites
+    .filter(site => requiresExtensionFirst(roomName, sites) ||
+      !isDeferred(site, linksPending))
     .reduce((total, site) => total + desiredCrew(site), 0);
-  return { isDeferred, priority, crewLimit, desiredCrew, desiredCrewTotal };
+  return { isDeferred, requiresExtensionFirst, allowsSite, priority,
+    crewLimit, desiredCrew, desiredCrewTotal };
 };
 
 module.exports = { createConstructionPriority };

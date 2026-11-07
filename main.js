@@ -2817,7 +2817,7 @@ module.exports.loop = function () {
       // construction, but send the remaining WORK-heavy bodies to the RC so
       // carriers can unload and return to the sources.
       const rawConstructionCrew = Math.max(constructionPriority
-        .desiredCrewTotal(sites, linksPending),
+        .desiredCrewTotal(sites, linksPending, room.name),
         room.memory.roadBacklog?.missing > 0 && sites.some(site =>
           site.structureType === STRUCTURE_ROAD)
           ? situation.policy.roles.builder.desired : 0);
@@ -4401,6 +4401,9 @@ module.exports.loop = function () {
     };
     const getBuildTarget = extraFilter => {
       let target = Game.getObjectById(creep.memory.buildTarget);
+      const roomSites = getRoomSites(creep.room);
+      const extensionFirst = constructionPriority.requiresExtensionFirst(
+        creep.room.name, roomSites);
       const tunnelSite = isBuilder(creep, 'local', 'tunnel')
         ? getSource2TunnelSite(creep.room)
         : null;
@@ -4412,13 +4415,15 @@ module.exports.loop = function () {
         .filter(structure =>
           structure.structureType === STRUCTURE_EXTENSION).length;
       const storageDeferred = builtExtensionCount < extensionLimit;
-      const linkSites = getRoomSites(creep.room).filter(site =>
+      const linkSites = roomSites.filter(site =>
         site.structureType === STRUCTURE_LINK);
       const linksPending = creep.room.controller &&
         creep.room.controller.level >= 5 && linkSites.length > 0;
       const valid = site => site && site.progressTotal !== undefined &&
         (!storageDeferred || site.structureType !== STRUCTURE_STORAGE) &&
-        !constructionPriority.isDeferred(site, linksPending) &&
+        constructionPriority.allowsSite(creep.room.name, roomSites, site) &&
+        (extensionFirst || !constructionPriority.isDeferred(site,
+          linksPending)) &&
         (site.structureType !== STRUCTURE_ROAD ||
           tunnelSite && site.id === tunnelSite.id ||
           isSingleLaneRoadPosition(creep.room, site)) &&
@@ -4427,8 +4432,8 @@ module.exports.loop = function () {
           tunnelSite && site.id === tunnelSite.id) &&
         (!extraFilter || extraFilter(site)) &&
         exclusiveClaimAvailable(reservedJobs.build, site, creep.name);
-      if (!extraFilter && creep.room.controller) {
-        const prioritySite = getRoomSites(creep.room).find(site =>
+      if (!extraFilter && !extensionFirst && creep.room.controller) {
+        const prioritySite = roomSites.find(site =>
           site.structureType === STRUCTURE_CONTAINER &&
             site.pos.getRangeTo(creep.room.controller) <= 3 &&
             exclusiveClaimAvailable(reservedJobs.build, site, creep.name)
@@ -4439,9 +4444,9 @@ module.exports.loop = function () {
           creep.memory.buildTarget = prioritySite.id;
         }
       }
-      if (!extraFilter && !linksPending && (!target ||
+      if (!extraFilter && !extensionFirst && !linksPending && (!target ||
           target.structureType === STRUCTURE_ROAD)) {
-        const containerSite = getRoomSites(creep.room)
+        const containerSite = roomSites
           .filter(site => site.structureType === STRUCTURE_CONTAINER &&
             exclusiveClaimAvailable(reservedJobs.build, site, creep.name))
           .sort((a, b) => creep.pos.getRangeTo(a) -
@@ -4453,8 +4458,8 @@ module.exports.loop = function () {
         }
       }
       if (!extraFilter && (!target ||
-          target.structureType === STRUCTURE_ROAD)) {
-        const extensionSite = getRoomSites(creep.room)
+          target.structureType !== STRUCTURE_EXTENSION)) {
+        const extensionSite = roomSites
           .filter(site => site.structureType === STRUCTURE_EXTENSION &&
             exclusiveClaimAvailable(reservedJobs.build, site, creep.name))
           .sort((a, b) => creep.pos.getRangeTo(a) -
@@ -4467,7 +4472,7 @@ module.exports.loop = function () {
       }
       if (!valid(target)) {
         delete creep.memory.buildTarget;
-        target = getRoomSites(creep.room).filter(valid)
+        target = roomSites.filter(valid)
           .sort((a, b) => {
             return constructionPriority.priority(a) -
               constructionPriority.priority(b) ||
