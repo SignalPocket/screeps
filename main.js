@@ -3,6 +3,7 @@ const { getRoadBacklog } = typeof Game === 'undefined'
 'use strict';
 
 const { derivePopulationPolicy } = require('colony.policy');
+const { getSpawnActivityStatus } = require('spawn.status');
 const { createBodyFactory } = require('body.factory');
 const { createResourceReservations } = require('resource.reservations');
 const { createRoomIndex } = require('room.index');
@@ -7697,11 +7698,9 @@ module.exports.loop = function () {
         ? (room.memory.busySummaryStreak || 0) + 1
         : 0;
       const reportedWorkerLimit = workerLimit;
-      const blockers = [];
-      if (idleCount > 0) blockers.push(`${idleCount} idle; spawn paused`);
-      if (congestionCount > 0) blockers.push(`${congestionCount} congested`);
-      if (roomCreeps.length >= reportedWorkerLimit) blockers.push('pop target');
-      if (roomSpawns.every(spawn => spawn.spawning)) blockers.push('spawns busy');
+      const blockers = getSpawnActivityStatus({ idleCount, congestionCount,
+        population: roomCreeps.length, workerLimit: reportedWorkerLimit,
+        spawns: roomSpawns });
       if (Number.isInteger(room.memory.spawnWaitSince) &&
           room.energyAvailable < room.energyCapacityAvailable) {
         blockers.push(`charging body ${Math.min(25,
@@ -7711,6 +7710,9 @@ module.exports.loop = function () {
         blockers.push(`energy<${workerCost}`);
       }
       const status = blockers.length ? blockers.join(', ') : 'spawn ready';
+      room.memory.spawnActivityStatus = { updated: Game.time, status,
+        idleCount, congestionCount, spawnCount: roomSpawns.length,
+        busySpawns: roomSpawns.filter(spawn => spawn.spawning).length };
       const expansion = room.memory.expansionPlan;
       const expansionStatus = expansion
         ? `  Expand ${expansion.targetRoom} ${expansion.status} ` +
