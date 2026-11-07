@@ -3835,6 +3835,9 @@ module.exports.loop = function () {
   // every tick while the bucket rebuilds.
   const survivalExecutionRoles = new Set([
     'refiller', 'harvester', 'miner', 'hauler', 'rebalancer', 'upgrader',
+    // Established remote production is recurring income, not optional work.
+    // Missing harvest intents loses output even when the CPU bucket is full.
+    'remote-miner',
     // A reserver is the sole actuator that prevents a running outpost from
     // losing its controller reservation. It cannot be rotated behind optional
     // work while constrained CPU is shedding deferred executors.
