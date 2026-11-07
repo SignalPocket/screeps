@@ -36,6 +36,12 @@ const isProtectedAssignment = memory => Boolean(protectedRoleFor(memory));
 const enforceAssignmentContract = creep => {
   if (!creep || !creep.memory) return false;
   const memory = creep.memory;
+  // The numbered seat is the relay authority. Retirement and surplus release
+  // remove it; a cached contract must not resurrect that completed assignment.
+  if (memory.assignmentKind === 'controller-relay' &&
+      !Number.isInteger(memory.controllerRelaySlot)) {
+    delete memory.assignmentKind;
+  }
   const kind = inferAssignmentKind(memory);
   const role = protectedRoleFor(memory);
   if (!kind || !role) return false;
