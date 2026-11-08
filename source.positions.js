@@ -1,4 +1,7 @@
 'use strict';
+const { isSourceStationAvailable, getSourceStationCandidates } =
+  typeof Game === 'undefined' ? require('./source.station-geometry')
+    : require('source.station-geometry');
 
 const createSourcePositions = ({
   getRoomSources,
@@ -14,38 +17,16 @@ const createSourcePositions = ({
     preferred) => {
     // Use one walkable tile within range one of both source and container.
     const terrain = room.getTerrain();
-    const isAvailable = (x, y) => {
-      if (x < 0 || x > 49 || y < 0 || y > 49 ||
-          source.pos.getRangeTo(x, y) > 1 ||
-          container.pos.getRangeTo(x, y) > 1 ||
-          (x === source.pos.x && y === source.pos.y)) return false;
-      const key = `${x}:${y}`;
-      if (reserved[key]) return false;
-      const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
-      const completedRoad = tileStructures.some(structure =>
-        structure.structureType === STRUCTURE_ROAD);
-      if (terrain.get(x, y) === TERRAIN_MASK_WALL && !completedRoad) {
-        return false;
-      }
-      const blocked = tileStructures.some(structure =>
-        OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
-        !(structure.structureType === STRUCTURE_RAMPART &&
-          (structure.my || structure.isPublic)));
-      if (blocked) return false;
-      return !room.lookForAt(LOOK_CREEPS, x, y)
-        .some(creep => creep.name !== ignoreCreep);
-    };
+    const geometry = { room, source, container, reserved, ignoreCreep,
+      allowWalkableRamparts: true, avoidCreeps: true, terrain,
+      LOOK_STRUCTURES, LOOK_CREEPS, OBSTACLE_OBJECT_TYPES, STRUCTURE_ROAD,
+      STRUCTURE_RAMPART, TERRAIN_MASK_WALL };
 
     if (preferred && Number.isInteger(preferred.x) &&
         Number.isInteger(preferred.y) &&
-        isAvailable(preferred.x, preferred.y)) return preferred;
-    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-        if (x === source.pos.x && y === source.pos.y) continue;
-        if (isAvailable(x, y)) return { x, y };
-      }
-    }
-    return null;
+        isSourceStationAvailable({ ...geometry, x: preferred.x,
+          y: preferred.y })) return preferred;
+    return getSourceStationCandidates(geometry)[0] || null;
   };
 
   const getSource2TunnelSite = room => {

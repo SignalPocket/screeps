@@ -1,6 +1,8 @@
 'use strict';
 const { isProtectedAssignment } = typeof Game === 'undefined'
   ? require('./assignment.contract') : require('assignment.contract');
+const { getSourceStationCandidates } = typeof Game === 'undefined'
+  ? require('./source.station-geometry') : require('source.station-geometry');
 
 /**
  * Convert source geometry and regeneration into local mining demand.
@@ -28,27 +30,10 @@ const createSourceStaffing = ({
   ENERGY_REGEN_TIME,
   HARVEST_POWER
 }) => {
-  const getSourceSpotCount = (room, source) => {
-    const terrain = room.getTerrain();
-    let spots = 0;
-    for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-      for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-        if (x < 0 || x > 49 || y < 0 || y > 49 ||
-            (x === source.pos.x && y === source.pos.y)) continue;
-        const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
-        const completedTunnelRoad = tileStructures.some(structure =>
-          structure.structureType === STRUCTURE_ROAD);
-        if (terrain.get(x, y) === TERRAIN_MASK_WALL &&
-            !completedTunnelRoad) continue;
-        const blocked = tileStructures.some(structure =>
-          OBSTACLE_OBJECT_TYPES.includes(structure.structureType));
-        const blockedSite = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
-          .some(site => OBSTACLE_OBJECT_TYPES.includes(site.structureType));
-        if (!blocked && !blockedSite) spots++;
-      }
-    }
-    return spots;
-  };
+  const getSourceSpotCount = (room, source) =>
+    getSourceStationCandidates({ room, source, blockConstructionSites: true,
+      LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES, OBSTACLE_OBJECT_TYPES,
+      STRUCTURE_ROAD, TERRAIN_MASK_WALL }).length;
 
   const getSourceMinerMinimum = (room, source) => Math.min(1, getSourceSpotCount(room, source));
 

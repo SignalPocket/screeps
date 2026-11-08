@@ -1,4 +1,6 @@
 'use strict';
+const { getSourceStationCandidates } = typeof Game === 'undefined'
+  ? require('./source.station-geometry') : require('source.station-geometry');
 
 const createWorkerLimits = ({
   Game, getRoomSources, getRoomCreeps, getSourceWorkerTargets,
@@ -21,31 +23,18 @@ const createWorkerLimits = ({
     const sources = getRoomSources(room);
     const spotOwners = {};
     const spotDistances = {};
-    const terrain = room.getTerrain();
     for (const source of sources) {
-      for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-        for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-          if (x === source.pos.x && y === source.pos.y || x < 0 || x > 49 ||
-              y < 0 || y > 49) continue;
-          const tileStructures = room.lookForAt(LOOK_STRUCTURES, x, y);
-          const completedTunnelRoad = tileStructures.some(structure =>
-            structure.structureType === STRUCTURE_ROAD);
-          if (terrain.get(x, y) === TERRAIN_MASK_WALL &&
-              !completedTunnelRoad) continue;
-          const blocked = tileStructures.some(structure =>
-            OBSTACLE_OBJECT_TYPES.includes(structure.structureType) &&
-            !(structure.structureType === STRUCTURE_RAMPART &&
-              (structure.my || structure.isPublic)));
-          const blockedSite = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
-            .some(site => OBSTACLE_OBJECT_TYPES.includes(site.structureType));
+      const candidates = getSourceStationCandidates({ room, source,
+        allowWalkableRamparts: true, blockConstructionSites: true,
+        LOOK_STRUCTURES, LOOK_CONSTRUCTION_SITES, OBSTACLE_OBJECT_TYPES,
+        STRUCTURE_ROAD, STRUCTURE_RAMPART, TERRAIN_MASK_WALL });
+      for (const { x, y } of candidates) {
           const key = `${x}:${y}`;
-          if (blocked || blockedSite) continue;
           const distance = source.pos.getRangeTo(x, y);
           if (spotDistances[key] === undefined || distance < spotDistances[key]) {
             spotOwners[key] = source.id;
             spotDistances[key] = distance;
           }
-        }
       }
     }
     const sourceSpotCounts = Object.fromEntries(
