@@ -146,6 +146,40 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
   return { reconcile, bindTarget, bindPickup, complete, isUseful };
 };
 
+// Execute the bookkeeping shared by reservation-aware withdrawals. Callers
+// retain ownership of eligibility, approach selection, success cleanup and
+// whether a failed intent counts as handled work.
+const executeReservedWithdrawal = ({ creep, target, resource, capacity,
+  reserve, release, remember, forget, move, OK, ERR_NOT_IN_RANGE,
+  rememberBeforeIntent = true, supplyAmount = true, movementTarget = target,
+  movementRange = 1, recordSource = true, recordTaskTarget = true,
+  taskTarget = target && target.id }) => {
+  const amount = reserve(target, capacity);
+  if (!(amount > 0)) return { state: 'unreserved', amount: 0 };
+  if (rememberBeforeIntent) remember(target, amount);
+  const result = supplyAmount
+    ? creep.withdraw(target, resource, amount)
+    : creep.withdraw(target, resource);
+  if (result !== OK && result !== ERR_NOT_IN_RANGE) {
+    release(target, amount);
+    forget(target);
+    return { state: 'failed', amount, result };
+  }
+  if (!rememberBeforeIntent) remember(target, amount);
+  if (result === ERR_NOT_IN_RANGE) {
+    move(creep, movementTarget, movementRange);
+  }
+  if (result === OK && recordSource) {
+    const sources = creep.memory.energySources || [];
+    if (!sources.includes(target.id)) sources.push(target.id);
+    creep.memory.energySources = sources;
+  }
+  if (recordTaskTarget && taskTarget !== undefined) {
+    creep.memory.taskTarget = taskTarget;
+  }
+  return { state: 'accepted', amount, result };
+};
+
 // Execute a partial carrier's reserved pickup before the loaded-task queue.
 // Use the pickup allocator's target and quantity; never bypass its admission cap.
 const collectPartialHauler = ({ creep, lane, target, resource, canWithdraw,
@@ -154,23 +188,10 @@ const collectPartialHauler = ({ creep, lane, target, resource, canWithdraw,
       !(creep.store[resource] > 0) ||
       creep.store.getFreeCapacity(resource) <= 0 ||
       !target || !canWithdraw(creep, target)) return false;
-  const amount = reserve(target, creep.store.getFreeCapacity(resource));
-  if (amount <= 0) return false;
-  const result = creep.withdraw(target, resource, amount);
-  if (result !== OK && result !== ERR_NOT_IN_RANGE) {
-    release(target, amount);
-    forget(target);
-    return false;
-  }
-  remember(target, amount);
-  if (result === ERR_NOT_IN_RANGE) move(creep, target, 1);
-  if (result === OK) {
-    const sources = creep.memory.energySources || [];
-    if (!sources.includes(target.id)) sources.push(target.id);
-    creep.memory.energySources = sources;
-  }
-  creep.memory.taskTarget = target.id;
-  return true;
+  return executeReservedWithdrawal({ creep, target, resource,
+    capacity: creep.store.getFreeCapacity(resource), reserve, release,
+    remember, forget, move, OK, ERR_NOT_IN_RANGE,
+    rememberBeforeIntent: false }).state === 'accepted';
 };
 
 // Retry only failed assignments, preserving intentional reserve parking.
@@ -184,4 +205,5 @@ const recoverBlockedWork = ({ creep, lane, actions }) => {
   return null;
 };
 
-module.exports = { createWorkDispatch, collectPartialHauler, recoverBlockedWork };
+module.exports = { createWorkDispatch, executeReservedWithdrawal,
+  collectPartialHauler, recoverBlockedWork };

@@ -1,6 +1,7 @@
 'use strict';
 const assert = require('assert');
-const { collectPartialHauler } = require('./work.dispatch');
+const { collectPartialHauler, executeReservedWithdrawal } =
+  require('./work.dispatch');
 const { getWaitSpeech } = require('./creep.reporting');
 const { isExpansionBuilder } = require('./builder.roles');
 const run = (overrides = {}) => {
@@ -44,6 +45,60 @@ assert.strictEqual(getWaitSpeech({ waitState: 'parked' }), 'Park');
 assert.strictEqual(getWaitSpeech({ waitState: 'blocked' }), 'Blocked');
 assert.strictEqual(getWaitSpeech({}), 'Blocked');
 console.log('partial-hauler pickup and waiting-label regression scenarios passed');
+
+// Every migrated caller uses this operation but keeps its deliberate options:
+// reservation timing, explicit quantity, movement approach and provenance.
+const withdrawalScenario = (overrides = {}) => {
+  const calls = [];
+  const creep = { memory: {}, withdraw: (...args) => {
+    calls.push(['withdraw', ...args]); return overrides.result ?? 0;
+  } };
+  const target = { id: 'store' };
+  const outcome = executeReservedWithdrawal({ creep, target,
+    resource: 'energy', capacity: 100,
+    reserve: (source, amount) => {
+      calls.push(['reserve', source.id, amount]);
+      return overrides.reserved === undefined ? 60 : overrides.reserved;
+    },
+    release: (source, amount) => calls.push(['release', source.id, amount]),
+    remember: (source, amount) => calls.push(['remember', source.id, amount]),
+    forget: source => calls.push(['forget', source.id]),
+    move: (worker, destination, range) =>
+      calls.push(['move', destination.id, range]),
+    OK: 0, ERR_NOT_IN_RANGE: -9, ...overrides.options });
+  return { calls, creep, target, outcome };
+};
+let shared = withdrawalScenario();
+assert.strictEqual(shared.outcome.state, 'accepted');
+assert.deepStrictEqual(shared.calls.map(call => call[0]),
+  ['reserve', 'remember', 'withdraw']);
+assert.deepStrictEqual(shared.calls[2],
+  ['withdraw', shared.target, 'energy', 60]);
+assert.deepStrictEqual(shared.creep.memory.energySources, ['store']);
+assert.strictEqual(shared.creep.memory.taskTarget, 'store');
+shared = withdrawalScenario({ result: -9, options: {
+  rememberBeforeIntent: false, movementTarget: { id: 'station' },
+  movementRange: 0
+} });
+assert.deepStrictEqual(shared.calls.map(call => call[0]),
+  ['reserve', 'withdraw', 'remember', 'move']);
+assert.deepStrictEqual(shared.calls.at(-1), ['move', 'station', 0]);
+assert.strictEqual(shared.creep.memory.energySources, undefined);
+shared = withdrawalScenario({ result: -6 });
+assert.strictEqual(shared.outcome.state, 'failed');
+assert.deepStrictEqual(shared.calls.map(call => call[0]),
+  ['reserve', 'remember', 'withdraw', 'release', 'forget']);
+assert.strictEqual(shared.creep.memory.taskTarget, undefined);
+shared = withdrawalScenario({ reserved: 0 });
+assert.deepStrictEqual(shared.outcome, { state: 'unreserved', amount: 0 });
+assert.deepStrictEqual(shared.calls.map(call => call[0]), ['reserve']);
+shared = withdrawalScenario({ options: {
+  supplyAmount: false, recordSource: false, recordTaskTarget: false
+} });
+assert.deepStrictEqual(shared.calls[2], ['withdraw', shared.target, 'energy']);
+assert.strictEqual(shared.creep.memory.energySources, undefined);
+assert.strictEqual(shared.creep.memory.taskTarget, undefined);
+console.log('shared reserved withdrawal preserves caller-specific intent semantics');
 // Exercise the actual main-loop pickup admission with partial carriers.
 const fs = require('fs');
 const vm = require('vm');
@@ -228,7 +283,10 @@ const success = vm.runInNewContext(continuation + '\ncontinueDispatchCommitment(
   RESOURCE_ENERGY: 'energy', getRoomSources: () => [],
   managedPickup: true, pickupJob: { targetId: 'old', amount: 75 },
   canWithdrawFrom: () => true, reserveEnergyFrom: () => 75,
-  rememberDispatchCommitment: () => {}, OK: 0, ERR_NOT_IN_RANGE: -9
+  rememberDispatchCommitment: () => {}, executeReservedWithdrawal,
+  releaseAmount: () => {}, reservedEnergy: {},
+  forgetDispatchCommitment: () => {}, moveCreep: () => {},
+  OK: 0, ERR_NOT_IN_RANGE: -9
 });
 assert.strictEqual(success, true);
 assert.deepStrictEqual(withdrawals[0], [stores.old, 'energy', 75]);
