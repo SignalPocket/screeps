@@ -3693,7 +3693,9 @@ module.exports.loop = function () {
         ? creep.store.getFreeCapacity(RESOURCE_ENERGY)
         : creep.store[RESOURCE_ENERGY],
       priority: lanePriority(creep.room, demandPlan, lane),
-      cancelCurrent: Boolean(creep.memory.waitState === 'blocked' ||
+      cancelCurrent: Boolean(creep.memory.waitState === 'blocked' &&
+        (creep.memory.workJob?.lane !== 'build' ||
+          (creep.memory.waitAge?.age || 0) >= 5) ||
         rerouteBuffer || rerouteRefill ||
         restoreExtensionReserve || restoreSpawnNetwork),
       reason: rerouteRefill
@@ -4446,6 +4448,15 @@ module.exports.loop = function () {
           tunnelSite && site.id === tunnelSite.id) &&
         (!extraFilter || extraFilter(site)) &&
         exclusiveClaimAvailable(reservedJobs.build, site, creep.name);
+      const retainedJob = creep.memory.workJob;
+      if (creep.store[RESOURCE_ENERGY] > 0 && retainedJob &&
+          retainedJob.lane === 'build' && retainedJob.targetId === target?.id &&
+          valid(target)) {
+        if (!claimExclusive(reservedJobs.build, target, creep.name)) return null;
+        workDispatch.bindTarget(creep, target,
+          creep.store[RESOURCE_ENERGY]);
+        return target;
+      }
       if (!extraFilter && !extensionFirst && creep.room.controller) {
         const prioritySite = roomSites.find(site =>
           site.structureType === STRUCTURE_CONTAINER &&
@@ -4464,7 +4475,8 @@ module.exports.loop = function () {
           .filter(site => site.structureType === STRUCTURE_CONTAINER &&
             exclusiveClaimAvailable(reservedJobs.build, site, creep.name))
           .sort((a, b) => creep.pos.getRangeTo(a) -
-            creep.pos.getRangeTo(b))[0];
+            creep.pos.getRangeTo(b) ||
+            String(a.id).localeCompare(String(b.id)))[0];
         if (containerSite) {
           releaseExclusive(reservedJobs.build, target, creep.name);
           target = containerSite;
@@ -4477,7 +4489,8 @@ module.exports.loop = function () {
           .filter(site => site.structureType === STRUCTURE_EXTENSION &&
             exclusiveClaimAvailable(reservedJobs.build, site, creep.name))
           .sort((a, b) => creep.pos.getRangeTo(a) -
-            creep.pos.getRangeTo(b))[0];
+            creep.pos.getRangeTo(b) ||
+            String(a.id).localeCompare(String(b.id)))[0];
         if (extensionSite) {
           releaseExclusive(reservedJobs.build, target, creep.name);
           target = extensionSite;
@@ -4490,7 +4503,8 @@ module.exports.loop = function () {
           .sort((a, b) => {
             return constructionPriority.priority(a) -
               constructionPriority.priority(b) ||
-              creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b);
+              creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
+              String(a.id).localeCompare(String(b.id));
           })[0];
       }
       if (!target) return null;

@@ -235,3 +235,48 @@ assert.deepStrictEqual(withdrawals[0], [stores.old, 'energy', 75]);
 assert.deepStrictEqual(Array.from(courier.memory.energySources), ['old']);
 console.log('collection ownership survives pressure changes and binds admitted quantities before execution');
 
+// A paid construction load owns one exact site through routine replanning.
+const buildSites = {
+  oldSite: { id: 'oldSite', progress: 100, progressTotal: 1000 },
+  urgentSite: { id: 'urgentSite', progress: 0, progressTotal: 1000 }
+};
+const buildGame = { time: 300,
+  getObjectById: id => buildSites[id] || null };
+const buildDispatch = require('./work.dispatch').createWorkDispatch({
+  Game: buildGame, RESOURCE_ENERGY: 'energy' });
+const builder = { name: 'builder', room: { name: 'W1N1' },
+  memory: { buildTarget: 'oldSite' },
+  store: { energy: 100, getFreeCapacity: () => 0 } };
+buildDispatch.reconcile([builder], { builder: {
+  lane: 'build', targetId: 'oldSite', priority: 3 } });
+const buildJobId = builder.memory.workJob.id;
+for (let tick = 301; tick <= 305; tick++) {
+  buildGame.time = tick;
+  builder.store.energy -= 10;
+  buildDispatch.reconcile([builder], { builder: {
+    lane: 'repair', targetId: 'urgentSite', priority: 2 } });
+  assert.strictEqual(builder.memory.workJob.id, buildJobId);
+  assert.strictEqual(builder.memory.workJob.lane, 'build');
+  assert.strictEqual(builder.memory.workJob.targetId, 'oldSite');
+}
+builder.store.energy = 0; buildGame.time++;
+buildDispatch.reconcile([builder], { builder: {
+  lane: 'build', targetId: 'oldSite', priority: 3 } });
+assert.strictEqual(builder.memory.workJob, undefined,
+  'empty carried energy releases the construction job');
+assert.strictEqual(builder.memory.buildTarget, undefined,
+  'empty carried energy also releases the concrete site claim');
+builder.store.energy = 100; builder.memory.buildTarget = 'urgentSite';
+buildGame.time++;
+buildDispatch.reconcile([builder], { builder: {
+  lane: 'build', targetId: 'urgentSite', priority: 1 } });
+assert.strictEqual(builder.memory.workJob.targetId, 'urgentSite',
+  'the next paid load may select the current highest-priority site');
+buildSites.urgentSite.progress = buildSites.urgentSite.progressTotal;
+buildGame.time++;
+buildDispatch.reconcile([builder], { builder: {
+  lane: 'build', targetId: 'oldSite', priority: 3 } });
+assert.notStrictEqual(builder.memory.workJob.targetId, 'urgentSite',
+  'site completion releases the old target even with energy remaining');
+console.log('builders retain one site for a paid load and reselect only at release boundaries');
+

@@ -20,6 +20,7 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
   const deliveryLanes = new Set([
     'refill', 'refill-buffer', 'buffer', 'storage', 'supply'
   ]);
+  const paidWorkLanes = new Set(['build', 'repair', 'upgrade']);
   const getTarget = id => id && Game.getObjectById(id);
   const stored = target => target && target.store
     ? target.store[RESOURCE_ENERGY] || 0 : 0;
@@ -40,7 +41,8 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
       return creep.store[RESOURCE_ENERGY] > 0 && target && free(target) > 0;
     }
     if (job.lane === 'build') {
-      return target && target.progressTotal !== undefined &&
+      return creep.store[RESOURCE_ENERGY] > 0 && target &&
+        target.progressTotal !== undefined &&
         target.progress < target.progressTotal;
     }
     if (job.lane === 'repair') {
@@ -77,9 +79,15 @@ const createWorkDispatch = ({ Game, RESOURCE_ENERGY }) => {
       // Routine Store/StockRC/StockSp priority changes wait for completion;
       // only priority zero (the room cannot fund a worker body) may preempt.
       const preempt = higherPriority &&
-        (!deliveryLanes.has(job.lane) || proposal.priority === 0);
+        (!deliveryLanes.has(job.lane) && !paidWorkLanes.has(job.lane) ||
+          proposal.priority === 0);
+      const previousLane = job && job.lane;
       if (!isUseful(creep, job) || preempt) job = null;
-      if (!job && proposal && durableLanes.has(proposal.lane)) {
+      if (!job && previousLane === 'build') delete creep.memory.buildTarget;
+      const emptyBuild = proposal && proposal.lane === 'build' &&
+        !(creep.store[RESOURCE_ENERGY] > 0);
+      if (!job && proposal && durableLanes.has(proposal.lane) &&
+          !emptyBuild) {
         job = makeJob(creep, {
           ...proposal,
           reason: preempt
