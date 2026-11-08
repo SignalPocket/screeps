@@ -40,13 +40,18 @@ const planReservationSpawn = ({ room, workers, policy, staffingPlan, Game,
   const coverage = getReservationCoverage(room, workers, policy, Game);
   const candidates = targets.map(remoteRoom => {
     const target = Game.rooms[remoteRoom] && Game.rooms[remoteRoom].controller;
+    const reservationConflict = Boolean(target && target.reservation &&
+      target.reservation.username !== room.controller.owner.username);
     const reservationTicks = target && target.reservation &&
       target.reservation.username === room.controller.owner.username
       ? target.reservation.ticksToEnd : undefined;
-    return { remoteRoom, target, reservationTicks };
-  }).sort((a, b) => (a.reservationTicks === undefined ? Infinity : a.reservationTicks) -
-    (b.reservationTicks === undefined ? Infinity : b.reservationTicks));
-  for (const { remoteRoom, target, reservationTicks } of candidates) {
+    return { remoteRoom, target, reservationTicks, reservationConflict };
+  }).sort((a, b) => Number(b.reservationConflict) -
+    Number(a.reservationConflict) ||
+    (a.reservationTicks === undefined ? Infinity : a.reservationTicks) -
+      (b.reservationTicks === undefined ? Infinity : b.reservationTicks));
+  for (const { remoteRoom, target, reservationTicks,
+    reservationConflict } of candidates) {
     if (target && target.my) continue;
     if (coverage.members.some(c => c.memory.remoteRoom === remoteRoom)) continue;
     const lead = replacementLead(remoteRoom, room.name, Game);
@@ -54,19 +59,20 @@ const planReservationSpawn = ({ room, workers, policy, staffingPlan, Game,
     // An uncovered active outpost without vision is also urgent. Waiting for
     // a new reserver to reveal it lets the known reservation expire before
     // the normal staffing tiers ever see a deadline.
-    if (urgentOnly && reservationTicks !== undefined &&
+    if (urgentOnly && !reservationConflict && reservationTicks !== undefined &&
         reservationTicks > lead) continue;
     // At most one incumbent and one replacement; never repeatedly fill an
     // invisible or blocked lane with fresh short-lived CLAIM bodies.
     const occupants = workers.filter(c => c.memory.role === ROLE &&
       c.memory.remoteRoom === remoteRoom && !c.memory.staffingRetire);
     if (occupants.length >= 2 || occupants.some(c => c.spawning)) continue;
-    if (target && (target.owner || target.reservation &&
-        target.reservation.username !== room.controller.owner.username)) continue;
+    if (target && target.owner) continue;
     return { role: ROLE, remoteRoom, bodyType: 'claimer',
       spawnBodyRole: ROLE, forceSpawn: true, minimumEnergy: 1300,
-      ...(urgentOnly ? { reservationDeadline: reservationTicks === undefined
-        ? 0 : reservationTicks } : {}),
+      ...(reservationConflict ? { reservationConflict: true,
+        reservationDeadline: 0 } : urgentOnly
+        ? { reservationDeadline: reservationTicks === undefined
+          ? 0 : reservationTicks } : {}),
       staffingCurrent: coverage.count, staffingTarget: targetCount };
   }
   return null;
@@ -120,12 +126,11 @@ const runReservation = ({ creep, Game, move, RoomPosition,
     return true;
   }
   const controller = creep.room.controller;
-  if (!controller || controller.owner || controller.reservation &&
-      controller.reservation.username !== creep.owner.username) {
+  if (!controller || controller.owner) {
     creep.memory.taskTarget = `${targetRoom} reservation unavailable`;
     report('unavailable', null, !controller ? 'no controller'
-      : controller.owner ? 'owned controller' : 'foreign reservation');
-    return true; // Never attack or claim an unexpected owner.
+      : 'owned controller');
+    return true; // Never attack or claim an owned controller.
   }
   if (creep.room.find(FIND_HOSTILE_CREEPS).length) {
     move(creep, new RoomPosition(25, 25, creep.memory.home), 20);
@@ -133,10 +138,15 @@ const runReservation = ({ creep, Game, move, RoomPosition,
     report('retreat', null, 'hostiles in target room');
     return true;
   }
-  const result = creep.reserveController(controller);
+  const reservationConflict = controller.reservation &&
+    controller.reservation.username !== creep.owner.username;
+  const result = reservationConflict
+    ? creep.attackController(controller)
+    : creep.reserveController(controller);
   if (result === ERR_NOT_IN_RANGE) move(creep, controller, 1);
   creep.memory.taskTarget = controller.id;
-  report(result === OK ? 'reserving'
+  report(result === OK
+    ? reservationConflict ? 'attacking-reservation' : 'reserving'
     : result === ERR_NOT_IN_RANGE ? 'approach' : 'failed', result);
   return result === OK || result === ERR_NOT_IN_RANGE;
 };

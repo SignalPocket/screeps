@@ -126,6 +126,14 @@ assert.strictEqual(result.authorized, true,
   'an expiring established reservation outranks optional local repair staffing');
 assert.strictEqual(result.phase, 'reservation-emergency');
 result = authorizeSpawnAssignment({
+  assignment: { role: 'remote-reserver', remoteRoom: 'W7N3',
+    reservationConflict: true, reservationDeadline: 0 },
+  staffingPlan: builderOnlyGap
+});
+assert(result.authorized,
+  'a visible foreign reservation uses the bounded reservation emergency lane');
+assert.strictEqual(result.phase, 'reservation-emergency');
+result = authorizeSpawnAssignment({
   assignment: { role: 'remote-reserver', remoteRoom: 'W8N3',
     reservationDeadline: 80 }, staffingPlan: {
       ...plan({ source: job('source', 0, 2) }),
