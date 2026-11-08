@@ -1,7 +1,8 @@
 'use strict';
 const assert = require('assert');
 const { inferAssignmentKind, isProtectedAssignment,
-  enforceAssignmentContract, contractForSpawnAssignment } =
+  enforceAssignmentContract, contractForSpawnAssignment,
+  isRetirementAssignment } =
   require('./assignment.contract');
 
 const contract = contractForSpawnAssignment({
@@ -67,3 +68,18 @@ reconcileCreepAssignment(active);
 assert.strictEqual(active.memory.role, 'controller-relay',
   'slot zero remains a protected live assignment');
 console.log('released relay contracts stay released across completion and reconciliation');
+
+const retiringRemote = { memory: {
+  role: 'retire', birthRole: 'remote-miner', assignmentRole: 'remote-miner',
+  assignmentKind: 'remote-miner', staffingRetire: true,
+  remoteHome: 'W1N1', remoteRoom: 'W1N2', remoteSlot: 0
+} };
+assert.strictEqual(isRetirementAssignment(retiringRemote.memory), true);
+assert.strictEqual(inferAssignmentKind(retiringRemote.memory), null,
+  'retirement must supersede inferable historical remote identity');
+assert.strictEqual(enforceAssignmentContract(retiringRemote), true,
+  'stale protected fields are atomically released');
+assert.strictEqual(retiringRemote.memory.role, 'retire');
+assert.strictEqual(retiringRemote.memory.assignmentRole, 'retire');
+assert.strictEqual(retiringRemote.memory.assignmentKind, undefined);
+console.log('explicit retirement supersedes protected historical assignments');

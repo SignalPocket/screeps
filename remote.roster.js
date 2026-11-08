@@ -184,6 +184,9 @@ const reconcileRemoteMinerRosters = ({
       miner.memory.role = 'retire';
       miner.memory.staffingRetire = true;
       miner.memory.retiredRole = 'remote-miner';
+      miner.memory.assignmentRole = 'retire';
+      delete miner.memory.assignmentKind;
+      delete miner.memory.remoteReplacementOverlap;
       retired.push(miner.name);
     }
     results[room.name] = { needed: needs.length, assigned: used.size,

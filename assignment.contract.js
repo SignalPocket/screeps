@@ -1,7 +1,14 @@
 'use strict';
 
+const isRetirementAssignment = memory => Boolean(memory &&
+  (memory.staffingRetire || memory.role === 'retire'));
+
 const inferAssignmentKind = memory => {
   if (!memory) return null;
+  // Retirement is an explicit planner transition. Historical birth identity
+  // and remote coordinates may remain until the role reconciler clears them,
+  // but they must never reconstruct the assignment being retired.
+  if (isRetirementAssignment(memory)) return null;
   if (memory.assignmentKind) return memory.assignmentKind;
   const originalRole = memory.birthRole || memory.assignmentRole || memory.role;
   if (memory.expansionTarget && originalRole === 'claimer') {
@@ -36,6 +43,14 @@ const isProtectedAssignment = memory => Boolean(protectedRoleFor(memory));
 const enforceAssignmentContract = creep => {
   if (!creep || !creep.memory) return false;
   const memory = creep.memory;
+  if (isRetirementAssignment(memory)) {
+    const changed = memory.role !== 'retire' ||
+      memory.assignmentRole !== 'retire' || memory.assignmentKind !== undefined;
+    memory.role = 'retire';
+    memory.assignmentRole = 'retire';
+    delete memory.assignmentKind;
+    return changed;
+  }
   // The numbered seat is the relay authority. Retirement and surplus release
   // remove it; a cached contract must not resurrect that completed assignment.
   if (memory.assignmentKind === 'controller-relay' &&
@@ -72,4 +87,4 @@ const contractForSpawnAssignment = assignment => {
 
 module.exports = { inferAssignmentKind, protectedRoleFor,
   isProtectedAssignment, enforceAssignmentContract,
-  contractForSpawnAssignment };
+  contractForSpawnAssignment, isRetirementAssignment };
