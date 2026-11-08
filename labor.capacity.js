@@ -7,6 +7,8 @@ const localKind = creep => {
   if(m.role==='builder' && m.builderScope==='outpost')return 'remoteBuilder:'+m.remoteRoom;
   if(m.role==='refiller')return 'refiller';
   if(m.role==='upgrader')return 'upgrader';
+  if(['builder','worker'].includes(m.role) && m.builderScope!=='outpost' &&
+      m.builderMission==='repair')return 'repairBuilder';
   if(['builder','worker'].includes(m.role) && !['outpost','expansion'].includes(m.builderScope) &&
       !['repair','tunnel'].includes(m.builderMission))return 'builder';
   return null;
@@ -31,7 +33,7 @@ const observeLabor = ({Game,getStructures,resource='energy'}) => {
   if(!kind || kind!==old.kind || current.held ||
     !kind.startsWith('remoteBuilder:') && creep.room.name!==home.name)continue;
   const opportunity=kind.startsWith('remoteBuilder:') ? ['remote-road','remote-container','emergency-repair','repair-load'].includes(current.task) : kind==='refiller' ? (home.memory.laborStats?.lastDeficit||0)>0 :
-    current.lane===(kind==='builder'?'build':'upgrade');
+    current.lane===(kind==='builder'?'build':kind==='repairBuilder'?'repair':'upgrade');
   if(!opportunity)continue;
   const stats=home.memory.laborStats ||= {creeps:{},network:{}};
   const profile=stats.creeps[creep.name] ||= {kind,bins:{}};
@@ -39,9 +41,9 @@ const observeLabor = ({Game,getStructures,resource='energy'}) => {
   profile.lastSeen=Game.time;
   const key=Math.floor(Game.time/50)*50;
   const bin=profile.bins[key] ||= {ticks:0,output:0,starved:0};
-  const productive=kind.startsWith('remoteBuilder:')?['remote-road','remote-container','emergency-repair','repair-load'].includes(old.task):kind==='builder'?['build','dig-road'].includes(current.task):kind==='upgrader'?
+  const productive=kind.startsWith('remoteBuilder:')?['remote-road','remote-container','emergency-repair','repair-load'].includes(old.task):kind==='builder'?['build','dig-road'].includes(current.task):kind==='repairBuilder'?['emergency-repair','repair-load','repair'].includes(current.task):kind==='upgrader'?
     ['upgrade','urgent-upgrade'].includes(current.task):['refill','committed-refill'].includes(current.task);
-  const maximum=current.task==='emergency-repair'?current.work:kind==='refiller'?spent:current.work*(kind==='builder'||kind.startsWith('remoteBuilder:')?5:1);
+  const maximum=kind==='refiller'?spent:current.work*(kind==='builder'||kind.startsWith('remoteBuilder:')?5:1);
   bin.ticks++;bin.output+=productive?Math.min(spent,maximum):0;
   if(['wait-job','await-supply'].includes(current.task))bin.starved++;
   prune(profile.bins,Game.time);
@@ -97,18 +99,32 @@ const planLabor = ({tick,previous,stats,creeps,buildRemaining,repairEnergy=0,
  const counts=body=>({work:parts(body,'work'),carry:parts(body,'carry')*50});
  const futureB=counts(newBuilder),futureU=counts(newUpgrader);
  const bRate=workRate(futureB.work,futureB.carry,5,travel);
+ const rRate=workRate(futureB.work,futureB.carry,1,travel);
  const uRate=workRate(futureU.work,futureU.carry,1,0);
  const network=aggregate(stats?.network);
  const refillUse=network.ticks>=60?network.output/network.ticks:energyCapacity/120;
- const buildBudget=canBuild?Math.min(buildRemaining/2000,Math.max(0,income-refillUse-1)*.5):0;
- const repairBudget=repairEnergy/1500;
- const reserveDraw=Math.min(5,Math.max(0,storedEnergy-reserveFloor)/3000);
- const upgradeBudget=Math.max(1,Math.min(15,income-refillUse-buildBudget-repairBudget+reserveDraw));
+ const durableSurplus=Math.max(0,storedEnergy-reserveFloor);
+ const reserveDraw=Math.min(8,durableSurplus/5000);
+ const workBudget=Math.max(0,income-refillUse-1)+reserveDraw;
+ const accelerated=durableSurplus>=50000;
+ const buildNeed=canBuild?buildRemaining/(accelerated?800:2000):0;
+ const repairNeed=repairEnergy/(accelerated?500:1500);
+ const backlogBudget=workBudget*(buildNeed>0||repairNeed>0?(accelerated?.7:.9):0);
+ let repairBudget=Math.min(repairNeed,backlogBudget*(buildNeed>0?.65:1));
+ let buildBudget=Math.min(buildNeed,backlogBudget-repairBudget);
+ let unassigned=Math.max(0,backlogBudget-repairBudget-buildBudget);
+ const extraRepair=Math.min(unassigned,Math.max(0,repairNeed-repairBudget));
+ repairBudget+=extraRepair;unassigned-=extraRepair;
+ buildBudget+=Math.min(unassigned,Math.max(0,buildNeed-buildBudget));
+ const upgradeFloor=controllerDanger?Math.min(3,Math.max(1,uRate)):1;
+ const upgradeBudget=Math.max(upgradeFloor,Math.min(15,
+   workBudget-buildBudget-repairBudget));
  const rates={};
- for(const kind of ['builder','upgrader','refiller'])rates[kind]=creeps.filter(c=>localKind(c)===kind).map(c=>{
+ for(const kind of ['builder','repairBuilder','upgrader','refiller'])rates[kind]=creeps.filter(c=>localKind(c)===kind).map(c=>{
   const body=counts(c);
   const estimated=kind==='refiller'?body.carry/(refillTravel+1+Math.ceil(body.carry/50)):
-   workRate(body.work,body.carry,kind==='builder'?5:1,kind==='builder'?travel:0);
+   workRate(body.work,body.carry,kind==='builder'?5:1,
+     ['builder','repairBuilder'].includes(kind)?travel:0);
   return {name:c.name,...profileRate(c,kind,stats,estimated)};
  });
  const bFloor=canBuild&&buildRemaining>0?1:0;
@@ -116,7 +132,16 @@ const planLabor = ({tick,previous,stats,creeps,buildRemaining,repairEnergy=0,
  const builder=buildRemaining>0&&canBuild?settle(previous?.builder,builderWanted,tick,bFloor):{desired:0,changed:tick};
  if(rates.builder.length<builder.desired && builderWanted<builder.desired)
    builder.desired=Math.max(bFloor,builderWanted);
- const upgrader={desired:1,changed:previous?.upgrader?.desired===1?previous.upgrader.changed:tick};
+ const repairWanted=countForRate(repairBudget,rates.repairBuilder.map(p=>p.rate),rRate,6);
+ const repairBuilder=repairEnergy>0?settle(previous?.repairBuilder,repairWanted,tick,0):
+   {desired:0,changed:tick};
+ if(rates.repairBuilder.length<repairBuilder.desired && repairWanted<repairBuilder.desired)
+   repairBuilder.desired=repairWanted;
+ const upgraderWanted=countForRate(upgradeBudget,rates.upgrader.map(p=>p.rate),uRate,
+   Math.max(1,controllerSpots));
+ const upgrader=settle(previous?.upgrader,upgraderWanted,tick,1);
+ if(rates.upgrader.length<upgrader.desired && upgraderWanted<upgrader.desired)
+   upgrader.desired=Math.max(1,upgraderWanted);
  const perOwner=refillUse*1.2/Math.max(1,clusters);
  const rawCarryParts=Math.max(2,Math.min(Math.floor(energyCapacity/100),25,
   Math.ceil(perOwner*(refillTravel+1)/Math.max(1,50-perOwner))));
@@ -130,8 +155,9 @@ const planLabor = ({tick,previous,stats,creeps,buildRemaining,repairEnergy=0,
  const sizing=settle(previousSizing,initialCarry,tick,2);
  const carryParts=sizing.desired;
  const upgradeWork=Math.max(1,Math.min(15,Math.ceil(upgradeBudget/Math.max(1,upgrader.desired)/.9)));
- return {updated:tick,horizon:2000,income,refillUse,buildBudget,upgradeBudget,
+ return {updated:tick,horizon:accelerated?800:2000,income,refillUse,buildBudget,repairBudget,upgradeBudget,
   builder:{...builder,requiredRate:buildBudget,futureRate:bRate,rates:rates.builder},
+  repairBuilder:{...repairBuilder,requiredRate:repairBudget,futureRate:rRate,rates:rates.repairBuilder},
   upgrader:{...upgrader,requiredRate:upgradeBudget,futureRate:uRate,workParts:upgradeWork,rates:rates.upgrader},
   refiller:{desired:clusters,carryParts,sizing,requiredRate:refillUse+deficit/100,rates:rates.refiller},
   budgetUnits:'energy per tick'};
@@ -140,9 +166,8 @@ const applyLaborPolicy = (policy,plan) => {
   const set=(key,count,min=policy.roles[key]?.min||0)=>{policy.roles[key]={...policy.roles[key],min,desired:Math.max(count,min),max:Math.max(count,min),
   reason:'measured capacity and energy budget'};};
  set('builder',plan.builder.desired);
- plan.upgrader.desired=1;
- plan.upgrader.workParts=Math.max(1,Math.min(15,Math.ceil(plan.upgradeBudget/.9)));
- set('upgrader',1);
+ set('repairBuilder',plan.repairBuilder?.desired||0);
+ set('upgrader',plan.upgrader.desired);
  // One owner per physical extension clump; capacity, not duplicate owners, scales.
  set('refiller',plan.refiller.desired);
  for(const key of ['min','desired','max'])policy.totals[key]=sum(Object.values(policy.roles).map(r=>r[key]||0))+
