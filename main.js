@@ -54,7 +54,8 @@ const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
 const { deriveCpuPolicy, shouldRenderPlanningVisuals,
-  selectFairExecutionCreeps, summarizeCreepExecution } =
+  shouldPrepareRoadPlan, selectFairExecutionCreeps,
+  summarizeCreepExecution } =
   require('cpu.policy');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
@@ -1960,6 +1961,14 @@ module.exports.loop = function () {
       room.memory.situationChanged = Game.time;
     }
     const traffic = trafficByRoom[room.name] || updateTrafficHeatmap(room);
+    // Link cooldowns are measured in ticks, so operate the completed network
+    // every tick even when no visual or construction pass needs road paths.
+    runLinks(room);
+    const roadPlacementDue = allowSlowPlanning &&
+      scheduledRoomTick(room, 20);
+    if (!shouldPrepareRoadPlan({
+      renderPlanningVisuals, roadPlacementDue
+    })) continue;
     const paths = getImportantRoadPaths(room);
     const travelPaths = getImportantTravelPaths(room);
     const interRoomTravelPaths = getInterRoomTravelPaths(room);
@@ -1983,19 +1992,17 @@ module.exports.loop = function () {
         ...localRoadPaths,
         ...(interRoomTravelPaths[room.name] || [])
       ], traffic, roadBudget);
-    }
-    const relatedRoomNames = new Set([
-      ...Object.keys(interRoomTravelPaths),
-      ...[room.memory.leftSurvey, room.memory.southSurvey,
-        room.memory.southwestSurvey]
-        .filter(survey => survey && survey.active && survey.targetRoom)
-        .map(survey => survey.targetRoom)
-    ]);
-    for (const relatedRoomName of relatedRoomNames) {
-      if (relatedRoomName === room.name) continue;
-      const relatedRoom = Game.rooms[relatedRoomName];
-      if (!relatedRoom) continue;
-      if (renderPlanningVisuals) {
+      const relatedRoomNames = new Set([
+        ...Object.keys(interRoomTravelPaths),
+        ...[room.memory.leftSurvey, room.memory.southSurvey,
+          room.memory.southwestSurvey]
+          .filter(survey => survey && survey.active && survey.targetRoom)
+          .map(survey => survey.targetRoom)
+      ]);
+      for (const relatedRoomName of relatedRoomNames) {
+        if (relatedRoomName === room.name) continue;
+        const relatedRoom = Game.rooms[relatedRoomName];
+        if (!relatedRoom) continue;
         drawTravelPaths(relatedRoom, [
           ...getConvergedTravelPaths(getImportantTravelPaths(relatedRoom)),
           ...(interRoomTravelPaths[relatedRoomName] || [])
@@ -2004,10 +2011,7 @@ module.exports.loop = function () {
     }
     // Core placement is reconciled above on capability changes and bounded
     // retries. Roads retain the shared corridor budgets and staggered cadence.
-    // Link cooldowns are measured in ticks, so operate the completed network
-    // every tick even though construction planning remains staggered.
-    runLinks(room);
-    if (allowSlowPlanning && scheduledRoomTick(room, 20)) {
+    if (roadPlacementDue) {
       // Remembered infrastructure paths include source-wall tunnels and other
       // access that keeps harvesting viable. Reopen those even while optional
       // construction is paused; ordinary layout growth remains gated below.
