@@ -3,6 +3,9 @@ const { selectRoomExitWaypoint } = typeof Game === 'undefined'
   ? require('./movement.route') : require('movement.route');
 const { isBrigadePlanActive } = typeof Game === 'undefined'
   ? require('./colony.operations') : require('colony.operations');
+const { getBrigadeProtectedFootprint } = typeof Game === 'undefined'
+  ? require('./controller.brigade-footprint')
+  : require('controller.brigade-footprint');
 const { laneCost } = typeof Game==='undefined' ? require('./road.network') : require('road.network');
 
 const BRIGADE_BYPASS_COST = 50;
@@ -49,13 +52,7 @@ const createMovementService = options => {
     const preferredRoadTiles = new Set(Object.entries(preferredUses)
       .filter(([, uses]) => uses >= 2).map(([key]) => key));
     const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
-    const brigadeRightOfWay = new Set([
-      ...(brigadePlan && Array.isArray(brigadePlan.segments)
-        ? brigadePlan.segments.flatMap(segment =>
-          [segment.pickup, segment.delivery]).filter(Boolean) : []),
-      ...(brigadePlan && Array.isArray(brigadePlan.rightOfWay)
-        ? brigadePlan.rightOfWay : [])
-    ].map(point => `${point.x}:${point.y}`));
+    const brigadeRightOfWay = getBrigadeProtectedFootprint(brigadePlan);
     const structures = room.find(FIND_STRUCTURES);
     const roads = structures.filter(structure =>
       structure.structureType === STRUCTURE_ROAD).map(road => ({
