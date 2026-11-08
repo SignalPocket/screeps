@@ -11,8 +11,8 @@ const { createMovementService } = require('movement.service');
 const { createRoadNetwork } = require('road.network');
 const { drawRoadNetwork } = require('road.visuals');
 const { createCreepLifecycle } = require('creep.lifecycle');
-const { createCreepReporting, getWaitSpeech, shortCreepName, shortRoles, shortTasks } =
-  require('creep.reporting');
+const { createCreepReporting, getTaskSpeech, getWaitSpeech, shortCreepName,
+  shortRoles, shortTasks } = require('creep.reporting');
 const { createSourceStaffing } = require('source.staffing');
 const { createRoomStrategy } = require('room.strategy');
 const { createSourcePositions } = require('source.positions');
@@ -7406,40 +7406,11 @@ module.exports.loop = function () {
         creep.memory.task === 'wait-job') {
       speech = getWaitSpeech(creep.memory);
     } else {
-      const taskSpeech = {
-        upgrade: 'RC',
-        'urgent-upgrade': 'RC!',
-        'emergency-refill': 'Fill!',
-        refill: 'Fill',
-        'refill-load': 'Load',
-        rebalance: 'Bal',
-        repair: 'Fix',
-        'emergency-repair': 'Fix!',
-        'repair-load': 'LoadFix',
-        'supply-worker': 'Give',
-        'await-supply': 'WaitE',
-        'stage-supply': 'Stage',
-        'stage-buffer': 'StageRC',
-        'stock-refill': 'StockSp',
-        'stage-refill': 'StageSp',
-        'stage-collect': 'StageS',
-        'committed-collect': 'Get',
-        'committed-refill': 'Fill',
-        'committed-refill-buffer': 'StockSp',
-        'committed-buffer': 'StockRC',
-        'committed-storage': 'Store',
-        'committed-supply': 'Give',
-        standby: 'Blocked',
-        withdraw: 'Get',
-        store: 'Store',
-        'store-storage': 'Store',
-        recycle: 'Recycle',
-        scavenge: 'Pick',
-        claim: 'Claim',
-        reserve: 'Reserve',
-        'expansion-build': 'New'
-      };
-      speech = taskSpeech[creep.memory.task] || 'Idle';
+      // Expansion speech describes the newly claimed room in the live view;
+      // historical reporting retains the base label "Expand".
+      speech = getTaskSpeech(creep.memory.task, {
+        overrides: { 'expansion-build': 'New' }
+      });
     }
     creep.memory.lastTtl = creep.ticksToLive;
     creep.memory.lastRoom = creep.room.name;
