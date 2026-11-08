@@ -4,6 +4,9 @@ const { isBrigadePlanActive } = typeof Game === 'undefined'
 const { getControllerStationCandidates } = typeof Game === 'undefined'
   ? require('./controller.station-candidates')
   : require('controller.station-candidates');
+const { getBrigadeProtectedFootprint } = typeof Game === 'undefined'
+  ? require('./controller.brigade-footprint')
+  : require('controller.brigade-footprint');
 
 // Assigns stable, unique standing tiles around each owned controller buffer.
 // Invalid saved stations are reconciled every tick instead of lingering in
@@ -40,13 +43,7 @@ const planControllerStations = ({ rooms, creeps, getRoomStructures,
       continue;
     }
     const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
-    const brigadeStops = new Set([
-      ...(brigadePlan && Array.isArray(brigadePlan.segments)
-        ? brigadePlan.segments.flatMap(segment =>
-          [segment.pickup, segment.delivery]).filter(Boolean) : []),
-      ...(brigadePlan && Array.isArray(brigadePlan.rightOfWay)
-        ? brigadePlan.rightOfWay : [])
-    ].map(point => `${point.x}:${point.y}`));
+    const brigadeStops = getBrigadeProtectedFootprint(brigadePlan);
     const candidates = getControllerStationCandidates({ room, buffers,
       excluded: brigadeStops, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
       LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES });
