@@ -75,7 +75,8 @@ const { createSpawnPolicy } = require('spawn.policy');
 const { authorizeSpawnAssignment } = require('spawn.authority');
 const { describeSpawnAttempt, recordSpawnDenials } = require('spawn.denial');
 const { createTaskReservations } = require('task.reservations');
-const { createWorkDispatch, collectPartialHauler, recoverBlockedWork } = require('work.dispatch');
+const { createWorkDispatch, executeReservedWithdrawal, collectPartialHauler,
+  recoverBlockedWork } = require('work.dispatch');
 const { planPickupJobs } = require('pickup.jobs');
 const { planRefillTargets } = require('refill.dispatch');
 const { planControllerStations } = require('controller.stations');
@@ -4223,24 +4224,15 @@ module.exports.loop = function () {
           forgetDispatchCommitment(target);
           return false;
         }
-        const amount = reserveEnergyFrom(target,
-          creep.store.getFreeCapacity(RESOURCE_ENERGY));
-        if (amount <= 0) return false;
-        rememberDispatchCommitment(target, amount);
-        const result = creep.withdraw(target, RESOURCE_ENERGY, amount);
-        if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
-        if (result !== OK && result !== ERR_NOT_IN_RANGE) {
-          releaseAmount(reservedEnergy, target, amount);
-          forgetDispatchCommitment(target);
-          return false;
-        }
-        if (result === OK) {
-          const sources = creep.memory.energySources || [];
-          if (!sources.includes(target.id)) sources.push(target.id);
-          creep.memory.energySources = sources;
-        }
-        creep.memory.taskTarget = target.id;
-        return true;
+        return executeReservedWithdrawal({ creep, target,
+          resource: RESOURCE_ENERGY,
+          capacity: creep.store.getFreeCapacity(RESOURCE_ENERGY),
+          reserve: reserveEnergyFrom,
+          release: (source, amount) => releaseAmount(reservedEnergy,
+            source, amount),
+          remember: rememberDispatchCommitment,
+          forget: forgetDispatchCommitment, move: moveCreep,
+          OK, ERR_NOT_IN_RANGE }).state === 'accepted';
       }
       const sourceBuffer = target.structureType === STRUCTURE_CONTAINER &&
         getRoomSources(creep.room).some(source =>
@@ -5755,18 +5747,21 @@ module.exports.loop = function () {
                 }
               }
               if (localContainer) {
-                const amount = reserveEnergyFrom(localContainer,
-                  creep.store.getFreeCapacity(RESOURCE_ENERGY));
-                if (amount > 0) {
-                  rememberDispatchCommitment(localContainer, amount);
-                  const result = creep.withdraw(localContainer, RESOURCE_ENERGY, amount);
-                  if (result === ERR_NOT_IN_RANGE) {
-                    moveCreep(creep, localContainer);
-                  } else if (result !== OK) {
-                    releaseAmount(reservedEnergy, localContainer, amount);
-                    forgetDispatchCommitment(localContainer);
+                const withdrawal = executeReservedWithdrawal({ creep,
+                  target: localContainer, resource: RESOURCE_ENERGY,
+                  capacity: creep.store.getFreeCapacity(RESOURCE_ENERGY),
+                  reserve: reserveEnergyFrom,
+                  release: (source, amount) => releaseAmount(reservedEnergy,
+                    source, amount),
+                  remember: rememberDispatchCommitment,
+                  forget: forgetDispatchCommitment,
+                  move: (worker, source) => moveCreep(worker, source),
+                  OK, ERR_NOT_IN_RANGE, recordSource: false,
+                  recordTaskTarget: false });
+                if (withdrawal.state !== 'unreserved') {
+                  if (withdrawal.state === 'failed') {
                     delete creep.memory.remotePickupTarget;
-                  } else {
+                  } else if (withdrawal.result === OK) {
                     creep.memory.remotePickupSource = localContainer.id;
                     delete creep.memory.remoteCargoOrigin;
                     delete creep.memory.collectionSourceTarget;
@@ -6955,33 +6950,25 @@ module.exports.loop = function () {
             creep.memory.withdrawTarget = container.id;
           }
           if (!container) return false;
-          const amount = reserveEnergyFrom(container,
-            creep.store.getFreeCapacity(RESOURCE_ENERGY));
-          if (amount <= 0) return false;
-          rememberDispatchCommitment(container, amount);
-          const result = creep.withdraw(container, RESOURCE_ENERGY);
-          if (result === ERR_NOT_IN_RANGE) {
-            const approach = getWithdrawalApproachTarget(creep, container,
-              controllerStation);
-            moveCreep(creep, approach,
-              controllerStation && approach === controllerStation.position
-                ? 0 : 1);
-            creep.memory.taskTarget = container.id;
-            return true;
-          }
-          if (result !== OK) {
-            releaseAmount(reservedEnergy, container, amount);
-            forgetDispatchCommitment(container);
-            return false;
-          }
+          const withdrawal = executeReservedWithdrawal({ creep,
+            target: container, resource: RESOURCE_ENERGY,
+            capacity: creep.store.getFreeCapacity(RESOURCE_ENERGY),
+            reserve: reserveEnergyFrom,
+            release: (source, amount) => releaseAmount(reservedEnergy,
+              source, amount),
+            remember: rememberDispatchCommitment,
+            forget: forgetDispatchCommitment,
+            move: worker => {
+              const approach = getWithdrawalApproachTarget(worker, container,
+                controllerStation);
+              moveCreep(worker, approach,
+                controllerStation && approach === controllerStation.position
+                  ? 0 : 1);
+            },
+            OK, ERR_NOT_IN_RANGE, supplyAmount: false });
+          if (withdrawal.state !== 'accepted') return false;
+          if (withdrawal.result === ERR_NOT_IN_RANGE) return true;
           delete creep.memory.collectionSourceTarget;
-          if (!Array.isArray(creep.memory.energySources)) {
-            creep.memory.energySources = [];
-          }
-          if (creep.memory.energySources.indexOf(container.id) === -1) {
-            creep.memory.energySources.push(container.id);
-          }
-          creep.memory.taskTarget = container.id;
           return true;
         }
       }
