@@ -3,7 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
-const { deriveCpuPolicy } = require('./cpu.policy');
+const { deriveCpuPolicy, selectFairExecutionCreeps } = require('./cpu.policy');
 const main = fs.readFileSync(require.resolve('./main'), 'utf8')
   .replace(/\r\n/g, '\n');
 const queueStart = main.indexOf('  const sortedExecutionCreeps =');
@@ -44,6 +44,7 @@ const run = (bucket, used, tick) => {
     cpuPolicy: deriveCpuPolicy(bucket), CONTROLLER_BRIGADE_ROLE: 'controller-relay',
     RESOURCE_ENERGY: 'energy',
     executionOrderRecords: records, sortExecutionRecords: value => value.slice(),
+    selectFairExecutionCreeps, previousCpuExecution: null,
     visited: [] };
   vm.runInNewContext(main.slice(queueStart, queueEnd) +
     main.slice(guardStart, guardEnd) + 'visited.push(creep.name); }', context);
@@ -74,7 +75,8 @@ assert.notStrictEqual(withoutTransport, main);
 const transportContext = { Game: { time: 100, cpu: { limit: 100, getUsed: () => 100 } },
   cpuPolicy: deriveCpuPolicy(10000), CONTROLLER_BRIGADE_ROLE: 'controller-relay',
   RESOURCE_ENERGY: 'energy', executionOrderRecords: records,
-  sortExecutionRecords: value => value.slice(), visited: [] };
+  sortExecutionRecords: value => value.slice(), selectFairExecutionCreeps,
+  previousCpuExecution: null, visited: [] };
 vm.runInNewContext(withoutTransport.slice(queueStart,
   withoutTransport.indexOf('  const controllerStations =', queueStart)) +
   withoutTransport.slice(withoutTransport.indexOf('  const executionCpuCeiling ='),
@@ -88,7 +90,8 @@ assert.notStrictEqual(oldMain, main);
 const oldContext = { Game: { time: 100, cpu: { limit: 100, getUsed: () => 100 } },
   cpuPolicy: deriveCpuPolicy(10000), CONTROLLER_BRIGADE_ROLE: 'controller-relay',
   RESOURCE_ENERGY: 'energy',
-  executionOrderRecords: records, sortExecutionRecords: value => value.slice(), visited: [] };
+  executionOrderRecords: records, sortExecutionRecords: value => value.slice(),
+  selectFairExecutionCreeps, previousCpuExecution: null, visited: [] };
 const oldQueueStart = oldMain.indexOf('  const sortedExecutionCreeps =');
 const oldGuardStart = oldMain.indexOf('  const executionCpuCeiling =');
 vm.runInNewContext(oldMain.slice(oldQueueStart,
