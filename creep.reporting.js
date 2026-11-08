@@ -32,6 +32,7 @@ const shortTasks = {
   'dig-road': 'Dig',
   repair: 'Fix',
   'emergency-repair': 'Fix!',
+  'repair-load': 'LoadFix',
   'supply-worker': 'Give',
   'await-supply': 'WaitE',
   'remote-miner': 'Mine',
@@ -44,6 +45,8 @@ const shortTasks = {
   reserve: 'Reserve',
   'expansion-build': 'Expand',
   'stage-supply': 'Stage',
+  'stage-buffer': 'StageRC',
+  'stage-collect': 'StageS',
   'stock-refill': 'StockSp',
   'stock-refill-pass': 'StockSp+',
   'collect-pass': 'Get+',
@@ -60,6 +63,14 @@ const shortTasks = {
   store: 'Store',
   'store-storage': 'Store',
   recycle: 'Recycle'
+};
+
+const getTaskSpeech = (task, options = {}) => {
+  const overrides = options.overrides || {};
+  if (Object.prototype.hasOwnProperty.call(overrides, task)) {
+    return overrides[task];
+  }
+  return shortTasks[task] || options.fallback || 'Idle';
 };
 
 const getWaitSpeech = memory => memory.waitState === 'parked' ? 'Park' : 'Blocked';
@@ -114,8 +125,8 @@ const createCreepReporting = ({ Game, getRoomSources,
       if (Game.creeps[name]) continue;
       const memory = memoryCreeps[name] || {};
       const role = shortRoles[memory.role] || memory.role || 'W';
-      const task = shortTasks[memory.lastTask || memory.task] ||
-        memory.lastTask || memory.task || 'Idle';
+      const taskName = memory.lastTask || memory.task;
+      const task = getTaskSpeech(taskName, { fallback: taskName || 'Idle' });
       const roomName = memory.lastRoom || memory.home || '?';
       const reason = memory.retired
         ? 'RETIRED'
@@ -131,6 +142,7 @@ const createCreepReporting = ({ Game, getRoomSources,
 
 module.exports = {
   createCreepReporting,
+  getTaskSpeech,
   getWaitSpeech,
   shortCreepName,
   shortRoles,
