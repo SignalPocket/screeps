@@ -34,6 +34,9 @@ const shouldRenderPlanningVisuals = ({ tick, allowSlowPlanning,
   Number.isSafeInteger(tick) && Number.isSafeInteger(interval) &&
   interval > 0 && tick % interval === 0;
 
+const shouldPrepareRoadPlan = ({ renderPlanningVisuals,
+  roadPlacementDue }) => Boolean(renderPlanningVisuals || roadPlacementDue);
+
 const selectFairExecutionCreeps = ({ creeps, previous, tick, mode,
   limit = 1, interval = 5, threshold = 10 }) => {
   if (mode === 'recovery' || limit <= 0 || interval <= 0 ||
@@ -81,4 +84,5 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
 };
 
 module.exports = { deriveCpuPolicy, shouldRenderPlanningVisuals,
-  selectFairExecutionCreeps, summarizeCreepExecution };
+  shouldPrepareRoadPlan, selectFairExecutionCreeps,
+  summarizeCreepExecution };

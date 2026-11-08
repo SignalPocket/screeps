@@ -2,7 +2,8 @@
 
 const assert = require('assert');
 const fs = require('fs');
-const { deriveCpuPolicy, shouldRenderPlanningVisuals } =
+const { deriveCpuPolicy, shouldRenderPlanningVisuals,
+  shouldPrepareRoadPlan } =
   require('./cpu.policy');
 
 assert.deepStrictEqual(deriveCpuPolicy(undefined), {
@@ -37,6 +38,18 @@ assert.strictEqual(shouldRenderPlanningVisuals({
 assert.strictEqual(shouldRenderPlanningVisuals({
   tick: 120.5, allowSlowPlanning: true
 }), false);
+assert.strictEqual(shouldPrepareRoadPlan({
+  renderPlanningVisuals: true, roadPlacementDue: false
+}), true);
+assert.strictEqual(shouldPrepareRoadPlan({
+  renderPlanningVisuals: false, roadPlacementDue: true
+}), true);
+assert.strictEqual(shouldPrepareRoadPlan({
+  renderPlanningVisuals: true, roadPlacementDue: true
+}), true);
+assert.strictEqual(shouldPrepareRoadPlan({
+  renderPlanningVisuals: false, roadPlacementDue: false
+}), false);
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
   /'claimer', 'remote-reserver', 'defender', 'retire',\s+CONTROLLER_BRIGADE_ROLE/,
   'claimers and remote reservers remain in the CPU-protected execution set');
@@ -57,7 +70,10 @@ assert.match(main,
   /if \(renderPlanningVisuals\) \{\s+drawInterRoomRoadLinks\(room\);\s+drawRoadPlan/,
   'room and inter-room planning visuals share the same cadence gate');
 assert.match(main,
-  /if \(renderPlanningVisuals\) \{\s+drawTravelPaths\(relatedRoom/,
+  /if \(renderPlanningVisuals\) \{[\s\S]{0,1400}drawTravelPaths\(relatedRoom/,
   'related-room travel visuals share the same cadence gate');
+assert.match(main,
+  /runLinks\(room\);\s+const roadPlacementDue = allowSlowPlanning &&\s+scheduledRoomTick\(room, 20\);\s+if \(!shouldPrepareRoadPlan/,
+  'links run before unused path preparation is skipped');
 
 console.log('CPU policy scenarios passed');
