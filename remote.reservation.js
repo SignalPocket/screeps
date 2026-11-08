@@ -1,4 +1,6 @@
 'use strict';
+const { getSpawnQueueWait } = typeof Game === 'undefined'
+  ? require('./spawn.queue') : require('spawn.queue');
 
 const ROLE = 'remote-reserver';
 // A two-CLAIM responder needs its spawn time, cross-room travel, and room
@@ -8,9 +10,7 @@ const RESERVATION_EMERGENCY_LEAD = 300;
 const replacementLead = (roomName, home, Game) => {
   const route = Game.map.findRoute(home, roomName);
   if (!Array.isArray(route)) return Infinity;
-  const queue = Math.max(0, ...Object.values(Game.spawns || {})
-    .filter(s => s.room.name === home && s.spawning)
-    .map(s => s.spawning.remainingTime || 0));
+  const queue = getSpawnQueueWait(Game.spawns, home);
   return Math.max(RESERVATION_EMERGENCY_LEAD,
     12 + Math.max(1, route.length) * 75 + queue + 25);
 };
