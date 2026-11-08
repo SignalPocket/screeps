@@ -19,6 +19,9 @@ const { updateDeliveryPolicy } = typeof Game === 'undefined'
   ? require('./outpost.delivery') : require('outpost.delivery');
 const { applySpawnCapacityBudget } = typeof Game === 'undefined'
   ? require('./spawn.capacity') : require('spawn.capacity');
+const { getControllerStationCandidates } = typeof Game === 'undefined'
+  ? require('./controller.station-candidates')
+  : require('controller.station-candidates');
 
 const { applyOperationPolicy } = typeof Game === 'undefined'
   ? require('./colony.operations') : require('colony.operations');
@@ -84,26 +87,9 @@ const createRoomSituation = dependencies => {
         container.store.getCapacity(RESOURCE_ENERGY), 0);
     const controllerBufferRatio = controllerBufferCapacity > 0
       ? controllerBufferStored / controllerBufferCapacity : 0;
-    const controllerWorkSpots = controllerContainers.reduce(
-      (total, container) => {
-        const terrain = room.getTerrain();
-        let spots = 0;
-        for (let x = container.pos.x - 1; x <= container.pos.x + 1; x++) {
-          for (let y = container.pos.y - 1; y <= container.pos.y + 1; y++) {
-            if (x < 1 || x > 48 || y < 1 || y > 48 ||
-                x === container.pos.x && y === container.pos.y ||
-                terrain.get(x, y) === TERRAIN_MASK_WALL ||
-                room.controller.pos.getRangeTo(x, y) > 3) continue;
-            const blocked = room.lookForAt(LOOK_STRUCTURES, x, y)
-              .some(structure => OBSTACLE_OBJECT_TYPES.includes(
-                structure.structureType) &&
-                !(structure.structureType === STRUCTURE_RAMPART &&
-                  (structure.my || structure.isPublic)));
-            if (!blocked) spots++;
-          }
-        }
-        return total + spots;
-      }, 0);
+    const controllerWorkSpots = getControllerStationCandidates({ room,
+      buffers: controllerContainers, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
+      LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES }).length;
     const currentUpgraders = Object.values(Game.creeps).filter(creep =>
       creep.memory.home === room.name && creep.memory.role === 'upgrader' &&
       (creep.spawning || hasLocalReplacementLife(creep))).length;
