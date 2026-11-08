@@ -52,7 +52,8 @@ const { summarizeRoomHealth } = require('health.reporting');
 const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
-const { deriveCpuPolicy, summarizeCreepExecution } = require('cpu.policy');
+const { deriveCpuPolicy, selectFairExecutionCreeps,
+  summarizeCreepExecution } = require('cpu.policy');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
   require('creep.execution-order');
@@ -3881,11 +3882,23 @@ module.exports.loop = function () {
         creep.store[RESOURCE_ENERGY] > 0));
   const deferredExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     !survivalExecutionCreeps.includes(creep));
-  const executionRotation = deferredExecutionCreeps.length
-    ? Game.time % deferredExecutionCreeps.length : 0;
-  const executionCreeps = survivalExecutionCreeps.concat(
-    deferredExecutionCreeps.slice(executionRotation),
-    deferredExecutionCreeps.slice(0, executionRotation));
+  const fairExecutionCreeps = selectFairExecutionCreeps({
+    creeps: deferredExecutionCreeps, previous: previousCpuExecution,
+    tick: Game.time, mode: cpuPolicy.mode,
+    limit: cpuPolicy.fairExecutionLimit,
+    interval: cpuPolicy.fairExecutionInterval,
+    threshold: cpuPolicy.fairDeferralThreshold
+  });
+  const fairExecutionNames = new Set(fairExecutionCreeps.map(creep =>
+    creep.name));
+  const rotatingExecutionCreeps = deferredExecutionCreeps.filter(creep =>
+    !fairExecutionNames.has(creep.name));
+  const executionRotation = rotatingExecutionCreeps.length
+    ? Game.time % rotatingExecutionCreeps.length : 0;
+  const executionCreeps = fairExecutionCreeps.concat(
+    survivalExecutionCreeps,
+    rotatingExecutionCreeps.slice(executionRotation),
+    rotatingExecutionCreeps.slice(0, executionRotation));
   const controllerStations = planControllerStations({
     rooms: Object.values(Game.rooms), creeps, getRoomStructures,
     getContainerPurpose, RoomPosition,
@@ -4001,7 +4014,7 @@ module.exports.loop = function () {
     Game.cpu && Number.isFinite(Game.cpu.limit)
     ? Game.cpu.limit * cpuPolicy.executionCpuRatio : null;
   const requiredExecutionCount = Math.max(
-    survivalExecutionCreeps.length,
+    survivalExecutionCreeps.length + fairExecutionCreeps.length,
     cpuPolicy.minimumExecutionCreeps || 0);
   let executedCreepCount = 0;
   for (const creep of executionCreeps) {
@@ -7454,6 +7467,7 @@ module.exports.loop = function () {
       executedCount: executedCreepCount, tick: Game.time,
       previous: previousCpuExecution }),
     ceiling: executionCpuCeiling,
+    fairCreeps: fairExecutionCreeps.map(creep => creep.name),
     usedAfterCreeps: Game.cpu && typeof Game.cpu.getUsed === 'function'
       ? Game.cpu.getUsed() : null
   };

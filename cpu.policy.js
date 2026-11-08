@@ -19,8 +19,28 @@ const deriveCpuPolicy = bucket => {
     executionCpuRatio: mode === 'recovery' ? 0.65
       : mode === 'constrained' ? 0.75 : 0.8,
     minimumExecutionCreeps: mode === 'recovery' ? 8
-      : mode === 'constrained' ? 16 : null
+      : mode === 'constrained' ? 16 : null,
+    fairExecutionLimit: mode === 'recovery' ? 0 : 1,
+    fairExecutionInterval: 5,
+    fairDeferralThreshold: 10
   };
+};
+
+const selectFairExecutionCreeps = ({ creeps, previous, tick, mode,
+  limit = 1, interval = 5, threshold = 10 }) => {
+  if (mode === 'recovery' || limit <= 0 || interval <= 0 ||
+      tick % interval !== 0 || previous?.updated !== tick - 1) return [];
+  const deferredAge = new Map((previous.deferredCreeps || [])
+    .map(entry => [entry.name, entry.consecutiveTicks]));
+  return creeps.filter(creep => {
+    const memory = creep.memory || {};
+    return memory.role === 'builder' && memory.builderScope !== 'outpost' &&
+      memory.builderScope !== 'expansion' && !memory.remoteRoom &&
+      (deferredAge.get(creep.name) || 0) >= threshold;
+  }).sort((a, b) => (deferredAge.get(b.name) || 0) -
+      (deferredAge.get(a.name) || 0) ||
+    a.room.name.localeCompare(b.room.name) || a.name.localeCompare(b.name))
+    .slice(0, limit);
 };
 
 // The executor visits a prefix of its final, rotated queue. These are visits,
@@ -52,4 +72,5 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
     deferred: creeps.length - executed, roles, deferredCreeps };
 };
 
-module.exports = { deriveCpuPolicy, summarizeCreepExecution };
+module.exports = { deriveCpuPolicy, selectFairExecutionCreeps,
+  summarizeCreepExecution };
