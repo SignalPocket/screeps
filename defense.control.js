@@ -155,6 +155,8 @@ const createDefenseController = ({
   PathFinder, FIND_STRUCTURES, FIND_CREEPS, OBSTACLE_OBJECT_TYPES,
   STRUCTURE_ROAD, STRUCTURE_RAMPART
 }) => {
+  const range = (a, b) => Math.max(Math.abs(a.x - b.x),
+    Math.abs(a.y - b.y));
   const costMatrices = {};
   const getRoomCostMatrix = room => {
     if (costMatrices[room.name]) return costMatrices[room.name];
@@ -176,7 +178,8 @@ const createDefenseController = ({
     return costs;
   };
 
-  const findFleeStep = (creep, hostiles, safeRange = 5) => {
+  const findFleeStep = (creep, hostiles, safeRange = 5,
+    defenders = []) => {
     const nearbyHostiles = (hostiles || []).filter(hostile =>
       creep.pos.getRangeTo(hostile) <= safeRange);
     if (nearbyHostiles.length === 0) return null;
@@ -190,7 +193,44 @@ const createDefenseController = ({
         roomCallback: roomName => roomName === creep.room.name
           ? getRoomCostMatrix(creep.room) : false
       });
-    return result.path && result.path[0] || null;
+    const fallback = result.path && result.path[0] || null;
+    const protector = (defenders || []).filter(defender => defender &&
+      !defender.spawning && defender.hits > 0 &&
+      defender.room && defender.room.name === creep.room.name &&
+      defender.memory && defender.memory.role === 'defender' &&
+      !defender.memory.defenseReturnHome &&
+      (defender.memory.defenseTargetRoom || defender.room.name) ===
+        creep.room.name).sort((a, b) =>
+      b.hits / Math.max(1, b.hitsMax) - a.hits / Math.max(1, a.hitsMax) ||
+      range(creep.pos, a.pos) - range(creep.pos, b.pos) ||
+      String(a.id || a.name).localeCompare(String(b.id || b.name)))[0];
+    if (!protector) return fallback;
+    const currentThreatRange = Math.min(...nearbyHostiles.map(hostile =>
+      range(creep.pos, hostile.pos)));
+    const requiredRange = currentThreatRange < safeRange
+      ? currentThreatRange + 1 : safeRange;
+    const currentProtectorRange = range(creep.pos, protector.pos);
+    const costs = getRoomCostMatrix(creep.room);
+    const terrain = creep.room.getTerrain && creep.room.getTerrain();
+    const candidates = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const candidate = { x: creep.pos.x + dx, y: creep.pos.y + dy,
+        roomName: creep.room.name };
+      if (candidate.x <= 0 || candidate.x >= 49 || candidate.y <= 0 ||
+          candidate.y >= 49 || costs.get(candidate.x, candidate.y) >= 255 ||
+          terrain && terrain.get(candidate.x, candidate.y) === 1) continue;
+      const threatRange = Math.min(...nearbyHostiles.map(hostile =>
+        range(candidate, hostile.pos)));
+      const protectorRange = range(candidate, protector.pos);
+      if (threatRange < requiredRange ||
+          protectorRange >= currentProtectorRange) continue;
+      candidates.push({ candidate, threatRange, protectorRange });
+    }
+    candidates.sort((a, b) => a.protectorRange - b.protectorRange ||
+      b.threatRange - a.threatRange || a.candidate.x - b.candidate.x ||
+      a.candidate.y - b.candidate.y);
+    return candidates[0] && candidates[0].candidate || fallback;
   };
 
   return { findFleeStep };
