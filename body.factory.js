@@ -132,20 +132,31 @@ const createBodyFactory = constants => {
         ? [CLAIM, MOVE] : null;
     }
     if (role === 'defender') {
-      const unit = [TOUGH, ATTACK, MOVE];
-      const unitCost = unit.reduce((sum, part) => sum + BODYPART_COST[part], 0);
-      if (energy < unitCost) return null;
-      const relayPayload = [CARRY, CARRY];
-      const relayCost = relayPayload.reduce((sum, part) =>
+      const emergencyUnit = [TOUGH, ATTACK, MOVE];
+      const emergencyCost = emergencyUnit.reduce((sum, part) =>
         sum + BODYPART_COST[part], 0);
-      if (energy >= unitCost + relayCost) {
-        const count = Math.max(1, Math.min(16,
-          Math.floor((energy - relayCost) / unitCost)));
-        return [...Array.from({ length: count }, () => unit).flat(),
-          ...relayPayload];
+      if (energy < emergencyCost) return null;
+      const mobileUnit = [TOUGH, ATTACK, MOVE, MOVE];
+      const mobileCost = mobileUnit.reduce((sum, part) =>
+        sum + BODYPART_COST[part], 0);
+      if (energy < mobileCost) return emergencyUnit;
+      // Preserve the established two-CARRY post-war brigade handoff. At the
+      // 300-energy emergency boundary that legacy utility necessarily crawls
+      // off-road; once 390 energy is funded, pair the payload with two MOVE so
+      // the entire body remains plains-mobile.
+      const relayPayload = [CARRY, CARRY];
+      const relayCost = 2 * BODYPART_COST[CARRY];
+      if (energy >= mobileCost + relayCost + 2 * BODYPART_COST[MOVE]) {
+        const count = Math.max(1, Math.min(11,
+          Math.floor((energy - relayCost - 2 * BODYPART_COST[MOVE]) /
+            mobileCost)));
+        return [...Array.from({ length: count }, () => mobileUnit).flat(),
+          ...relayPayload, MOVE, MOVE];
       }
-      const count = Math.max(1, Math.min(16, Math.floor(energy / unitCost)));
-      return Array.from({ length: count }, () => unit).flat();
+      if (energy >= emergencyCost + relayCost) {
+        return [...emergencyUnit, ...relayPayload];
+      }
+      return mobileUnit;
     }
     if (role === 'remote-miner') {
       const moveParts = energy >= 450 ? 2 : 1;
