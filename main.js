@@ -285,8 +285,18 @@ module.exports.loop = function () {
   });
   const waitAge = createWaitAgeTracker(Game.time);
   const { moveCreep: rawMoveCreep } = createMovementService({ Game, Room, FIND_STRUCTURES,
-    FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS, STRUCTURE_ROAD,
-    STRUCTURE_EXTENSION, OK, ERR_INVALID_TARGET, ERR_TIRED });
+    FIND_MY_CONSTRUCTION_SITES, FIND_MY_CREEPS,
+    FIND_HOSTILE_CREEPS: typeof FIND_HOSTILE_CREEPS === 'undefined'
+      ? undefined : FIND_HOSTILE_CREEPS,
+    STRUCTURE_ROAD, STRUCTURE_EXTENSION,
+    OBSTACLE_OBJECT_TYPES: typeof OBSTACLE_OBJECT_TYPES === 'undefined'
+      ? [] : OBSTACLE_OBJECT_TYPES,
+    TERRAIN_MASK_WALL: typeof TERRAIN_MASK_WALL === 'undefined'
+      ? 1 : TERRAIN_MASK_WALL,
+    ATTACK: typeof ATTACK === 'undefined' ? undefined : ATTACK,
+    RANGED_ATTACK: typeof RANGED_ATTACK === 'undefined'
+      ? undefined : RANGED_ATTACK,
+    OK, ERR_INVALID_TARGET, ERR_TIRED });
   const moveCreep = waitAge.wrapMovement(rawMoveCreep, ERR_TIRED);
   const { findFleeStep } = createDefenseController({
     PathFinder, FIND_STRUCTURES, FIND_CREEPS, OBSTACLE_OBJECT_TYPES,

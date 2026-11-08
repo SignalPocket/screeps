@@ -28,7 +28,8 @@ const applyBrigadeBypassCost = (costs, x, y) => {
  */
 const createMovementService = options => {
   const { Game, Room, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES,
-    FIND_MY_CREEPS, STRUCTURE_ROAD, STRUCTURE_EXTENSION,
+    FIND_MY_CREEPS, FIND_HOSTILE_CREEPS, STRUCTURE_ROAD, STRUCTURE_EXTENSION,
+    OBSTACLE_OBJECT_TYPES, TERRAIN_MASK_WALL, ATTACK, RANGED_ATTACK,
     OK, ERR_INVALID_TARGET, ERR_TIRED } = options;
   const movementReservations = {};
   const movementRoomCache = {};
@@ -55,13 +56,27 @@ const createMovementService = options => {
       ...(brigadePlan && Array.isArray(brigadePlan.rightOfWay)
         ? brigadePlan.rightOfWay : [])
     ].map(point => `${point.x}:${point.y}`));
-    const roads = room.find(FIND_STRUCTURES, {
-      filter: structure => structure.structureType === STRUCTURE_ROAD
-    }).map(road => ({
+    const structures = room.find(FIND_STRUCTURES);
+    const roads = structures.filter(structure =>
+      structure.structureType === STRUCTURE_ROAD).map(road => ({
       x: road.pos.x,
       y: road.pos.y,
       preferred: preferredRoadTiles.has(`${road.pos.x}:${road.pos.y}`)
     }));
+    const obstacleTypes = new Set(OBSTACLE_OBJECT_TYPES || []);
+    const blockingStructures = structures.filter(structure =>
+      obstacleTypes.has(structure.structureType)).map(structure => ({
+      x: structure.pos.x, y: structure.pos.y,
+      type: structure.structureType
+    }));
+    const hostiles = FIND_HOSTILE_CREEPS === undefined ? []
+      : room.find(FIND_HOSTILE_CREEPS).map(hostile => ({
+        id: hostile.id, x: hostile.pos.x, y: hostile.pos.y,
+        melee: ATTACK !== undefined &&
+          hostile.getActiveBodyparts(ATTACK) > 0,
+        ranged: RANGED_ATTACK !== undefined &&
+          hostile.getActiveBodyparts(RANGED_ATTACK) > 0
+      }));
     // Construction sites are normally traversable. Keep extension sites in
     // the shared room model so every creep prices them exactly like ordinary
     // plain terrain instead of avoiding the future extension footprint.
@@ -74,6 +89,8 @@ const createMovementService = options => {
       : [];
     const cached = {
       roads,
+      blockingStructures,
+      hostiles,
       extensionSites,
       roadTiles: new Set(roads.map(road => `${road.x}:${road.y}`)),
       preferredRoadTiles,
@@ -141,6 +158,30 @@ const createMovementService = options => {
     creep.memory.navCorridor = {
       goal, room: creep.room.name, tick: Game.time, steps
     };
+  };
+  const getCorridorInvalidReason = creep => {
+    const upcoming = getUpcomingRoute(creep);
+    if (upcoming.length === 0) return null;
+    const room = Game.rooms[creep.room.name];
+    const roomCache = getMovementRoomCache(creep.room.name);
+    const terrain = room && typeof room.getTerrain === 'function'
+      ? room.getTerrain() : null;
+    const wallMask = TERRAIN_MASK_WALL ?? 1;
+    const obstacles = new Set((roomCache?.blockingStructures || [])
+      .map(structure => `${structure.x}:${structure.y}`));
+    for (const step of upcoming) {
+      if (terrain && terrain.get(step.x, step.y) === wallMask) return 'wall';
+      if (obstacles.has(`${step.x}:${step.y}`)) return 'structure';
+      if (creep.memory.role !== 'defender') {
+        for (const hostile of roomCache?.hostiles || []) {
+          const radius = hostile.ranged ? 3 : hostile.melee ? 1 : 0;
+          const distance = Math.max(Math.abs(step.x - hostile.x),
+            Math.abs(step.y - hostile.y));
+          if (distance <= radius) return 'hostile';
+        }
+      }
+    }
+    return null;
   };
   const moveCreep = (creep, target, range = 1, movementOptions = {}) => {
     let position = target.pos || target;
@@ -213,8 +254,10 @@ const createMovementService = options => {
         creep.memory.navBlocker.count >= 2);
     const friendlyBlockerAhead = friendlyBlocker &&
       movementOptions.avoidFriendlyBlockers === true;
+    const corridorInvalidReason = getCorridorInvalidReason(creep);
     const recalculate = oscillating || creep.memory.navStuck >= 2 ||
-      friendlyBlockerAhead || persistentFriendlyBlocker;
+      friendlyBlockerAhead || persistentFriendlyBlocker ||
+      corridorInvalidReason !== null;
     let movementTarget = target;
     let roomWaypoint = false;
     if (targetRoomName !== creep.room.name && Game.map &&
@@ -294,6 +337,22 @@ const createMovementService = options => {
             applyBrigadeBypassCost(costs, x, y);
           }
         }
+        if (creep.memory.role !== 'defender') {
+          for (const hostile of roomCache ? roomCache.hostiles : []) {
+            const radius = hostile.ranged ? 3 : hostile.melee ? 1 : 0;
+            for (let dx = -radius; dx <= radius; dx++) {
+              for (let dy = -radius; dy <= radius; dy++) {
+                const x = hostile.x + dx;
+                const y = hostile.y + dy;
+                if (x < 0 || x > 49 || y < 0 || y > 49) continue;
+                if (dx === 0 && dy === 0) costs.set(x, y, 255);
+                else if (costs.get(x, y) < 255) {
+                  costs.set(x, y, Math.max(costs.get(x, y), 80));
+                }
+              }
+            }
+          }
+        }
         const reservations = movementReservations[roomName] || {};
         for (const key of Object.keys(reservations)) {
           if (reservations[key] === creep.name) continue;
@@ -334,7 +393,8 @@ const createMovementService = options => {
       reason: oscillating ? 'oscillation'
         : friendlyBlockerAhead ? 'friendly-blocker'
           : persistentFriendlyBlocker ? 'persistent-friendly-blocker'
-            : 'blocked',
+            : corridorInvalidReason ? `corridor-${corridorInvalidReason}`
+              : 'blocked',
       result,
       stuck: creep.memory.navStuck,
       goal,
