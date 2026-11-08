@@ -150,9 +150,78 @@ assert.strictEqual(defender.memory.navRecovery.stuck, 0,
 combatGame.time++;
 defender.memory._move = {path: 'combat-route'};
 delete defender.memory.navLastTick;
+combatService.getMovementRoomCache('W8N3').creeps = [{
+  name: defender.name, x: defender.pos.x, y: defender.pos.y,
+  loaded: false, stationary: false
+}];
 combatService.moveCreep(defender,
   {id: 'invader', pos: {roomName: 'W8N3', x: 20, y: 10}});
 assert.strictEqual(combatOptions.reusePath, 25,
   'ordinary movement must retain normal cached-route reuse');
 assert.strictEqual(combatOptions.ignoreCreeps, true);
 console.log('combat pursuit immediately replans around friendly cached-route blockers');
+
+// Ordinary traffic commits to a bounded corridor. A moving occupant gets one
+// observation to clear it; persistence on the next tick replans before impact.
+const corridorGame = {time: 300, creeps: {}, rooms: {}};
+const corridorBlocker = {name: 'carrier', pos: {x: 13, y: 10},
+  memory: {role: 'hauler'}, store: {getUsedCapacity: () => 100}};
+const corridorWalker = {name: 'worker', room: {name: 'W7N4'}, fatigue: 0,
+  pos: {x: 10, y: 10, getRangeTo: p => Math.max(Math.abs(p.x - 10),
+    Math.abs(p.y - 10))}, memory: {
+    role: 'builder', navCostVersion: 'brigade-bypass-v10',
+    _move: {path: 'retained-corridor'}
+  }, store: {getUsedCapacity: () => 50}};
+corridorWalker.room.memory = {};
+corridorWalker.room.find = type => type === 'my-creeps'
+  ? [corridorWalker, corridorBlocker] : [];
+corridorGame.rooms.W7N4 = corridorWalker.room;
+let corridorOptions;
+corridorWalker.moveTo = (target, opts) => { corridorOptions = opts; return 0; };
+const corridorService = createMovementService({Game: corridorGame,
+  Room: {deserializePath: () => [{x: 11, y: 10}, {x: 12, y: 10},
+    {x: 13, y: 10}, {x: 14, y: 10}, {x: 15, y: 10}, {x: 16, y: 10}]},
+  FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
+  FIND_MY_CREEPS: 'my-creeps', STRUCTURE_ROAD: 'road',
+  STRUCTURE_EXTENSION: 'extension', OK: 0, ERR_INVALID_TARGET: -7,
+  ERR_TIRED: -11});
+const corridorGoal = {id: 'build-site',
+  pos: {roomName: 'W7N4', x: 20, y: 10}};
+corridorService.moveCreep(corridorWalker, corridorGoal);
+assert.strictEqual(corridorOptions.reusePath, 50,
+  'one moving-creep observation retains the chosen route');
+assert.deepStrictEqual(corridorWalker.memory.navCorridor, {
+  goal: 'build-site', room: 'W7N4', tick: 300,
+  steps: [{x: 11, y: 10}, {x: 12, y: 10}, {x: 13, y: 10},
+    {x: 14, y: 10}, {x: 15, y: 10}]
+});
+assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
+
+corridorGame.time = 301;
+corridorService.moveCreep(corridorWalker, corridorGoal);
+assert.strictEqual(corridorOptions.reusePath, 0,
+  'a persistent look-ahead obstruction replans before collision');
+assert.strictEqual(corridorOptions.ignoreCreeps, false);
+assert.strictEqual(corridorWalker.memory.navRecovery.reason,
+  'persistent-friendly-blocker');
+
+corridorGame.time = 302;
+corridorWalker.memory._move = {path: 'new-goal-route'};
+delete corridorWalker.memory.navLastTick;
+corridorService.moveCreep(corridorWalker,
+  {id: 'repair-site', pos: corridorGoal.pos});
+assert.strictEqual(corridorOptions.reusePath, 50,
+  'a goal change clears prior blocker persistence evidence');
+assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
+assert.strictEqual(corridorWalker.memory.navCorridor.goal, 'repair-site');
+
+const cached = corridorService.getMovementRoomCache('W7N4');
+cached.creeps.find(other => other.name === 'carrier').stationary = true;
+corridorGame.time = 303;
+corridorWalker.memory._move = {path: 'stationary-route'};
+delete corridorWalker.memory.navLastTick;
+corridorService.moveCreep(corridorWalker,
+  {id: 'stationary-test', pos: corridorGoal.pos});
+assert.strictEqual(corridorOptions.reusePath, 0,
+  'a predictably stationary occupant invalidates the corridor immediately');
+console.log('durable route corridors distinguish transient and persistent blockers');

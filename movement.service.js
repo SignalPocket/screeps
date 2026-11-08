@@ -93,51 +93,54 @@ const createMovementService = options => {
     movementRoomCache[roomName] = cached;
     return cached;
   };
-  const reserveUpcomingRoute = creep => {
+  const getUpcomingRoute = (creep, horizon = 5) => {
     const path = creep.memory._move && creep.memory._move.path;
-    if (typeof path !== 'string' || path.length === 0) return;
+    if (typeof path !== 'string' || path.length === 0) return [];
     let decoded;
     try {
       decoded = Room.deserializePath(path);
     } catch (error) {
-      return;
+      return [];
     }
-    if (!Array.isArray(decoded) || decoded.length === 0) return;
+    if (!Array.isArray(decoded) || decoded.length === 0) return [];
     let start = decoded.findIndex(step =>
       step.x === creep.pos.x && step.y === creep.pos.y);
     if (start >= 0) start += 1;
     else start = decoded.findIndex(step =>
       Math.max(Math.abs(step.x - creep.pos.x),
         Math.abs(step.y - creep.pos.y)) <= 1);
-    if (start < 0) return;
+    return start < 0 ? [] : decoded.slice(start, start + horizon);
+  };
+  const reserveUpcomingRoute = creep => {
+    const upcoming = getUpcomingRoute(creep);
+    if (upcoming.length === 0) return;
     const roomName = creep.room.name;
     if (!movementReservations[roomName]) movementReservations[roomName] = {};
-    for (const step of decoded.slice(start, start + 5)) {
+    for (const step of upcoming) {
       movementReservations[roomName][`${step.x}:${step.y}`] = creep.name;
     }
   };
-  const hasFriendlyBlockerAhead = creep => {
-    const path = creep.memory._move && creep.memory._move.path;
-    if (typeof path !== 'string' || path.length === 0) return false;
-    let decoded;
-    try {
-      decoded = Room.deserializePath(path);
-    } catch (error) {
-      return false;
+  const getFriendlyBlockerAhead = (creep, horizon = 5) => {
+    const upcoming = getUpcomingRoute(creep, horizon);
+    if (upcoming.length === 0) return null;
+    const others = getMovementRoomCache(creep.room.name)?.creeps || [];
+    const occupied = new Map(others.filter(other => other.name !== creep.name)
+      .map(other => [`${other.x}:${other.y}`, other]));
+    for (const step of upcoming) {
+      const other = occupied.get(`${step.x}:${step.y}`);
+      if (other) return { ...other, key: `${step.x}:${step.y}` };
     }
-    if (!Array.isArray(decoded) || decoded.length === 0) return false;
-    let start = decoded.findIndex(step =>
-      step.x === creep.pos.x && step.y === creep.pos.y);
-    if (start >= 0) start += 1;
-    else start = decoded.findIndex(step =>
-      Math.max(Math.abs(step.x - creep.pos.x),
-        Math.abs(step.y - creep.pos.y)) <= 1);
-    if (start < 0) return false;
-    const occupied = new Set((getMovementRoomCache(creep.room.name)?.creeps || [])
-      .filter(other => other.name !== creep.name)
-      .map(other => `${other.x}:${other.y}`));
-    return decoded.slice(start, start + 3).some(step =>
-      occupied.has(`${step.x}:${step.y}`));
+    return null;
+  };
+  const rememberRouteCorridor = (creep, goal) => {
+    const steps = getUpcomingRoute(creep).map(step => ({ x: step.x, y: step.y }));
+    if (steps.length === 0) {
+      delete creep.memory.navCorridor;
+      return;
+    }
+    creep.memory.navCorridor = {
+      goal, room: creep.room.name, tick: Game.time, steps
+    };
   };
   const moveCreep = (creep, target, range = 1, movementOptions = {}) => {
     let position = target.pos || target;
@@ -172,6 +175,10 @@ const createMovementService = options => {
       creep.memory.navLastRoom === creep.room.name;
     const consecutiveMove = creep.memory.navLastTick === Game.time - 1;
     const sameGoal = creep.memory.navGoal === goal;
+    if (!sameGoal) {
+      delete creep.memory.navBlocker;
+      delete creep.memory.navCorridor;
+    }
     const oscillating = consecutiveMove &&
       creep.memory.navPrevX === creep.pos.x &&
       creep.memory.navPrevY === creep.pos.y &&
@@ -179,14 +186,35 @@ const createMovementService = options => {
     creep.memory.navStuck = (samePosition || oscillating) &&
       consecutiveMove && sameGoal
       ? (creep.memory.navStuck || 0) + 1 : 0;
-    // Combat pursuit cannot afford to spend two ticks proving that a friendly
-    // creep still occupies its cached lane. Look three steps ahead, discard
-    // that route immediately, and let the normal live-creep cost model choose
-    // a stable side path. Other traffic retains the ordinary stuck threshold.
-    const friendlyBlockerAhead = movementOptions.avoidFriendlyBlockers === true &&
-      hasFriendlyBlockerAhead(creep);
+    const friendlyBlocker = getFriendlyBlockerAhead(creep,
+      movementOptions.avoidFriendlyBlockers === true ? 3 : 5);
+    if (friendlyBlocker) {
+      const previous = creep.memory.navBlocker;
+      const consecutive = sameGoal && previous &&
+        previous.name === friendlyBlocker.name &&
+        previous.key === friendlyBlocker.key &&
+        previous.tick === Game.time - 1;
+      creep.memory.navBlocker = {
+        name: friendlyBlocker.name,
+        key: friendlyBlocker.key,
+        tick: Game.time,
+        count: consecutive ? previous.count + 1 : 1,
+        stationary: friendlyBlocker.stationary === true
+      };
+    } else {
+      delete creep.memory.navBlocker;
+    }
+    // A moving creep gets one observation to clear the corridor. A stationary
+    // worker or the same occupant seen on consecutive ticks is predictable
+    // enough to invalidate the retained route before this creep collides with
+    // it. Combat keeps the stronger immediate three-step response.
+    const persistentFriendlyBlocker = friendlyBlocker &&
+      (friendlyBlocker.stationary === true ||
+        creep.memory.navBlocker.count >= 2);
+    const friendlyBlockerAhead = friendlyBlocker &&
+      movementOptions.avoidFriendlyBlockers === true;
     const recalculate = oscillating || creep.memory.navStuck >= 2 ||
-      friendlyBlockerAhead;
+      friendlyBlockerAhead || persistentFriendlyBlocker;
     let movementTarget = target;
     let roomWaypoint = false;
     if (targetRoomName !== creep.room.name && Game.map &&
@@ -304,7 +332,9 @@ const createMovementService = options => {
     if (recalculate) creep.memory.navRecovery = {
       tick: Game.time,
       reason: oscillating ? 'oscillation'
-        : friendlyBlockerAhead ? 'friendly-blocker' : 'blocked',
+        : friendlyBlockerAhead ? 'friendly-blocker'
+          : persistentFriendlyBlocker ? 'persistent-friendly-blocker'
+            : 'blocked',
       result,
       stuck: creep.memory.navStuck,
       goal,
@@ -320,7 +350,10 @@ const createMovementService = options => {
     creep.memory.navLastY = creep.pos.y;
     creep.memory.navLastRoom = creep.room.name;
     creep.memory.navLastTick = Game.time;
-    if (result === OK) reserveUpcomingRoute(creep);
+    if (result === OK) {
+      rememberRouteCorridor(creep, goal);
+      reserveUpcomingRoute(creep);
+    }
     return result;
   };
   return { moveCreep, getMovementRoomCache, reserveUpcomingRoute,
