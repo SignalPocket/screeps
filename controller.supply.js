@@ -1,22 +1,18 @@
 'use strict';
+const { decodeExplicitUser } = typeof Game === 'undefined'
+  ? require('./diagnostic.database') : require('diagnostic.database');
 
 // Read-only evidence: resolved controller progress is measured; endpoint creep
 // state is context, never a reconstruction of every intervening action.
 const captureSupply = (database, user) => {
-  if (typeof user !== 'string' || !user) throw Error('Require explicit user');
-  const rows = name => database.collections?.find(c => c.name === name)?.data || [];
-  const env = rows('env')[0]?.data;
-  if (!Number.isSafeInteger(env?.gameTime)) throw Error('Missing authoritative tick');
-  if (typeof env[`memory:${user}`] !== 'string') throw Error('Missing user memory');
-  const memory = JSON.parse(env[`memory:${user}`]);
-  const objects = rows('rooms.objects');
+  const { tick, memory, objects } = decodeExplicitUser(database, user);
   const rooms = {};
   for (const controller of objects.filter(o => o.type === 'controller' && o.user === user)) {
     if (rooms[controller.room]) throw Error('Ambiguous room controller');
     const room = memory.rooms?.[controller.room] || {};
     const execution = memory.cpuPolicy?.execution;
-    const freshExecution = execution?.updated === env.gameTime - 1 ||
-      execution?.updated === env.gameTime;
+    const freshExecution = execution?.updated === tick - 1 ||
+      execution?.updated === tick;
     const deferred = new Set(freshExecution ?
       (execution.deferredCreeps || []).map(c => c.name) : []);
     const categories = {};
@@ -56,7 +52,7 @@ const captureSupply = (database, user) => {
       cpuEvidenceTick: freshExecution ? execution.updated : null
     };
   }
-  return { version: 1, user, tick: env.gameTime, rooms };
+  return { version: 1, user, tick, rooms };
 };
 
 const compareSupply = (before, after) => {

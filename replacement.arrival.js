@@ -1,4 +1,6 @@
 'use strict';
+const { decodeExplicitUser } = typeof Game === 'undefined'
+  ? require('./diagnostic.database') : require('diagnostic.database');
 
 // Conditional diagnostics only. No admission, staffing, routing or memory writes.
 const COST = { move: 50, work: 100, carry: 50, attack: 80,
@@ -94,16 +96,14 @@ const observedHaulTravel = (memory, m, tick) => {
 };
 
 const captureReplacements = (database, user, evidence = null) => {
-  if (typeof user !== 'string' || !user) throw Error('Require explicit user');
-  const rows = name => database.collections?.find(c => c.name === name)?.data || [];
-  const env = rows('env')[0]?.data;
-  if (!Number.isSafeInteger(env?.gameTime)) throw Error('Missing authoritative tick');
-  if (typeof env[`memory:${user}`] !== 'string') throw Error('Missing user memory');
-  const tick = env.gameTime;
-  if (evidence && (evidence.user !== user || evidence.tick !== tick))
-    throw Error('Travel/body evidence must match explicit user and current tick');
-  const memory = JSON.parse(env[`memory:${user}`]);
-  const objects = rows('rooms.objects');
+  const { tick, memory, objects } = decodeExplicitUser(database, user, {
+    beforeMemoryDecode: current => {
+      if (evidence && (evidence.user !== user ||
+          evidence.tick !== current.tick)) {
+        throw Error('Travel/body evidence must match explicit user and current tick');
+      }
+    }
+  });
   const creeps = objects.filter(o => o.type === 'creep' && o.user === user);
   const spawns = objects.filter(o => o.type === 'spawn' && o.user === user);
   if (new Set(creeps.map(c => c.name)).size !== creeps.length ||
