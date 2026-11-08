@@ -96,6 +96,7 @@ const { getPopulationLimit, getCapabilityTransitionAllowance,
   require('population.control');
 const { selectHealingTower, runTowers } = require('tower.control');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+  holdMeleeEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap, selectDefenderGarrison,
   createDefenseController } =
@@ -7570,6 +7571,7 @@ module.exports.loop = function () {
     const result = creep.room.name === targetRoomName
       ? creep.attack(target) : ERR_NOT_IN_RANGE;
     if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
+    else holdMeleeEngagement(creep, target, result, OK);
     creep.memory.task = 'defend';
     creep.memory.taskTarget = target.id;
     creep.memory.idleNow = false;
