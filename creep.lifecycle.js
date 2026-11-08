@@ -1,4 +1,6 @@
 'use strict';
+const { getSpawnQueueWait } = typeof Game === 'undefined'
+  ? require('./spawn.queue') : require('spawn.queue');
 
 const createCreepLifecycle = ({ Game, WORK, MOVE, CREEP_SPAWN_TIME }) => {
   const hasWorkParts = creep =>
@@ -35,9 +37,7 @@ const createCreepLifecycle = ({ Game, WORK, MOVE, CREEP_SPAWN_TIME }) => {
     const measuredTravel = Math.max(0, ...Object.values(observations &&
       observations.slots || {}).filter(value => Game.time - value.updated <= 1500)
       .map(value => value.outboundTicks || 0));
-    const queued = Object.values(Game.spawns || {}).filter(spawn =>
-      spawn.room.name === homeRoomName && spawn.spawning)
-      .reduce((longest, spawn) => Math.max(longest, spawn.spawning.remainingTime || 0), 0);
+    const queued = getSpawnQueueWait(Game.spawns, homeRoomName);
     return Math.max(creep.body.length, 6) * CREEP_SPAWN_TIME +
       150 + Math.max(roomTransitions * 75, measuredTravel) + queued;
   };
@@ -57,9 +57,7 @@ const createCreepLifecycle = ({ Game, WORK, MOVE, CREEP_SPAWN_TIME }) => {
     const weight = creep.body.filter(part => (typeof part === 'string' ? part : part.type) !== MOVE).length;
     const roadTicks = Math.max(1, Math.ceil(weight / (move * 2)));
     const travel = (path ? path.points.length : 25) * roadTicks;
-    const queued = Object.values(Game.spawns || {}).filter(spawn =>
-      spawn.room && spawn.room.name === homeName && spawn.spawning)
-      .reduce((longest, spawn) => Math.max(longest, spawn.spawning.remainingTime || 0), 0);
+    const queued = getSpawnQueueWait(Game.spawns, homeName);
     return base + travel + queued;
   };
   const hasLocalReplacementLife = creep => Boolean(creep &&

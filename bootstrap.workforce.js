@@ -1,4 +1,6 @@
 'use strict';
+const { getSpawnQueueWait } = typeof Game === 'undefined'
+  ? require('./spawn.queue') : require('spawn.queue');
 
 const isBootstrapWorker = (creep, roomName) => Boolean(creep &&
   creep.memory.role === 'builder' &&
@@ -13,9 +15,7 @@ const planBootstrapSpawn = ({ room, workers, Game, permitted,
       !['bootstrap', 'bootstrap-paused'].includes(plan.status)) return null;
   const route = Game.map.findRoute(room.name, target.name);
   const travel = (Array.isArray(route) ? route.length : 1) * 75;
-  const queued = Math.max(0, ...Object.values(Game.spawns).filter(spawn =>
-    spawn.room.name === room.name).map(spawn =>
-    spawn.spawning?.remainingTime || 0));
+  const queued = getSpawnQueueWait(Game.spawns, room.name);
   const crew = workers.filter(creep => isBootstrapWorker(creep, target.name));
   const viable = crew.filter(creep => creep.spawning || creep.ticksToLive >
     creep.body.length * spawnTime + travel + queued + 50);
