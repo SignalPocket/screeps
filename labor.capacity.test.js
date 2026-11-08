@@ -148,6 +148,35 @@ const lowerDemand=planLabor({...input,tick:301,buildRemaining:1000,
  previous:{...plan,builder:{desired:4,changed:100}},creeps:[body('one','builder',6,6),body('u','upgrader',10,2),body('r','refiller',0,4)]});
 assert.strictEqual(lowerDemand.builder.desired,1,'damping may retain living workers, never spawn phantom capacity from an old target');
 console.log('decreasing demand never spawns missing workers to preserve an obsolete target');
-const single=planLabor({...input,controllerDanger:true,controllerSpots:8,previous:{upgrader:{desired:2,changed:1}},creeps:[body('a','upgrader',3,3),body('b','upgrader',3,3)]});
-assert.strictEqual(single.upgrader.desired,1,'explicit one-upgrader policy takes effect immediately');
-assert(single.upgrader.workParts>=plan.upgrader.workParts,'capacity grows in the body instead of extra headcount');
+const repair1=body('repair1','builder',6,6);repair1.memory.builderMission='repair';
+const surplus=planLabor({...input,buildRemaining:50000,repairEnergy:15000,
+ storedEnergy:900000,controllerSpots:2,
+ creeps:[body('build1','builder',4,4),body('upgrade1','upgrader',4,4),body('refill1','refiller',0,4)]});
+assert(surplus.repairBudget>surplus.buildBudget && surplus.buildBudget>0,
+ 'substantial damage gets the larger funded share without stopping construction');
+assert(surplus.repairBuilder.desired>=2,'durable surplus turns funded damage into fixer capacity');
+assert(surplus.builder.desired>=2,'durable surplus turns funded sites into builder capacity');
+assert.strictEqual(surplus.upgrader.desired,2,
+ 'surplus upgrading may use every physical controller work spot');
+const constrained=planLabor({...input,buildRemaining:50000,repairEnergy:15000,
+ income:12,storedEnergy:3500,controllerSpots:2});
+assert(constrained.repairBuilder.desired<surplus.repairBuilder.desired);
+assert(constrained.builder.desired<surplus.builder.desired);
+assert.strictEqual(constrained.upgrader.desired,1,
+ 'insufficient delivery preserves one upgrader instead of multiplying bodies');
+const stableCreeps=[body('build1','builder',4,4),body('build2','builder',4,4),
+ repair1,body('repair2','builder',6,6),body('repair3','builder',6,6),
+ body('upgrade1','upgrader',4,4),body('upgrade2','upgrader',4,4),body('refill1','refiller',0,4)];
+stableCreeps.filter(c=>c.name.startsWith('repair')).forEach(c=>c.memory.builderMission='repair');
+const briefDip=planLabor({...input,tick:101,previous:surplus,buildRemaining:50000,
+ repairEnergy:15000,income:12,storedEnergy:3500,controllerSpots:2,creeps:stableCreeps});
+assert.strictEqual(briefDip.upgrader.desired,surplus.upgrader.desired,
+ 'one low-energy sample does not churn an active surplus crew');
+const scaledPolicy={roles:{builder:{min:0,desired:0,max:6},repairBuilder:{min:0,desired:0,max:6},
+ upgrader:{min:1,desired:1,max:2},refiller:{min:1,desired:1,max:1}},
+ remote:{minersMin:0,haulersMin:0,buildersMin:0,miners:0,haulers:0,builders:0},totals:{}};
+applyLaborPolicy(scaledPolicy,surplus);
+assert.strictEqual(scaledPolicy.roles.repairBuilder.desired,surplus.repairBuilder.desired);
+assert.strictEqual(scaledPolicy.roles.upgrader.desired,2,
+ 'the policy adapter preserves calculated multi-upgrader capacity');
+console.log('durable surplus scales fixers, builders and upgraders with bounded hysteresis');
