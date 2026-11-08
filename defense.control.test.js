@@ -4,6 +4,7 @@ const assert = require('assert');
 const { selectCombatTarget, needsEmergencyDefender,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap,
+  holdMeleeEngagement,
   selectDefenderGarrison, selectUndefendedThreat,
   createDefenseController } =
   require('./defense.control');
@@ -102,6 +103,21 @@ assert.strictEqual(selectUndefendedThreat([
 ], [{ spawning: false, room: { name: 'W1N2' },
   memory: { defenseTargetRoom: 'W1N2' } }], constants), uncoveredThreat,
 'a garrison in one outpost does not suppress a defender for another');
+
+const cancelled = [];
+const adjacentDefender = {
+  pos: { getRangeTo: () => 1 },
+  cancelOrder: order => cancelled.push(order)
+};
+assert.strictEqual(holdMeleeEngagement(adjacentDefender, {}, 0), true);
+assert.deepStrictEqual(cancelled, ['move'],
+  'a successful adjacent strike cancels stale same-tick movement');
+assert.strictEqual(holdMeleeEngagement({
+  pos: { getRangeTo: () => 2 },
+  cancelOrder: order => cancelled.push(order)
+}, {}, -9), false,
+  'an out-of-range defender keeps its later approach movement');
+assert.deepStrictEqual(cancelled, ['move']);
 
 const searched = {};
 class CostMatrix {

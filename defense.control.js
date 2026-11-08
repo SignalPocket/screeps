@@ -25,6 +25,16 @@ const needsEmergencyDefender = (hostileCount, defenderCoverage,
   spawnQueuedThisTick = false, requiredDefenders = 1) => hostileCount > 0 &&
     defenderCoverage < requiredDefenders && !spawnQueuedThisTick;
 
+// Defense runs after ordinary work. Cancel a movement intent already issued
+// earlier in the tick when melee has reached its target, or that stale intent
+// can pull the defender away immediately after a successful strike.
+const holdMeleeEngagement = (creep, target, attackResult, OK = 0) => {
+  if (attackResult !== OK || !target || creep.pos.getRangeTo(target) > 1 ||
+      typeof creep.cancelOrder !== 'function') return false;
+  creep.cancelOrder('move');
+  return true;
+};
+
 // A garrison in one outpost must not hide an uncovered hostile in another.
 const selectUndefendedThreat = (threats, defenders, constants) => {
   const coverage = new Map();
@@ -189,6 +199,7 @@ const createDefenseController = ({
 module.exports = {
   getDefenseTargets,
   selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+  holdMeleeEngagement,
   selectDefenderGarrison, collectFriendlyDamageEvents,
   updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap,
