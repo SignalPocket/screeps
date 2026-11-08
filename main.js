@@ -53,8 +53,9 @@ const { summarizeRoomHealth } = require('health.reporting');
 const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
-const { deriveCpuPolicy, selectFairExecutionCreeps,
-  summarizeCreepExecution } = require('cpu.policy');
+const { deriveCpuPolicy, shouldRenderPlanningVisuals,
+  selectFairExecutionCreeps, summarizeCreepExecution } =
+  require('cpu.policy');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
   require('creep.execution-order');
@@ -217,6 +218,9 @@ module.exports.loop = function () {
     (Game.time + roomScheduleOffset(room.name) + phase) % interval === 0;
   const scheduledGlobalTick = (interval, phase = 0) =>
     (Game.time + phase) % interval === 0;
+  const renderPlanningVisuals = shouldRenderPlanningVisuals({
+    tick: Game.time, allowSlowPlanning
+  });
   const { getRoomSources, getRoomStructures, getRoomStructuresByType,
     getRoomSites, getRoomSitesByType, getRoomCreeps,
     getRoomTombstones, getSlowWorkInventory } = createRoomIndex({ Game,
@@ -1442,7 +1446,7 @@ module.exports.loop = function () {
       LOOK_STRUCTURES,LOOK_CONSTRUCTION_SITES,OBSTACLE_OBJECT_TYPES,OK}).run();
   }
 
-  if (allowSlowPlanning) drawRoadNetwork({Game,RoomPosition});
+  if (renderPlanningVisuals) drawRoadNetwork({Game,RoomPosition});
 
   // Reopen failed mining lanes with bodies that already exist before asking
   // the spawn for another replacement. Only builder capacity above the local
@@ -1972,7 +1976,7 @@ module.exports.loop = function () {
     const controllerLevel = room.controller ? room.controller.level : 0;
     const roadBudget = getRoadBudget(room,
       [...paths, ...infrastructureServicePaths], controllerLevel);
-    if (allowSlowPlanning) {
+    if (renderPlanningVisuals) {
       drawInterRoomRoadLinks(room);
       drawRoadPlan(room, [
         ...paths,
@@ -1991,7 +1995,7 @@ module.exports.loop = function () {
       if (relatedRoomName === room.name) continue;
       const relatedRoom = Game.rooms[relatedRoomName];
       if (!relatedRoom) continue;
-      if (allowSlowPlanning) {
+      if (renderPlanningVisuals) {
         drawTravelPaths(relatedRoom, [
           ...getConvergedTravelPaths(getImportantTravelPaths(relatedRoom)),
           ...(interRoomTravelPaths[relatedRoomName] || [])
