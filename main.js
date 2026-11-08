@@ -44,6 +44,7 @@ const { ownedInfrastructureRooms, createOwnedRoomInfrastructure } =
   require('infrastructure.progression');
 const { createLandmarkFlags } = require('landmark.flags');
 const { createOutpostMaintenance } = require('outpost.maintenance');
+const { placeRemoteContainerSite } = require('remote.container-placement');
 const { createMemoryMaintenance } = require('memory.maintenance');
 const { createCreepNaming } = require('creep.naming');
 const { createColonyDashboard } = require('colony.dashboard');
@@ -5390,60 +5391,31 @@ module.exports.loop = function () {
               filter: site => site.structureType === STRUCTURE_CONTAINER
             })[0];
           if (!container && !containerSite) {
-            const terrain = creep.room.getTerrain();
-            const candidates = [];
-            for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-              for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-                if (x === source.pos.x && y === source.pos.y ||
-                    terrain.get(x, y) === TERRAIN_MASK_WALL ||
-                    creep.room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-                    creep.room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y).length > 0) {
-                  continue;
-                }
-                candidates.push({ x, y, range: creep.pos.getRangeTo(x, y) });
-              }
-            }
-            candidates.sort((a, b) => a.range - b.range);
-            for (const candidate of candidates) {
-              if (creep.room.createConstructionSite(candidate.x, candidate.y,
-                STRUCTURE_CONTAINER) === OK) {
-                creep.memory.remoteAction = 'Site';
-                containerSite = creep.room.lookForAt(LOOK_CONSTRUCTION_SITES,
-                  candidate.x, candidate.y)[0];
-                console.log(`[${Game.time}] ${creep.name} placed remote ` +
-                  `container at ${targetRoomName} ${candidate.x},${candidate.y}`);
-                break;
-              }
+            const placed = placeRemoteContainerSite({ room: creep.room,
+              source, creep, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+              LOOK_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+              OK });
+            if (placed) {
+              creep.memory.remoteAction = 'Site';
+              containerSite = placed.site;
+              console.log(`[${Game.time}] ${creep.name} placed remote ` +
+                `container at ${targetRoomName} ${placed.x},${placed.y}`);
             }
           }
           if (container && !containerSite && sourceContainers.length < 2 &&
               sourceContainers.every(candidate =>
                 candidate.store.getFreeCapacity(RESOURCE_ENERGY) === 0) &&
               creep.store[RESOURCE_ENERGY] > 0) {
-            const terrain = creep.room.getTerrain();
-            const candidates = [];
-            for (let x = source.pos.x - 1; x <= source.pos.x + 1; x++) {
-              for (let y = source.pos.y - 1; y <= source.pos.y + 1; y++) {
-                if (x === source.pos.x && y === source.pos.y ||
-                    terrain.get(x, y) === TERRAIN_MASK_WALL ||
-                    creep.room.lookForAt(LOOK_STRUCTURES, x, y).length > 0 ||
-                    creep.room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y)
-                      .length > 0) continue;
-                candidates.push({ x, y, range: creep.pos.getRangeTo(x, y) });
-              }
-            }
-            candidates.sort((a, b) => a.range - b.range);
-            for (const candidate of candidates) {
-              if (creep.room.createConstructionSite(candidate.x, candidate.y,
-                STRUCTURE_CONTAINER) === OK) {
-                creep.memory.remoteAction = 'Site';
-                containerSite = creep.room.lookForAt(LOOK_CONSTRUCTION_SITES,
-                  candidate.x, candidate.y)[0];
-                console.log(`[${Game.time}] ${creep.name} placed remote ` +
-                  `overflow container at ${targetRoomName} ` +
-                  `${candidate.x},${candidate.y}`);
-                break;
-              }
+            const placed = placeRemoteContainerSite({ room: creep.room,
+              source, creep, TERRAIN_MASK_WALL, LOOK_STRUCTURES,
+              LOOK_CONSTRUCTION_SITES, STRUCTURE_ROAD, STRUCTURE_CONTAINER,
+              OK });
+            if (placed) {
+              creep.memory.remoteAction = 'Site';
+              containerSite = placed.site;
+              console.log(`[${Game.time}] ${creep.name} placed remote ` +
+                `overflow container at ${targetRoomName} ` +
+                `${placed.x},${placed.y}`);
             }
           }
           if (!containerSite) {
