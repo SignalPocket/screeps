@@ -225,3 +225,71 @@ corridorService.moveCreep(corridorWalker,
 assert.strictEqual(corridorOptions.reusePath, 0,
   'a predictably stationary occupant invalidates the corridor immediately');
 console.log('durable route corridors distinguish transient and persistent blockers');
+
+const safetyScenario = ({role = 'builder', obstacle = false, wall = false,
+  hostile = false}) => {
+  const game = {time: 400, creeps: {}, rooms: {}};
+  const actor = {name: `${role}-safety`, room: {name: 'W6N6'}, fatigue: 0,
+    pos: {x: 10, y: 10, getRangeTo: p => Math.max(Math.abs(p.x - 10),
+      Math.abs(p.y - 10))}, memory: {
+      role, navCostVersion: 'brigade-bypass-v10',
+      _move: {path: 'safety-corridor'}
+    }, store: {getUsedCapacity: () => 0}};
+  const hostileCreep = {id: 'hostile', pos: {x: 14, y: 10},
+    getActiveBodyparts: part => part === 'ranged_attack' ? 1 : 0};
+  actor.room.memory = {};
+  actor.room.getTerrain = () => ({get: (x, y) =>
+    wall && x === 12 && y === 10 ? 1 : 0});
+  actor.room.find = type => {
+    if (type === 'structures') return obstacle
+      ? [{structureType: 'spawn', pos: {x: 12, y: 10}}] : [];
+    if (type === 'my-creeps') return [actor];
+    if (type === 'hostiles') return hostile ? [hostileCreep] : [];
+    return [];
+  };
+  game.rooms.W6N6 = actor.room;
+  let moveOptions;
+  const costValues = {};
+  actor.moveTo = (target, opts) => {
+    moveOptions = opts;
+    const costs = {get: (x, y) => costValues[`${x}:${y}`] || 0,
+      set: (x, y, value) => { costValues[`${x}:${y}`] = value; }};
+    opts.costCallback('W6N6', costs);
+    return 0;
+  };
+  const service = createMovementService({Game: game,
+    Room: {deserializePath: () => [{x: 11, y: 10}, {x: 12, y: 10},
+      {x: 13, y: 10}, {x: 14, y: 10}, {x: 15, y: 10}]},
+    FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
+    FIND_MY_CREEPS: 'my-creeps', FIND_HOSTILE_CREEPS: 'hostiles',
+    STRUCTURE_ROAD: 'road', STRUCTURE_EXTENSION: 'extension',
+    OBSTACLE_OBJECT_TYPES: ['spawn'], TERRAIN_MASK_WALL: 1,
+    ATTACK: 'attack', RANGED_ATTACK: 'ranged_attack',
+    OK: 0, ERR_INVALID_TARGET: -7, ERR_TIRED: -11});
+  service.moveCreep(actor,
+    {id: 'destination', pos: {roomName: 'W6N6', x: 20, y: 10}});
+  return {actor, moveOptions, costValues};
+};
+
+const structureSafety = safetyScenario({obstacle: true});
+assert.strictEqual(structureSafety.moveOptions.reusePath, 0);
+assert.strictEqual(structureSafety.actor.memory.navRecovery.reason,
+  'corridor-structure');
+const wallSafety = safetyScenario({wall: true});
+assert.strictEqual(wallSafety.moveOptions.reusePath, 0);
+assert.strictEqual(wallSafety.actor.memory.navRecovery.reason,
+  'corridor-wall');
+const hostileSafety = safetyScenario({hostile: true});
+assert.strictEqual(hostileSafety.moveOptions.reusePath, 0);
+assert.strictEqual(hostileSafety.actor.memory.navRecovery.reason,
+  'corridor-hostile');
+assert.strictEqual(hostileSafety.costValues['14:10'], 255,
+  'the hostile tile must be impassable to civilian replanning');
+assert.strictEqual(hostileSafety.costValues['11:10'], 80,
+  'a ranged threat radius must be strongly avoided');
+const defenderSafety = safetyScenario({role: 'defender', hostile: true});
+assert.strictEqual(defenderSafety.moveOptions.reusePath, 25,
+  'a defender must retain authority to approach its combat target');
+assert.strictEqual(defenderSafety.costValues['14:10'], undefined,
+  'civilian threat costs must not fence defenders away from combat');
+console.log('retained corridors invalidate walls, structures and civilian hostile exposure');
