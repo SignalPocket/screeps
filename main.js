@@ -2720,7 +2720,8 @@ module.exports.loop = function () {
   }
 
   for (const creep of creeps) {
-    if (creep.memory.role === 'defender' ||
+    if (creep.memory.staffingRetire || creep.memory.role === 'retire' ||
+        creep.memory.role === 'defender' ||
         creep.memory.role === 'remote-miner' ||
         creep.memory.role === 'remote-hauler' || creep.memory.role === 'remote-reserver' ||
         isOutpostBuilder(creep) || isExpansionBuilder(creep)) continue;
