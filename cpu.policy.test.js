@@ -2,7 +2,8 @@
 
 const assert = require('assert');
 const fs = require('fs');
-const { deriveCpuPolicy } = require('./cpu.policy');
+const { deriveCpuPolicy, shouldRenderPlanningVisuals } =
+  require('./cpu.policy');
 
 assert.deepStrictEqual(deriveCpuPolicy(undefined), {
   bucket: null, mode: 'normal', allowSlowPlanning: true,
@@ -21,6 +22,21 @@ assert.strictEqual(deriveCpuPolicy(1000).fairExecutionLimit, 1);
 assert.strictEqual(deriveCpuPolicy(3000).mode, 'normal');
 assert.strictEqual(deriveCpuPolicy(3000).executionCpuRatio, 0.8);
 assert.strictEqual(deriveCpuPolicy(3000).fairExecutionInterval, 5);
+assert.strictEqual(shouldRenderPlanningVisuals({
+  tick: 120, allowSlowPlanning: true
+}), true);
+assert.strictEqual(shouldRenderPlanningVisuals({
+  tick: 121, allowSlowPlanning: true
+}), false);
+assert.strictEqual(shouldRenderPlanningVisuals({
+  tick: 120, allowSlowPlanning: false
+}), false);
+assert.strictEqual(shouldRenderPlanningVisuals({
+  tick: 120, allowSlowPlanning: true, interval: 0
+}), false);
+assert.strictEqual(shouldRenderPlanningVisuals({
+  tick: 120.5, allowSlowPlanning: true
+}), false);
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
   /'claimer', 'remote-reserver', 'defender', 'retire',\s+CONTROLLER_BRIGADE_ROLE/,
   'claimers and remote reservers remain in the CPU-protected execution set');
@@ -30,5 +46,18 @@ assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
   /optionalReportingCpuAvailable\(\)/,
   'scheduled diagnostics respect the remaining normal-mode CPU reserve');
+const main = fs.readFileSync(require.resolve('./main'), 'utf8');
+assert.match(main,
+  /const renderPlanningVisuals = shouldRenderPlanningVisuals\(/,
+  'one cadence decision synchronizes every road-planning visual layer');
+assert.match(main,
+  /if \(renderPlanningVisuals\) drawRoadNetwork/,
+  'the shared network visual is cadence-gated');
+assert.match(main,
+  /if \(renderPlanningVisuals\) \{\s+drawInterRoomRoadLinks\(room\);\s+drawRoadPlan/,
+  'room and inter-room planning visuals share the same cadence gate');
+assert.match(main,
+  /if \(renderPlanningVisuals\) \{\s+drawTravelPaths\(relatedRoom/,
+  'related-room travel visuals share the same cadence gate');
 
 console.log('CPU policy scenarios passed');

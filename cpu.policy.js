@@ -26,6 +26,14 @@ const deriveCpuPolicy = bucket => {
   };
 };
 
+// Planning visuals are observational and may be expensive in rooms with a
+// mature road network. Keep their layers synchronized while leaving gameplay
+// planning and construction on their existing schedules.
+const shouldRenderPlanningVisuals = ({ tick, allowSlowPlanning,
+  interval = 10 }) => Boolean(allowSlowPlanning) &&
+  Number.isSafeInteger(tick) && Number.isSafeInteger(interval) &&
+  interval > 0 && tick % interval === 0;
+
 const selectFairExecutionCreeps = ({ creeps, previous, tick, mode,
   limit = 1, interval = 5, threshold = 10 }) => {
   if (mode === 'recovery' || limit <= 0 || interval <= 0 ||
@@ -72,5 +80,5 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
     deferred: creeps.length - executed, roles, deferredCreeps };
 };
 
-module.exports = { deriveCpuPolicy, selectFairExecutionCreeps,
-  summarizeCreepExecution };
+module.exports = { deriveCpuPolicy, shouldRenderPlanningVisuals,
+  selectFairExecutionCreeps, summarizeCreepExecution };
