@@ -76,4 +76,13 @@ const miner = factory.buildBody('miner', 800, { miningProduction: 10 });
 const batch = count(miner, 'work') * 2;
 const cycles = Math.floor(count(miner, 'carry') * 50 / batch);
 assert(batch * cycles / (cycles + 1) >= 10.5);
+
+const lastDitchDefender = factory.buildBody('defender', 140);
+assert.deepStrictEqual(lastDitchDefender, ['tough', 'attack', 'move'],
+  'the minimum emergency defender must remain spawnable');
+for (const energy of [190, 250, 450, 550, 700, 2000]) {
+  const defender = factory.buildBody('defender', energy);
+  assert(count(defender, 'move') >= defender.length - count(defender, 'move'),
+    `defender at ${energy} must cross plains without fatigue`);
+}
 console.log('body budget boundaries, minimum viability and alias parity passed');

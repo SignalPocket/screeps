@@ -7552,11 +7552,13 @@ module.exports.loop = function () {
       HEAL, RANGED_ATTACK, ATTACK, WORK, CLAIM
     });
     if (creep.room.name !== targetRoomName) {
-      moveCreep(creep, target, 1);
+      moveCreep(creep, target, 1, { avoidFriendlyBlockers: true });
     }
     const result = creep.room.name === targetRoomName
       ? creep.attack(target) : ERR_NOT_IN_RANGE;
-    if (result === ERR_NOT_IN_RANGE) moveCreep(creep, target, 1);
+    if (result === ERR_NOT_IN_RANGE) {
+      moveCreep(creep, target, 1, { avoidFriendlyBlockers: true });
+    }
     else holdMeleeEngagement(creep, target, result, OK);
     creep.memory.task = 'defend';
     creep.memory.taskTarget = target.id;

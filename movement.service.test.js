@@ -112,3 +112,47 @@ assert.strictEqual(walker.memory.navRecovery, recovery,
   'normal movement retains historical evidence with its original goal and tick');
 assert.strictEqual(walker.memory.navStuck, 0);
 console.log('bounded recovery evidence separates rejected searches and accepted intents');
+
+// A combat route must not wait for generic stuck detection when a friendly is
+// visibly occupying one of its next few cached steps.
+const combatGame = {time: 200, creeps: {}, rooms: {}};
+const blocker = {name: 'hauler', pos: {x: 11, y: 10}, memory: {role: 'hauler'},
+  store: {getUsedCapacity: () => 100}};
+const defender = {name: 'defender', room: {name: 'W8N3'}, fatigue: 0,
+  pos: {x: 10, y: 10, getRangeTo: p => Math.max(Math.abs(p.x - 10),
+    Math.abs(p.y - 10))}, memory: {
+    role: 'defender', navCostVersion: 'brigade-bypass-v10',
+    _move: {path: 'combat-route'}
+  }, store: {getUsedCapacity: () => 0}};
+defender.room.memory = {};
+defender.room.find = type => type === 'my-creeps' ? [defender, blocker] : [];
+combatGame.rooms.W8N3 = defender.room;
+let combatOptions;
+defender.moveTo = (target, opts) => { combatOptions = opts; return 0; };
+const combatService = createMovementService({Game: combatGame,
+  Room: {deserializePath: () => [{x: 11, y: 10}, {x: 12, y: 10},
+    {x: 13, y: 10}, {x: 14, y: 10}]}, FIND_STRUCTURES: 'structures',
+  FIND_MY_CONSTRUCTION_SITES: 'sites', FIND_MY_CREEPS: 'my-creeps',
+  STRUCTURE_ROAD: 'road', STRUCTURE_EXTENSION: 'extension',
+  OK: 0, ERR_INVALID_TARGET: -7, ERR_TIRED: -11});
+combatService.moveCreep(defender,
+  {id: 'invader', pos: {roomName: 'W8N3', x: 20, y: 10}}, 1,
+  {avoidFriendlyBlockers: true});
+assert.strictEqual(combatOptions.reusePath, 0,
+  'combat pursuit must immediately discard the obstructed cached path');
+assert.strictEqual(combatOptions.ignoreCreeps, false,
+  'combat replanning must route around current friendly positions');
+assert.strictEqual(defender.memory._move, undefined);
+assert.strictEqual(defender.memory.navRecovery.reason, 'friendly-blocker');
+assert.strictEqual(defender.memory.navRecovery.stuck, 0,
+  'visible obstruction does not need fabricated stuck ticks');
+
+combatGame.time++;
+defender.memory._move = {path: 'combat-route'};
+delete defender.memory.navLastTick;
+combatService.moveCreep(defender,
+  {id: 'invader', pos: {roomName: 'W8N3', x: 20, y: 10}});
+assert.strictEqual(combatOptions.reusePath, 25,
+  'ordinary movement must retain normal cached-route reuse');
+assert.strictEqual(combatOptions.ignoreCreeps, true);
+console.log('combat pursuit immediately replans around friendly cached-route blockers');
