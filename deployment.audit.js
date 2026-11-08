@@ -2,23 +2,20 @@
 
 // Read-only evidence of persisted uploads. A match is not proof of execution.
 const { createHash } = require('crypto');
+const { getCollectionRows } = require('./diagnostic.database');
 const fingerprint = source => createHash('sha256')
   .update(source.replace(/\r\n/g, '\n')).digest('hex');
 
 const auditDeployment = (database, localModules, { user, branch }) => {
   if (!user || !branch) throw Error('Explicit user and branch are required');
-  const collections = database.collections || [];
-  const records = collections.find(c => c.name === 'users.code');
-  const candidates = (records && records.data || [])
+  const candidates = getCollectionRows(database, 'users.code')
     .filter(record => record.user === user && record.branch === branch);
   // Never silently inspect another account or select the first duplicate.
   if (candidates.length !== 1) {
     return { status: candidates.length ? 'ambiguous-code' : 'missing-code',
       user, branch, candidates: candidates.length, executed: 'unverified' };
   }
-  const env = collections.find(c => c.name === 'env');
-  const tick = env && env.data && env.data[0] && env.data[0].data &&
-    env.data[0].data.gameTime;
+  const tick = getCollectionRows(database, 'env')[0]?.data?.gameTime;
   const uploaded = candidates[0].modules || {};
   const modules = Object.keys(localModules).sort().map(name => {
     const local = localModules[name];

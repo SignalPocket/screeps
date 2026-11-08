@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const reporting = require('./health.reporting');
+const diagnosticDatabase = require('./diagnostic.database');
 const source = fs.readFileSync(path.join(__dirname, 'health.query.js'), 'utf8');
 
 // Exercise the actual CLI without real credentials, disk writes or requests.
@@ -33,6 +34,7 @@ const run = ({ room, memories = {}, config, rawDatabase, missing = false } = {})
       if (name === 'path') return path;
       if (name === 'http' || name === 'https') return transport;
       if (name === './health.reporting') return reporting;
+      if (name === './diagnostic.database') return diagnosticDatabase;
       throw Error('Unexpected dependency ' + name);
     }
   });

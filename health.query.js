@@ -5,6 +5,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { summarizeRoomHealth } = require('./health.reporting');
+const { getCollectionRows } = require('./diagnostic.database');
 
 const roomName = process.argv[2] || 'W7N4';
 const localConfigPath = path.join(__dirname, 'screeps.local.json');
@@ -32,10 +33,7 @@ const printHealth = database => {
 const readLocalHealth = () => {
   if (!fs.existsSync(databasePath)) return null;
   const serverDatabase = JSON.parse(fs.readFileSync(databasePath, 'utf8'));
-  const environment = (serverDatabase.collections || [])
-    .find(collection => collection.name === 'env');
-  const data = environment && environment.data && environment.data[0] &&
-    environment.data[0].data || {};
+  const data = getCollectionRows(serverDatabase, 'env')[0]?.data || {};
   for (const [key, value] of Object.entries(data)) {
     if (!key.startsWith('memory:') || typeof value !== 'string') continue;
     let memory;
