@@ -1,6 +1,9 @@
 'use strict';
 const { isBrigadePlanActive } = typeof Game === 'undefined'
   ? require('./colony.operations') : require('colony.operations');
+const { getControllerStationCandidates } = typeof Game === 'undefined'
+  ? require('./controller.station-candidates')
+  : require('controller.station-candidates');
 
 // Assigns stable, unique standing tiles around each owned controller buffer.
 // Invalid saved stations are reconciled every tick instead of lingering in
@@ -36,7 +39,6 @@ const planControllerStations = ({ rooms, creeps, getRoomStructures,
       }
       continue;
     }
-    const terrain = room.getTerrain();
     const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
     const brigadeStops = new Set([
       ...(brigadePlan && Array.isArray(brigadePlan.segments)
@@ -45,26 +47,9 @@ const planControllerStations = ({ rooms, creeps, getRoomStructures,
       ...(brigadePlan && Array.isArray(brigadePlan.rightOfWay)
         ? brigadePlan.rightOfWay : [])
     ].map(point => `${point.x}:${point.y}`));
-    const candidates = [];
-    for (const buffer of buffers) {
-      for (let x = buffer.pos.x - 1; x <= buffer.pos.x + 1; x++) {
-        for (let y = buffer.pos.y - 1; y <= buffer.pos.y + 1; y++) {
-        if (x < 1 || x > 48 || y < 1 || y > 48 ||
-            x === buffer.pos.x && y === buffer.pos.y ||
-            brigadeStops.has(`${x}:${y}`) ||
-            terrain.get(x, y) === TERRAIN_MASK_WALL ||
-            room.controller.pos.getRangeTo(x, y) > 3) continue;
-        const blocked = room.lookForAt(LOOK_STRUCTURES, x, y)
-          .some(structure => OBSTACLE_OBJECT_TYPES.includes(
-            structure.structureType) &&
-            !(structure.structureType === STRUCTURE_RAMPART &&
-              (structure.my || structure.isPublic)));
-          if (!blocked) candidates.push({
-            x, y, roomName: room.name, bufferId: buffer.id, buffer
-          });
-        }
-      }
-    }
+    const candidates = getControllerStationCandidates({ room, buffers,
+      excluded: brigadeStops, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
+      LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES });
     candidates.sort((a, b) =>
       room.controller.pos.getRangeTo(a.x, a.y) -
         room.controller.pos.getRangeTo(b.x, b.y) ||
