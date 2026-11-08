@@ -123,15 +123,17 @@ const searched = {};
 class CostMatrix {
   constructor() { this.values = {}; }
   set(x, y, value) { this.values[`${x}:${y}`] = value; }
+  get(x, y) { return this.values[`${x}:${y}`] || 0; }
 }
 const room = {
   name: 'W1N1',
+  getTerrain: () => ({ get: () => 0 }),
   find: kind => kind === 'structures'
     ? [{ structureType: 'spawn', pos: { x: 8, y: 10 } }]
     : [{ name: 'civilian', pos: { x: 10, y: 10 } }]
 };
 const fleeingCreep = {
-  pos: { getRangeTo: target => Math.abs(target.pos.x - 10) },
+  pos: { x: 10, y: 10, getRangeTo: target => Math.abs(target.pos.x - 10) },
   room
 };
 const defense = createDefenseController({
@@ -163,5 +165,25 @@ assert.strictEqual(searched.costs.values['10:10'], 255,
 assert.strictEqual(defense.findFleeStep(fleeingCreep, [
   makeHostile('far', 20, {})
 ]), null, 'creeps keep their normal assignments outside threat range');
+
+const protector = { id: 'guard', name: 'guard', hits: 100, hitsMax: 100,
+ spawning: false, room, pos: { x: 7, y: 10 },
+ memory: { role: 'defender', defenseTargetRoom: room.name } };
+const protectedStep = defense.findFleeStep(fleeingCreep, [
+  makeHostile('threat', 13, {})
+], 5, [protector]);
+const gridRange = (a, b) => Math.max(Math.abs(a.x - b.x),
+  Math.abs(a.y - b.y));
+assert(gridRange(protectedStep, protector.pos) <
+  gridRange(fleeingCreep.pos, protector.pos),
+  'a safe retreat step closes distance to the assigned in-room defender');
+assert(gridRange(protectedStep, { x: 13, y: 10 }) >
+  gridRange(fleeingCreep.pos, { x: 13, y: 10 }),
+  'defender attraction never reduces hostile separation');
+const unsafeProtector = { ...protector, id: 'unsafe', pos: { x: 14, y: 10 } };
+assert.deepStrictEqual(defense.findFleeStep(fleeingCreep, [
+  makeHostile('threat', 13, {})
+], 5, [unsafeProtector]), { x: 9, y: 11, roomName: room.name },
+  'a defender behind the hostile cannot override the ordinary flee route');
 
 console.log('defenders prioritize dangerous hostiles and workers can flee safely');

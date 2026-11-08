@@ -7600,7 +7600,9 @@ module.exports.loop = function () {
       }
     }
     const hostiles = creep.room.find(FIND_HOSTILE_CREEPS);
-    const step = findFleeStep(creep, hostiles);
+    const roomDefenders = defenders.filter(defender =>
+      defender.room.name === creep.room.name);
+    const step = findFleeStep(creep, hostiles, 5, roomDefenders);
     if (!step) continue;
     waitAge.markEvaluated(creep, true);
     const threat = creep.pos.findClosestByRange(hostiles);
