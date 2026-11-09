@@ -115,6 +115,8 @@ const { CREEP_DEFINITION, createCreepCommand } = require('operator.creep');
 const { DEFEND_DEFINITION, createDefendCommand, planManualDefense,
   recordManualDefenseAuthority, getManualDefenseRequirement } =
   require('operator.defend');
+const { DIRECTIVES_DEFINITION, createDirectivesCommand,
+  reconcileDirectiveHistory } = require('operator.directives');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -178,6 +180,7 @@ const hasSaturatedLocalWorkGap = ({ storageUsed, storageCapacity,
  */
 module.exports.loop = function () {
   if (!Memory.creeps) Memory.creeps = {};
+  reconcileDirectiveHistory(Memory, Game.time);
   const operatorCommands = [{
     definition: COLONY_DEFINITION,
     run: createColonyCommand({ Game, Memory,
@@ -408,6 +411,10 @@ module.exports.loop = function () {
       getBodyType: getBodyTypeForAssignment, bodyPartCost: BODYPART_COST,
       findHostileCreeps: FIND_HOSTILE_CREEPS,
       findHostileStructures: FIND_HOSTILE_STRUCTURES })
+  });
+  operatorCommands.push({
+    definition: DIRECTIVES_DEFINITION,
+    run: createDirectivesCommand({ Game, Memory })
   });
   installOperatorConsole({ Game, globalObject: global,
     commands: operatorCommands });

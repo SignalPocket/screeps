@@ -256,7 +256,10 @@ const createDefendCommand = ({ Game, Memory, buildBody, getBodyType,
     const directive = {
       id, kind: 'defense', version: 1, homeRoom, targetRoom,
       reason: reason.trim(), requestedCount,
-      createdTick: tick, expiresTick: tick + duration
+      createdTick: tick, expiresTick: tick + duration,
+      creatorCommand: `ops.defend(${JSON.stringify(homeRoom)}, { target: ` +
+        `${JSON.stringify(targetRoom)}, count: ${requestedCount}, expires: ` +
+        `${duration}, reason: ${JSON.stringify(reason.trim())} })`
     };
     root.defense[id] = directive;
     return formatDirectiveResult({ directive, Game, Memory, room, workers,
