@@ -37,6 +37,21 @@ const shouldRenderPlanningVisuals = ({ tick, allowSlowPlanning,
 const shouldPrepareRoadPlan = ({ renderPlanningVisuals,
   roadPlacementDue }) => Boolean(renderPlanningVisuals || roadPlacementDue);
 
+// Once planning has already consumed the execution ceiling, the executor can
+// only guarantee its protected/minimum prefix. Do not prepare pickup work for
+// the rotating suffix that is certain to be deferred on this tick.
+const selectDispatchPlanningCreeps = ({ creeps, guaranteedCount, used,
+  ceiling }) => {
+  if (!Array.isArray(creeps)) return [];
+  const candidates = creeps.slice();
+  if (!Number.isFinite(used) || !Number.isFinite(ceiling) || used < ceiling) {
+    return candidates;
+  }
+  const count = Number.isSafeInteger(guaranteedCount)
+    ? Math.max(0, Math.min(candidates.length, guaranteedCount)) : 0;
+  return candidates.slice(0, count);
+};
+
 const selectFairExecutionCreeps = ({ creeps, previous, tick, mode,
   limit = 1, interval = 5, threshold = 10 }) => {
   if (mode === 'recovery' || limit <= 0 || interval <= 0 ||
@@ -84,5 +99,6 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
 };
 
 module.exports = { deriveCpuPolicy, shouldRenderPlanningVisuals,
-  shouldPrepareRoadPlan, selectFairExecutionCreeps,
+  shouldPrepareRoadPlan, selectDispatchPlanningCreeps,
+  selectFairExecutionCreeps,
   summarizeCreepExecution };
