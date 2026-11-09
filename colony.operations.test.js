@@ -6,6 +6,7 @@ const { applyOperationPolicy, finalizeOperationPolicy, retireCompletedPush,
   require('./colony.operations');
 const { applyScenarioPolicy } = require('./scenario.policy');
 const { applySpawnCapacityBudget } = require('./spawn.capacity');
+const { calculatePopulationTotals } = require('./population.totals');
 const { getReservationCoverage, planReservationSpawn, runReservation } = require('./remote.reservation');
 const { reconcileCreepAssignment } = require('./creep.assignment');
 const { authorizeSpawnAssignment } = require('./spawn.authority');
@@ -73,6 +74,31 @@ applyScenarioPolicy(policy,[{key:'assignment-instability'}]);finalizeOperationPo
 assert.strictEqual(policy.permissions.controllerBrigade,false,'assignment instability pauses brigade replacement');
 assert.strictEqual(policy.operations.upgradePush,true,'assignment instability does not dismantle the funded upgrade situation');
 assert.strictEqual(policy.roles.upgrader.desired,3,'the selected situation retains its upgrader count');
+room=makeRoom();room.memory.controllerBrigadePlan.segments=[];
+policy=makePolicy();policy.roles.upgrader={min:1,desired:2,max:2,reason:'base'};
+policy.remote.haulers=policy.remote.haulersMin;
+Game.rooms.W7N4=room;Game.cpu.bucket=9000;
+applyOperationPolicy(policy,room,Game);
+assert.strictEqual(policy.operations.upgradePush,false,
+  'an unavailable brigade preserves the ordinary upgrader target');
+assert.strictEqual(policy.remote.reserversMin,3,
+  'the ordinary policy still augments the remote schema with reservers');
+applySpawnCapacityBudget(policy,{source:24,upgrader:300,remoteMiner:18,
+ remoteHauler:36,remoteBuilder:27,remoteReserver:12},
+{lifetime:1600,utilization:0.5});
+assert.strictEqual(policy.roles.upgrader.desired,1,
+  'spawn capacity contracts the optional upgrader before finalization');
+applyScenarioPolicy(policy,[{key:'active-attack'}]);
+assert.deepStrictEqual(policy.totals,calculatePopulationTotals(policy),
+  'scenario totals match the contracted role and augmented remotes');
+finalizeOperationPolicy(policy,room,Game);
+assert.strictEqual(policy.roles.upgrader.desired,2,
+  'hard-stop finalization restores the ordinary role without changing policy');
+assert.strictEqual(policy.remote.reserversMin,0,
+  'hard-stop finalization suspends reservation staffing');
+assert.deepStrictEqual(policy.totals,{min:15,desired:16,max:16});
+assert.deepStrictEqual(policy.totals,calculatePopulationTotals(policy),
+  'final totals refresh after both role restoration and reserver suspension');
 room=makeRoom();policy=makePolicy();Game.rooms.W7N4=room;Game.cpu.bucket=500;
 applyOperationPolicy(policy,room,Game);assert.strictEqual(policy.operations.upgradePush,false);assert.strictEqual(policy.remote.reservers,0);
 Game.cpu.bucket=9000;room.storage.store.energy=4000;applyOperationPolicy(policy,room,Game);assert.strictEqual(policy.operations.upgradePush,false);
