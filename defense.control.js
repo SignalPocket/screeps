@@ -35,6 +35,70 @@ const holdMeleeEngagement = (creep, target, attackResult, OK = 0) => {
   return true;
 };
 
+const activePartCount = (creep, part) => part && creep &&
+  typeof creep.getActiveBodyparts === 'function'
+  ? creep.getActiveBodyparts(part) : 0;
+
+const combatPower = (creep, constants) =>
+  activePartCount(creep, constants.ATTACK) *
+    (constants.ATTACK_POWER || 30) +
+  activePartCount(creep, constants.RANGED_ATTACK) *
+    (constants.RANGED_ATTACK_POWER || 10);
+
+const healingPower = (creep, constants) =>
+  activePartCount(creep, constants.HEAL) *
+    (constants.HEAL_POWER || 12);
+
+// A melee defender should not blindly walk into a ranged formation it cannot
+// damage through. Keep isolated targets and genuinely supported engagements
+// aggressive, but hold outside ranged attack distance or retreat once an
+// overwhelming group can already fire on the defender.
+const evaluateDefenderEngagement = (defender, target, hostiles, defenders,
+  constants) => {
+  if (!defender || !target || !target.pos ||
+      typeof defender.pos.getRangeTo !== 'function') {
+    return { action: 'engage', reason: 'unknown-target' };
+  }
+  const targetRoom = target.pos.roomName ||
+    defender.room && defender.room.name;
+  const inTargetGroup = candidate => {
+    if (!candidate || !candidate.pos ||
+        typeof candidate.getActiveBodyparts !== 'function') return false;
+    if (targetRoom && candidate.pos.roomName &&
+        candidate.pos.roomName !== targetRoom) return false;
+    return target.pos.getRangeTo
+      ? target.pos.getRangeTo(candidate) <= 8
+      : Math.max(Math.abs(target.pos.x - candidate.pos.x),
+        Math.abs(target.pos.y - candidate.pos.y)) <= 8;
+  };
+  const hostileGroup = (hostiles || []).filter(inTargetGroup);
+  if (hostileGroup.length <= 1) {
+    return { action: 'engage', reason: 'isolated-target' };
+  }
+  const friendlyGroup = (defenders || []).filter(candidate =>
+    candidate && candidate.hits > 0 && !candidate.spawning &&
+    inTargetGroup(candidate));
+  if (!friendlyGroup.includes(defender)) friendlyGroup.push(defender);
+  const friendlyDamage = friendlyGroup.reduce((sum, creep) =>
+    sum + combatPower(creep, constants), 0);
+  const hostileDamage = hostileGroup.reduce((sum, creep) =>
+    sum + combatPower(creep, constants), 0);
+  const hostileHealing = hostileGroup.reduce((sum, creep) =>
+    sum + healingPower(creep, constants), 0);
+  const overwhelmed = hostileDamage > 0 &&
+    (hostileHealing >= Math.max(1, friendlyDamage) ||
+      hostileDamage > Math.max(1, friendlyDamage) * 1.5);
+  if (!overwhelmed) {
+    return { action: 'engage', reason: 'supported', friendlyDamage,
+      hostileDamage, hostileHealing };
+  }
+  const range = defender.pos.getRangeTo(target);
+  const health = defender.hits / Math.max(1, defender.hitsMax);
+  return { action: range <= 3 || health < 0.6 ? 'retreat' : 'hold',
+    reason: health < 0.6 ? 'damaged-overmatched' : 'overmatched-group',
+    friendlyDamage, hostileDamage, hostileHealing };
+};
+
 // A garrison in one outpost must not hide an uncovered hostile in another.
 const selectUndefendedThreat = (threats, defenders, constants) => {
   const coverage = new Map();
@@ -239,7 +303,7 @@ const createDefenseController = ({
 module.exports = {
   getDefenseTargets,
   selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
-  holdMeleeEngagement,
+  holdMeleeEngagement, evaluateDefenderEngagement,
   selectDefenderGarrison, collectFriendlyDamageEvents,
   updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap,

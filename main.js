@@ -104,7 +104,7 @@ const { getPopulationLimit, getCapabilityTransitionAllowance,
   require('population.control');
 const { selectHealingTower, runTowers } = require('tower.control');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
-  holdMeleeEngagement,
+  holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap, selectDefenderGarrison,
   createDefenseController } =
@@ -7573,6 +7573,27 @@ module.exports.loop = function () {
     if (creep.room.name !== targetRoomName) {
       moveCreep(creep, target, 1, { avoidFriendlyBlockers: true });
     }
+    const engagement = evaluateDefenderEngagement(creep, target, hostiles,
+      defenders, { HEAL, RANGED_ATTACK, ATTACK, ATTACK_POWER,
+        RANGED_ATTACK_POWER, HEAL_POWER });
+    if (creep.room.name === targetRoomName &&
+        engagement.action !== 'engage') {
+      if (typeof creep.cancelOrder === 'function') creep.cancelOrder('move');
+      if (engagement.action === 'retreat') {
+        const hostileCreeps = hostiles.filter(hostile =>
+          typeof hostile.getActiveBodyparts === 'function');
+        const step = findFleeStep(creep, hostileCreeps, 4);
+        if (step) moveCreep(creep, step, 0, { direct: true });
+      }
+      creep.memory.task = engagement.action === 'retreat'
+        ? 'defend-retreat' : 'defend-hold';
+      creep.memory.taskTarget = target.id;
+      creep.memory.defenseEngagementReason = engagement.reason;
+      creep.memory.idleNow = false;
+      creep.say(engagement.action === 'retreat' ? 'Fall back!' : 'Hold!');
+      continue;
+    }
+    delete creep.memory.defenseEngagementReason;
     const result = creep.room.name === targetRoomName
       ? creep.attack(target) : ERR_NOT_IN_RANGE;
     if (result === ERR_NOT_IN_RANGE) {
