@@ -111,6 +111,7 @@ const { ROOM_DEFINITION, createRoomCommand } = require('operator.room');
 const { ENERGY_DEFINITION, createEnergyCommand } = require('operator.energy');
 const { WORK_DEFINITION, createWorkCommand } = require('operator.work');
 const { SPAWN_DEFINITION, createSpawnCommand } = require('operator.spawn');
+const { CREEP_DEFINITION, createCreepCommand } = require('operator.creep');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -136,7 +137,8 @@ const { BODY_TYPES, getBodyTypeForAssignment, reconcileBodyTypes,
   deriveBodyTargets, buildBodyRoster, canBodyTypeRunLane } =
   require('body.archetypes');
 const { reconcileCreepAssignments } = require('creep.assignment');
-const { enforceAssignmentContract, contractForSpawnAssignment } =
+const { inferAssignmentKind, enforceAssignmentContract,
+  contractForSpawnAssignment } =
   require('assignment.contract');
 const { normalizeBuilderMemory, isBuilder, isLocalBuilder,
   isOutpostBuilder, isExpansionBuilder } = require('builder.roles');
@@ -388,6 +390,13 @@ module.exports.loop = function () {
       bodyPartCost: BODYPART_COST,
       getBodyType: getBodyTypeForAssignment,
       hasLocalReplacementLife, hasRemoteReplacementLife,
+      getLocalReplacementLead, getRemoteReplacementLead })
+  });
+  operatorCommands.push({
+    definition: CREEP_DEFINITION,
+    run: createCreepCommand({ Game, colonyCommand,
+      inferAssignmentKind, getBodyType: getBodyTypeForAssignment,
+      getTaskLabel: getTaskSpeech, canBodyTypeRunLane,
       getLocalReplacementLead, getRemoteReplacementLead })
   });
   installOperatorConsole({ Game, globalObject: global,
