@@ -80,6 +80,13 @@ assert(batch * cycles / (cycles + 1) >= 10.5);
 const lastDitchDefender = factory.buildBody('defender', 140);
 assert.deepStrictEqual(lastDitchDefender, ['tough', 'attack', 'move'],
   'the minimum emergency defender must remain spawnable');
+assert.deepStrictEqual(factory.buildBody('defender', 300, {
+  healerSupport: true
+}), ['heal', 'move'],
+'a fully mobile emergency healer is available at 300 energy');
+assert.deepStrictEqual(factory.buildBody('defender', 250, {
+  healerSupport: true
+}), null, 'healer support never silently degrades into a non-healer');
 for (const energy of [190, 250, 450, 550, 700, 2000]) {
   const defender = factory.buildBody('defender', energy);
   assert(count(defender, 'move') >= defender.length - count(defender, 'move'),

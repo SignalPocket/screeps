@@ -9,6 +9,8 @@ const { shouldRestoreBrigadeBeforeRemoteDefense } =
   require('./controller.brigade.readiness');
 const { shouldDeferRemoteDefenseForHomeRecovery } =
   require('./controller.brigade.readiness');
+const { getEmergencyDefenderRequirement } =
+  require('./controller.brigade.readiness');
 
 const jobs = {
   source: { min: 2, coverageCount: 2 },
@@ -111,6 +113,19 @@ assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
 assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
   homeRoom: 'W7N4', threatRoom: 'W7N4', maintenanceReady: false
 }), false, 'a home-room threat remains absolute during recovery');
+assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
+  homeRoom: 'W7N4', threatRoom: 'W8N3', maintenanceReady: false,
+  exposedFriendly: true
+}), false, 'a visible civilian in danger overrides home recovery');
+assert.strictEqual(shouldRestoreBrigadeBeforeRemoteDefense({
+  homeRoom: 'W7N4', threatRoom: 'W8N3', maintenanceReady: true,
+  activeCount: 3, targetCount: 17, exposedFriendly: true
+}), false, 'an exposed civilian overrides partial-brigade restoration');
+assert.strictEqual(getEmergencyDefenderRequirement(1, 1), 1);
+assert.strictEqual(getEmergencyDefenderRequirement(5, 1), 5,
+  'five visible enemies sustain five bounded defense slots');
+assert.strictEqual(getEmergencyDefenderRequirement(20, 1), 5,
+  'emergency combat coverage cannot consume the whole colony');
 
 const mainSource = require('fs').readFileSync(require.resolve('./main'),
   'utf8');

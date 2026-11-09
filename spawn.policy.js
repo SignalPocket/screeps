@@ -147,7 +147,8 @@ const createSpawnPolicy = ({
       workLimit: assignment.workLimit || assignment.requiredWork,
       carryParts: assignment.carryParts,
       miningProduction: assignment.miningProduction,
-      operationWork: assignment.operationWork };
+      operationWork: assignment.operationWork,
+      healerSupport: assignment.healerSupport };
     let candidateBody = chargeComplete
       ? buildBody(bodyType, bodyEnergy, bodyOptions) ||
         buildBody(bodyType, spawn.room.energyAvailable, bodyOptions)

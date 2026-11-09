@@ -93,7 +93,8 @@ const { CONTROLLER_BRIGADE_ROLE, CONTROLLER_BRIGADE_SIZE,
 const { evaluateControllerBrigadeReadiness,
   selectControllerBrigadeReplacementMode,
   shouldRestoreBrigadeBeforeRemoteDefense,
-  shouldDeferRemoteDefenseForHomeRecovery } =
+  shouldDeferRemoteDefenseForHomeRecovery,
+  getEmergencyDefenderRequirement } =
   require('controller.brigade.readiness');
 const { planSalvageAssignments } = require('salvage.dispatch');
 const { planSourceRecovery } = require('source.recovery');
@@ -363,11 +364,19 @@ module.exports.loop = function () {
       home && home.memory, tickCreeps);
     const threats = [...roomNames].flatMap(roomName => {
       const room = Game.rooms[roomName];
-      return room ? getDefenseTargets(room, FIND_HOSTILE_CREEPS,
-        FIND_HOSTILE_STRUCTURES).map(creep => ({
+      if (!room) return [];
+      const targets = getDefenseTargets(room, FIND_HOSTILE_CREEPS,
+        FIND_HOSTILE_STRUCTURES);
+      const exposedFriendly = tickCreeps.some(creep =>
+        creep.room.name === roomName && creep.memory.role !== 'defender');
+      const requiredDefenders = exposedFriendly
+        ? getEmergencyDefenderRequirement(targets.length,
+          room.memory.combatStatus.requiredDefenders)
+        : room.memory.combatStatus.requiredDefenders;
+      return targets.map(creep => ({
         creep, roomName, homeRoomName,
-        requiredDefenders: room.memory.combatStatus.requiredDefenders
-      })) : [];
+        requiredDefenders, exposedFriendly
+      }));
     });
     const objectiveThreats = home ? reconcileCombatObjectives({
       homeRoom: home, Game,
@@ -918,13 +927,15 @@ module.exports.loop = function () {
         activeCount: activeBrigadeCount,
         targetCount: savedBrigadePlan && savedBrigadePlan.segments
           ? savedBrigadePlan.segments.length : 0,
-        maintenanceReady: brigadeReadiness.maintenanceReady
+        maintenanceReady: brigadeReadiness.maintenanceReady,
+        exposedFriendly: target.exposedFriendly
       });
     const homeRecoveryBeforeRemoteDefense = target &&
       shouldDeferRemoteDefenseForHomeRecovery({
         homeRoom: room.name,
         threatRoom: target.roomName,
-        maintenanceReady: brigadeReadiness.maintenanceReady
+        maintenanceReady: brigadeReadiness.maintenanceReady,
+        exposedFriendly: target.exposedFriendly
       });
     if (target && needsEmergencyDefender(1, defenderCoverage, false,
         target.requiredDefenders) &&
@@ -936,6 +947,7 @@ module.exports.loop = function () {
         minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
         staffingCurrent: defenderCoverage,
         staffingTarget: target.requiredDefenders, minimumGap: true,
+        healerSupport: defenderCoverage % 2 === 1,
         defenseTargetRoom: target.roomName
       };
     }
@@ -1886,6 +1898,7 @@ module.exports.loop = function () {
           remoteBuilderSlot: assignment.remoteBuilderSlot,
           controllerRelaySlot: assignment.controllerRelaySlot,
           defenseTargetRoom: assignment.defenseTargetRoom,
+          healerSupport: assignment.healerSupport || undefined,
           recoveryLane: assignment.recoveryLane,
           expansionTarget: assignment.expansionTarget
         }
@@ -7572,6 +7585,37 @@ module.exports.loop = function () {
     });
     if (creep.room.name !== targetRoomName) {
       moveCreep(creep, target, 1, { avoidFriendlyBlockers: true });
+    }
+    if (creep.memory.healerSupport) {
+      if (creep.room.name !== targetRoomName) {
+        creep.memory.task = 'defend-support';
+        creep.memory.taskTarget = targetRoomName;
+        creep.memory.idleNow = false;
+        creep.say('Support');
+        continue;
+      }
+      const allies = creep.room.find(FIND_MY_CREEPS).filter(ally =>
+        ally.id !== creep.id);
+      const patient = allies.filter(ally => ally.hits < ally.hitsMax)
+        .sort((a, b) => a.hits / a.hitsMax - b.hits / b.hitsMax ||
+          creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b))[0];
+      if (patient && creep.pos.getRangeTo(patient) <= 1) creep.heal(patient);
+      else if (patient && creep.pos.getRangeTo(patient) <= 3) {
+        creep.rangedHeal(patient);
+      }
+      const anchor = defenders.filter(defender => defender.id !== creep.id &&
+        !defender.memory.healerSupport &&
+        defender.room.name === targetRoomName).sort((a, b) =>
+        creep.pos.getRangeTo(a) - creep.pos.getRangeTo(b) ||
+        String(a.id).localeCompare(String(b.id)))[0];
+      if (anchor) {
+        moveCreep(creep, anchor, 1, { avoidFriendlyBlockers: true });
+        creep.memory.task = 'defend-support';
+        creep.memory.taskTarget = patient && patient.id || anchor.id;
+        creep.memory.idleNow = false;
+        creep.say('Heal');
+        continue;
+      }
     }
     const engagement = evaluateDefenderEngagement(creep, target, hostiles,
       defenders, { HEAL, RANGED_ATTACK, ATTACK, ATTACK_POWER,
