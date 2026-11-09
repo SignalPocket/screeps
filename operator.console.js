@@ -8,7 +8,7 @@ const HELP_DEFINITION = Object.freeze({
   mode: 'read-only',
   writes: 'none',
   expires: null,
-  related: Object.freeze([])
+  related: Object.freeze(['colony'])
 });
 
 const normalizeDefinition = definition => {
