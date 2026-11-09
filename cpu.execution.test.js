@@ -13,8 +13,10 @@ assert.deepStrictEqual([first.available, first.executed, first.deferred], [4, 2,
 assert.deepStrictEqual(first.roles['remote-miner'],
   { available: 2, executed: 1, deferred: 1 });
 assert.deepStrictEqual(first.deferredCreeps, [
-  { name: 'remote2', role: 'remote-miner', room: 'W7N3', consecutiveTicks: 1 },
-  { name: 'builder', role: 'builder', room: 'W7N4', consecutiveTicks: 1 }
+  { name: 'remote2', role: 'remote-miner', room: 'W7N3',
+    reason: 'cpu-deferred', consecutiveTicks: 1 },
+  { name: 'builder', role: 'builder', room: 'W7N4',
+    reason: 'cpu-deferred', consecutiveTicks: 1 }
 ]);
 // Rotation visits remote2 but defers remote1: count by queue position, not name
 // or role. Only builder has lost two consecutive executor opportunities.
@@ -39,6 +41,28 @@ assert.deepStrictEqual(summarizeCreepExecution({ creeps: [], executedCount: 0,
 assert.strictEqual(JSON.stringify(creeps), input, 'telemetry never changes creep memory');
 assert.strictEqual(first.deferredCreeps[1].consecutiveTicks, 1,
   'later reports never mutate previous telemetry');
+const parked = creep('parked', 'builder');
+parked.memory.waitState = 'parked';
+const classified = summarizeCreepExecution({
+  creeps: [creeps[3], parked], executedCount: 0, tick: 105
+});
+assert.deepStrictEqual(classified.deferredCreeps.map(entry => entry.reason),
+  ['cpu-deferred', 'parked'],
+  'telemetry distinguishes CPU deferral from intentional parking');
+parked.memory.workJob = { lane: 'repair', targetId: 'road' };
+const resumed = summarizeCreepExecution({
+  creeps: [parked], executedCount: 0, tick: 106, previous: classified
+});
+assert.strictEqual(resumed.deferredCreeps[0].reason, 'cpu-deferred',
+  'a current durable repair job supersedes an old parked label');
+assert.strictEqual(resumed.deferredCreeps[0].consecutiveTicks, 1,
+  'durable work starts a fresh CPU-deferral streak');
+delete parked.memory.waitState;
+const activeAgain = summarizeCreepExecution({
+  creeps: [parked], executedCount: 0, tick: 107, previous: resumed
+});
+assert.strictEqual(activeAgain.deferredCreeps[0].consecutiveTicks, 2,
+  'the active durable assignment continues its CPU-deferral streak');
 const main = fs.readFileSync(require.resolve('./main'), 'utf8');
 assert(main.indexOf('const previousCpuExecution = Memory.cpuPolicy') <
   main.indexOf('Memory.cpuPolicy = { updated: Game.time'));
