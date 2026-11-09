@@ -103,5 +103,12 @@ assert.strictEqual((observationSource.match(/Object\.values\(Game\.rooms\)/g) ||
 assert.match(observationSource,
   /const tickCreeps = Object\.values\(Game\.creeps\);\s+const tickRooms = Object\.values\(Game\.rooms\);/,
   'stable per-tick rosters are created only after the emergency guard');
+const executableRosterSource = main.replace(
+  /\/\/  for\(const room of Object\.values\(Game\.rooms\) compatibility extraction marker/,
+  '');
+assert.strictEqual((executableRosterSource.match(/Object\.values\(Game\.creeps\)/g) || [])
+  .length, 1, 'the complete loop builds the per-tick creep roster once');
+assert.strictEqual((executableRosterSource.match(/Object\.values\(Game\.rooms\)/g) || [])
+  .length, 1, 'the complete loop builds the visible-room roster once');
 
 console.log('CPU policy scenarios passed');
