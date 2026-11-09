@@ -117,6 +117,7 @@ const { DEFEND_DEFINITION, createDefendCommand, planManualDefense,
   require('operator.defend');
 const { DIRECTIVES_DEFINITION, createDirectivesCommand,
   reconcileDirectiveHistory } = require('operator.directives');
+const { CANCEL_DEFINITION, createCancelCommand } = require('operator.cancel');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -412,9 +413,15 @@ module.exports.loop = function () {
       findHostileCreeps: FIND_HOSTILE_CREEPS,
       findHostileStructures: FIND_HOSTILE_STRUCTURES })
   });
+  const directivesCommand = createDirectivesCommand({ Game, Memory });
   operatorCommands.push({
     definition: DIRECTIVES_DEFINITION,
-    run: createDirectivesCommand({ Game, Memory })
+    run: directivesCommand
+  });
+  operatorCommands.push({
+    definition: CANCEL_DEFINITION,
+    run: createCancelCommand({ Game, Memory,
+      listDirectives: directivesCommand })
   });
   installOperatorConsole({ Game, globalObject: global,
     commands: operatorCommands });
