@@ -48,9 +48,9 @@ const repairCreeps = [
   creep('w7n4-fixer', 'W7N4', { workJob: { lane: 'repair' } }),
   creep('w8n4-fixer', 'W8N4', { workJob: { lane: 'repair' } }),
   creep('w7n3-fixer', 'W7N3', { builderScope: 'outpost',
-    remoteRepairTarget: 'w7n3-road' }),
+    repairWorkTarget: 'w7n3-road' }),
   creep('w8n3-fixer', 'W8N3', { builderScope: 'outpost',
-    remoteRepairTarget: 'w8n3-road' })
+    repairWorkTarget: 'w8n3-road' })
 ];
 const activeRepair = candidate => repairCreeps.includes(candidate);
 const repairPrevious = { updated: 199, deferredCreeps: repairCreeps.map(
@@ -131,28 +131,27 @@ assert(!integrationContext.visited.includes(other.name),
 assert.strictEqual(integrationContext.visited[protectedRoster.length],
   fair.name, 'the fair visit remains guaranteed after the survival roster');
 
-const durableLocal = executable('durable-local-fixer', 'builder', 'W7N4', {
-  builderScope: 'local', builderMission: 'repair', repairTarget: 'local-road',
-  workJob: { lane: 'repair', targetId: 'local-road', sourceId: 'local-store' }
-});
-const durableOutpost = executable('durable-outpost-fixer', 'builder', 'W7N3', {
+const durableOutpostW7 = executable('w7n3-outpost-fixer', 'builder', 'W7N3', {
   builderScope: 'outpost', remoteRoom: 'W7N3',
-  remoteRepairTarget: 'outpost-road'
+  repairWorkTarget: 'w7n3-road'
 });
-durableOutpost.store.energy = 25;
-const parkedRepair = executable('parked-fixer', 'builder', 'W8N4', {
-  builderScope: 'local', builderMission: 'repair', waitState: 'parked'
+durableOutpostW7.store.energy = 25;
+const durableOutpostW8 = executable('w8n3-outpost-fixer', 'builder', 'W8N3', {
+  builderScope: 'outpost', remoteRoom: 'W8N3',
+  repairWorkTarget: 'w8n3-road'
+});
+const parkedRepair = executable('parked-fixer', 'builder', 'W8N3', {
+  builderScope: 'outpost', remoteRoom: 'W8N3', waitState: 'parked'
 });
 parkedRepair.store.energy = 25;
-const completedRepair = executable('completed-fixer', 'builder', 'W8N4', {
-  builderScope: 'local', builderMission: 'repair',
-  workJob: { lane: 'repair', targetId: 'complete-road',
-    sourceId: 'local-store' }
+const completedRepair = executable('completed-fixer', 'builder', 'W8N3', {
+  builderScope: 'outpost', remoteRoom: 'W8N3',
+  repairWorkTarget: 'complete-road'
 });
 const repairTargets = {
-  'local-road': { hits: 100, hitsMax: 1000, room: { name: 'W7N4' } },
-  'outpost-road': { hits: 100, hitsMax: 1000, room: { name: 'W7N3' } },
-  'complete-road': { hits: 1000, hitsMax: 1000, room: { name: 'W8N4' } }
+  'w7n3-road': { hits: 100, hitsMax: 1000, room: { name: 'W7N3' } },
+  'w8n3-road': { hits: 100, hitsMax: 1000, room: { name: 'W8N3' } },
+  'complete-road': { hits: 1000, hitsMax: 1000, room: { name: 'W8N3' } }
 };
 const durableContext = {
   Game: { time: 101, cpu: { limit: 100, getUsed: () => 100 },
@@ -161,12 +160,12 @@ const durableContext = {
   CONTROLLER_BRIGADE_ROLE: 'controller-relay', RESOURCE_ENERGY: 'energy',
   selectFairExecutionCreeps,
   previousCpuExecution: { updated: 100, deferredCreeps:
-    [durableLocal, durableOutpost, parkedRepair, completedRepair]
+    [durableOutpostW7, durableOutpostW8, parkedRepair, completedRepair]
       .map(candidate => ({
       name: candidate.name, reason: candidate === parkedRepair
         ? 'parked' : 'cpu-deferred', consecutiveTicks: 1
     })) },
-  executionOrderRecords: [durableLocal, durableOutpost, parkedRepair,
+  executionOrderRecords: [durableOutpostW7, durableOutpostW8, parkedRepair,
     completedRepair, ...protectedRoster].map(creep => ({ creep })),
   sortExecutionRecords: records => records.slice(), visited: []
 };
@@ -178,8 +177,8 @@ assert(protectedRoster.every((creep, index) =>
   'every survival visit precedes durable repair continuations');
 assert.deepStrictEqual(durableContext.visited.slice(protectedRoster.length,
   protectedRoster.length + 2),
-  ['durable-outpost-fixer', 'durable-local-fixer'],
-  'move, load and repair continuations remain guaranteed past the ceiling');
+  ['w7n3-outpost-fixer', 'w8n3-outpost-fixer'],
+  'W7N3 and W8N3 live repair continuations remain guaranteed past the ceiling');
 assert(!durableContext.visited.includes(parkedRepair.name),
   'intentional conservation parking never consumes repair fairness');
 assert(!durableContext.visited.includes(completedRepair.name),

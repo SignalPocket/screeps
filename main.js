@@ -4118,7 +4118,7 @@ module.exports.loop = function () {
         memory.energyBudgetHeld || memory.staffingRetire || creep.spawning ||
         !creep.store) return false;
     const outpost = memory.builderScope === 'outpost';
-    const targetId = outpost ? memory.remoteRepairTarget
+    const targetId = outpost ? memory.repairWorkTarget
       : memory.workJob && memory.workJob.lane === 'repair'
         ? memory.workJob.targetId : null;
     const target = targetId && Game.getObjectById(targetId);

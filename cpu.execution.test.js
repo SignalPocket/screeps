@@ -49,12 +49,13 @@ const classified = summarizeCreepExecution({
 assert.deepStrictEqual(classified.deferredCreeps.map(entry => entry.reason),
   ['cpu-deferred', 'parked'],
   'telemetry distinguishes CPU deferral from intentional parking');
-parked.memory.workJob = { lane: 'repair', targetId: 'road' };
+parked.memory.builderScope = 'outpost';
+parked.memory.repairWorkTarget = 'road';
 const resumed = summarizeCreepExecution({
   creeps: [parked], executedCount: 0, tick: 106, previous: classified
 });
 assert.strictEqual(resumed.deferredCreeps[0].reason, 'cpu-deferred',
-  'a current durable repair job supersedes an old parked label');
+  'the live outpost repair contract supersedes an old parked label');
 assert.strictEqual(resumed.deferredCreeps[0].consecutiveTicks, 1,
   'durable work starts a fresh CPU-deferral streak');
 delete parked.memory.waitState;

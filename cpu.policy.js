@@ -117,7 +117,7 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
       const durableRepair = memory.role === 'builder' &&
         (memory.workJob && memory.workJob.lane === 'repair' &&
           memory.workJob.targetId || memory.builderScope === 'outpost' &&
-          memory.remoteRepairTarget);
+          memory.repairWorkTarget);
       const reason = memory.energyBudgetHeld ||
         memory.waitState === 'parked' && !durableRepair
         ? 'parked' : 'cpu-deferred';
