@@ -65,6 +65,9 @@ assert.strictEqual(DEFEND_DEFINITION.expires, MAX_DURATION);
   assert.strictEqual(result.directive.sizeTier, 'standard');
   assert.strictEqual(result.directive.cost, 390);
   assert.strictEqual(result.directive.expectedSpawn, 'Spawn1');
+  assert.strictEqual(Memory.operatorDirectives.defense['def-100-1']
+    .creatorCommand,
+  'ops.defend("W7N4", { target: "W8N3", count: 2, expires: 300, reason: "manual emergency" })');
   assert.strictEqual(result.threat.visible, false);
   assert.strictEqual(result.threat.hostileCreeps, null);
   assert.strictEqual(result.threat.fighting, true);
