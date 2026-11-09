@@ -3,8 +3,12 @@
 const PLANNING_STAGES = [
   'observation', 'workforce', 'infrastructure', 'dispatch'
 ];
+const OBSERVATION_STAGES = [
+  'combat', 'roomPolicy', 'remotePlanning'
+];
 const STAGES = [
-  'planning', 'creeps', 'defense', 'reporting', ...PLANNING_STAGES
+  'planning', 'creeps', 'defense', 'reporting', ...PLANNING_STAGES,
+  ...OBSERVATION_STAGES
 ];
 
 const finiteSample = value => Number.isFinite(value) && value >= 0
@@ -95,5 +99,5 @@ const updateCpuPerformanceWindow = ({ performance, tick, total, stages,
   return next;
 };
 
-module.exports = { STAGES, PLANNING_STAGES, createCpuStageRecorder,
-  updateCpuPerformanceWindow };
+module.exports = { STAGES, PLANNING_STAGES, OBSERVATION_STAGES,
+  createCpuStageRecorder, updateCpuPerformanceWindow };
