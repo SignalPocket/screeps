@@ -35,6 +35,7 @@ const createMovementService = options => {
     OBSTACLE_OBJECT_TYPES, TERRAIN_MASK_WALL, ATTACK, RANGED_ATTACK,
     OK, ERR_INVALID_TARGET, ERR_TIRED } = options;
   const movementReservations = {};
+  const movementReservationEntries = {};
   const movementRoomCache = {};
   const upcomingRouteCache = new Map();
   const getMovementRoomCache = roomName => {
@@ -154,8 +155,15 @@ const createMovementService = options => {
     if (upcoming.length === 0) return;
     const roomName = creep.room.name;
     if (!movementReservations[roomName]) movementReservations[roomName] = {};
+    if (!movementReservationEntries[roomName]) {
+      movementReservationEntries[roomName] = new Map();
+    }
     for (const step of upcoming) {
-      movementReservations[roomName][`${step.x}:${step.y}`] = creep.name;
+      const key = `${step.x}:${step.y}`;
+      movementReservations[roomName][key] = creep.name;
+      movementReservationEntries[roomName].set(key, {
+        x: step.x, y: step.y, owner: creep.name
+      });
     }
   };
   const getFriendlyOccupancy = roomCache => {
@@ -388,12 +396,12 @@ const createMovementService = options => {
             }
           }
         }
-        const reservations = movementReservations[roomName] || {};
-        for (const key of Object.keys(reservations)) {
-          if (reservations[key] === creep.name) continue;
-          const [x, y] = key.split(':').map(Number);
+        const reservations = movementReservationEntries[roomName] || [];
+        for (const { x, y, owner: reservationOwner } of
+          reservations.values()) {
+          if (reservationOwner === creep.name) continue;
           const currentCost = costs.get(x, y);
-          const owner = Game.creeps && Game.creeps[reservations[key]];
+          const owner = Game.creeps && Game.creeps[reservationOwner];
           if (owner && owner.memory.role === 'controller-relay' &&
               creep.memory.role !== 'controller-relay') {
             costs.set(x, y, 255);
@@ -452,7 +460,7 @@ const createMovementService = options => {
     return result;
   };
   return { moveCreep, getMovementRoomCache, reserveUpcomingRoute,
-    movementReservations };
+    movementReservations, movementReservationEntries };
 };
 
 module.exports = { createMovementService, applyBrigadeBypassCost,
