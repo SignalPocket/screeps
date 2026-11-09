@@ -72,6 +72,7 @@ const createSpawnPolicy = ({
           : hasWorkParts(creep)));
     const needsWorker = Boolean(assignment && !hasCapableIdleWorker &&
       (workers.length < workerLimit || assignment.emergencyDefense ||
+        assignment.manualDefense ||
         assignment.emergencyPresence));
     if (!needsWorker) {
       clearSpawnWait(spawn.room);
