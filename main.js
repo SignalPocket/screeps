@@ -104,6 +104,7 @@ const { getPopulationLimit, getCapabilityTransitionAllowance,
   getRequiredPopulationTransitionAllowance, selectRetirementCandidates } =
   require('population.control');
 const { selectHealingTower, runTowers } = require('tower.control');
+const { installOperatorConsole } = require('operator.console');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -166,6 +167,7 @@ const hasSaturatedLocalWorkGap = ({ storageUsed, storageCapacity,
  */
 module.exports.loop = function () {
   if (!Memory.creeps) Memory.creeps = {};
+  installOperatorConsole({ Game, globalObject: global });
   const cpuStart = Game.cpu && typeof Game.cpu.getUsed === 'function'
     ? Game.cpu.getUsed() : null;
   const cpuStages = createCpuStageRecorder(cpuStart === null ? null
