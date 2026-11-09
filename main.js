@@ -429,7 +429,8 @@ module.exports.loop = function () {
       `room ${maintenanceStats.staleRoomState}`);
   }
   const { getRoomSituation } = createRoomSituation({
-    Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources, buildBody,
+    Game, creeps: tickCreeps, derivePopulationPolicy, deriveRoomStatus,
+    getRoomSources, buildBody,
     getRoomStructures, getSlowWorkInventory, getSourceBodyWorkCapacity,
     getSourceSpotCount, getSource2TunnelSite, hasLocalReplacementLife,
     isMaintainedRoad: (room, structure) =>

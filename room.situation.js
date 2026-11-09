@@ -26,6 +26,11 @@ const { getControllerStationCandidates } = typeof Game === 'undefined'
 const { applyOperationPolicy } = typeof Game === 'undefined'
   ? require('./colony.operations') : require('colony.operations');
 
+const countCurrentUpgraders = (creeps, roomName,
+  hasLocalReplacementLife) => creeps.filter(creep =>
+  creep.memory.home === roomName && creep.memory.role === 'upgrader' &&
+  (creep.spawning || hasLocalReplacementLife(creep))).length;
+
 const createRoomSituation = dependencies => {
   const {
     Game, derivePopulationPolicy, deriveRoomStatus, getRoomSources, buildBody=null,
@@ -40,6 +45,8 @@ const createRoomSituation = dependencies => {
     FIND_MY_CONSTRUCTION_SITES, FIND_SOURCES, FIND_MY_SPAWNS,
     ENERGY_REGEN_TIME, HARVEST_POWER, CREEP_SPAWN_TIME = 3
   } = dependencies;
+  const tickCreeps = Array.isArray(dependencies.creeps)
+    ? dependencies.creeps : Object.values(Game.creeps);
   const cache = {};
 
   /**
@@ -90,9 +97,8 @@ const createRoomSituation = dependencies => {
     const controllerWorkSpots = getControllerStationCandidates({ room,
       buffers: controllerContainers, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
       LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES }).length;
-    const currentUpgraders = Object.values(Game.creeps).filter(creep =>
-      creep.memory.home === room.name && creep.memory.role === 'upgrader' &&
-      (creep.spawning || hasLocalReplacementLife(creep))).length;
+    const currentUpgraders = countCurrentUpgraders(tickCreeps, room.name,
+      hasLocalReplacementLife);
     const droppedEnergy = room.find(FIND_DROPPED_RESOURCES, {
       filter: resource => resource.resourceType === RESOURCE_ENERGY
     }).reduce((total, resource) => total + resource.amount, 0);
@@ -446,4 +452,4 @@ const createRoomSituation = dependencies => {
   return { getRoomSituation };
 };
 
-module.exports = { createRoomSituation };
+module.exports = { createRoomSituation, countCurrentUpgraders };
