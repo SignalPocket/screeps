@@ -54,4 +54,18 @@ assert.strictEqual([one,two,three].filter(candidate=>candidate.memory.role==='up
 assert.strictEqual(four.memory.role,'builder');
 assert.deepStrictEqual(limitRoster.map(candidate=>candidate.name),limitOrder,
  'upgrader enforcement does not mutate supplied roster order');
+const incumbent=creep('incumbent',3),fundedArrival=creep('funded-arrival',5);
+incumbent.pos={getRangeTo:()=>1};fundedArrival.pos={getRangeTo:()=>8};
+enforceUpgraderLimit({Game:{rooms:{},creeps:{}},rooms:[limitRoom],
+ creeps:[incumbent,fundedArrival],isRoadMobile:()=>true,getLimit:()=>2});
+assert.strictEqual(incumbent.memory.role,'upgrader');
+assert.strictEqual(fundedArrival.memory.role,'upgrader',
+ 'one incumbent plus the newly funded second upgrader fill the shared desired roster');
+const mainSource=require('fs').readFileSync(require.resolve('./main'),'utf8');
+const finalizeIndex=mainSource.indexOf('    publishRoomScenarios(room, situation,');
+const enforcementIndex=mainSource.indexOf('  enforceUpgraderLimit({');
+const spawnSelectionIndex=mainSource.indexOf('  for (const spawn of spawnOrder) {');
+assert(finalizeIndex>=0&&finalizeIndex<enforcementIndex&&
+ enforcementIndex<spawnSelectionIndex,
+ 'upgrader cleanup and spawn selection consume the same finalized scenario policy');
 console.log('one strongest upgrader retained; mobile surplus works and immobile surplus recycles');

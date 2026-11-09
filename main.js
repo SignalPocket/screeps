@@ -768,9 +768,6 @@ module.exports.loop = function () {
     creeps:tickCreeps});
   reconcileControllerRelief({Game,isRoadMobile:hasRoadMobility,
     creeps:tickCreeps});
-  enforceUpgraderLimit({Game,isRoadMobile:hasRoadMobility,
-    getLimit:room=>getRoomSituation(room).policy.roles.upgrader.desired,
-    creeps:tickCreeps,rooms:tickRooms});
   dispatchEmergencyRepairs({Game,getStructures:getRoomStructures,
     isRoadMobile:hasRoadMobility,resource:RESOURCE_ENERGY,
     creeps:tickCreeps,rooms:tickRooms});
@@ -1703,6 +1700,13 @@ module.exports.loop = function () {
       spawnOrder.push(spawns[(start + offset) % spawns.length]);
     }
   }
+  // Scenario policy finalizes the authoritative room roster above. Cleanup
+  // and spawning must consume that same target in this tick; enforcing an
+  // earlier draft target can recycle the exact upgrader the spawn planner
+  // admits moments later.
+  enforceUpgraderLimit({Game,isRoadMobile:hasRoadMobility,
+    getLimit:room=>getRoomSituation(room).policy.roles.upgrader.desired,
+    creeps:tickCreeps,rooms:tickRooms});
   for (const spawn of spawnOrder) {
     if (spawn.spawning) {
       spawnAttempts[spawn.room.name].push(describeSpawnAttempt({
