@@ -158,15 +158,29 @@ const createMovementService = options => {
       movementReservations[roomName][`${step.x}:${step.y}`] = creep.name;
     }
   };
+  const getFriendlyOccupancy = roomCache => {
+    if (!roomCache) return null;
+    if (roomCache.creepsByPositionSource === roomCache.creeps &&
+        roomCache.creepsByPosition instanceof Map) {
+      return roomCache.creepsByPosition;
+    }
+    const occupied = new Map();
+    for (const other of roomCache.creeps || []) {
+      occupied.set(`${other.x}:${other.y}`, other);
+    }
+    roomCache.creepsByPositionSource = roomCache.creeps;
+    roomCache.creepsByPosition = occupied;
+    return occupied;
+  };
   const getFriendlyBlockerAhead = (creep, horizon = 5) => {
     const upcoming = getUpcomingRoute(creep, horizon);
     if (upcoming.length === 0) return null;
-    const others = getMovementRoomCache(creep.room.name)?.creeps || [];
-    const occupied = new Map(others.filter(other => other.name !== creep.name)
-      .map(other => [`${other.x}:${other.y}`, other]));
+    const occupied = getFriendlyOccupancy(
+      getMovementRoomCache(creep.room.name));
     for (const step of upcoming) {
-      const other = occupied.get(`${step.x}:${step.y}`);
-      if (other) return { ...other, key: `${step.x}:${step.y}` };
+      const key = `${step.x}:${step.y}`;
+      const other = occupied && occupied.get(key);
+      if (other && other.name !== creep.name) return { ...other, key };
     }
     return null;
   };

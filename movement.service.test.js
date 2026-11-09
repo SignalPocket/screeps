@@ -146,6 +146,9 @@ assert.strictEqual(defender.memory._move, undefined);
 assert.strictEqual(defender.memory.navRecovery.reason, 'friendly-blocker');
 assert.strictEqual(defender.memory.navRecovery.stuck, 0,
   'visible obstruction does not need fabricated stuck ticks');
+const firstCombatOccupancy = combatService.getMovementRoomCache('W8N3')
+  .creepsByPosition;
+assert.strictEqual(firstCombatOccupancy.get('11:10').name, blocker.name);
 
 combatGame.time++;
 defender.memory._move = {path: 'combat-route'};
@@ -156,6 +159,9 @@ combatService.getMovementRoomCache('W8N3').creeps = [{
 }];
 combatService.moveCreep(defender,
   {id: 'invader', pos: {roomName: 'W8N3', x: 20, y: 10}});
+assert.notStrictEqual(combatService.getMovementRoomCache('W8N3')
+  .creepsByPosition, firstCombatOccupancy,
+  'replacing the room creep snapshot must refresh its occupancy index');
 assert.strictEqual(combatOptions.reusePath, 25,
   'ordinary movement must retain normal cached-route reuse');
 assert.strictEqual(combatOptions.ignoreCreeps, true);
@@ -194,6 +200,8 @@ const corridorGoal = {id: 'build-site',
 corridorService.moveCreep(corridorWalker, corridorGoal);
 assert.strictEqual(corridorDeserializeCalls, 1,
   'one move should decode its shared blocker, safety and retained corridor once');
+const corridorOccupancy = corridorService.getMovementRoomCache('W7N4')
+  .creepsByPosition;
 assert.strictEqual(corridorOptions.reusePath, 50,
   'one moving-creep observation retains the chosen route');
 assert.deepStrictEqual(corridorWalker.memory.navCorridor, {
@@ -207,6 +215,9 @@ corridorGame.time = 301;
 corridorService.moveCreep(corridorWalker, corridorGoal);
 assert.strictEqual(corridorDeserializeCalls, 2,
   'the next tick must refresh the decoded route');
+assert.strictEqual(corridorService.getMovementRoomCache('W7N4')
+  .creepsByPosition, corridorOccupancy,
+  'stable room snapshots should reuse one friendly occupancy index');
 assert.strictEqual(corridorOptions.reusePath, 0,
   'a persistent look-ahead obstruction replans before collision');
 assert.strictEqual(corridorOptions.ignoreCreeps, false);
