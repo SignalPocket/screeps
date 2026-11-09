@@ -108,6 +108,7 @@ const { installOperatorConsole } = require('operator.console');
 const { COLONY_DEFINITION, createColonyCommand } =
   require('operator.colony');
 const { ROOM_DEFINITION, createRoomCommand } = require('operator.room');
+const { ENERGY_DEFINITION, createEnergyCommand } = require('operator.energy');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -180,6 +181,26 @@ module.exports.loop = function () {
   operatorCommands.push({
     definition: ROOM_DEFINITION,
     run: createRoomCommand({ Game, colonyCommand })
+  });
+  operatorCommands.push({
+    definition: ENERGY_DEFINITION,
+    run: createEnergyCommand({ Game, colonyCommand,
+      findSources: FIND_SOURCES,
+      findDroppedResources: FIND_DROPPED_RESOURCES,
+      findTombstones: FIND_TOMBSTONES,
+      findRuins: FIND_RUINS,
+      findStructures: FIND_STRUCTURES,
+      resourceEnergy: RESOURCE_ENERGY,
+      structureTypes: {
+        container: STRUCTURE_CONTAINER,
+        link: STRUCTURE_LINK,
+        storage: STRUCTURE_STORAGE,
+        terminal: STRUCTURE_TERMINAL,
+        spawn: STRUCTURE_SPAWN,
+        extension: STRUCTURE_EXTENSION,
+        tower: STRUCTURE_TOWER
+      }
+    })
   });
   installOperatorConsole({ Game, globalObject: global,
     commands: operatorCommands });
