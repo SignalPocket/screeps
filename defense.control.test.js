@@ -5,7 +5,7 @@ const { selectCombatTarget, needsEmergencyDefender,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap,
   holdMeleeEngagement, evaluateDefenderEngagement,
-  selectDefenderGarrison, selectUndefendedThreat,
+  selectDefenderGarrison, selectUndefendedThreat, hasActiveDamageParts,
   createDefenseController } =
   require('./defense.control');
 
@@ -101,8 +101,56 @@ const uncoveredThreat = { roomName: 'W1N3', creep: makeHostile('uncovered', 13,
 assert.strictEqual(selectUndefendedThreat([
   defendedThreat, uncoveredThreat
 ], [{ spawning: false, room: { name: 'W1N2' },
-  memory: { defenseTargetRoom: 'W1N2' } }], constants), uncoveredThreat,
+  memory: { defenseTargetRoom: 'W1N2' },
+  getActiveBodyparts: part => part === 'attack' ? 1 : 0 }], constants), uncoveredThreat,
 'a garrison in one outpost does not suppress a defender for another');
+
+const activeCore = { id: 'db8c1705b3380dc', structureType: 'invaderCore',
+  hits: 56710, pos: { x: 42, y: 4 } };
+const coreThreat = { roomName: 'W7N3', creep: activeCore,
+  requiredDefenders: 2 };
+const assignedDefender = (name, parts, spawning = false) => ({ name, spawning,
+  room: { name: 'W7N3' }, memory: { role: 'defender',
+    defenseTargetRoom: 'W7N3' },
+  getActiveBodyparts: part => parts[part] || 0 });
+const healers = [
+  assignedDefender('01-WK-286140', { heal: 5 }),
+  assignedDefender('01-WK-286146', { heal: 5 })
+];
+assert(healers.every(defender => !hasActiveDamageParts(defender, constants)));
+assert.strictEqual(selectUndefendedThreat([coreThreat], healers, constants),
+  coreThreat, 'two HEAL-only assignments leave an active core uncovered');
+assert.strictEqual(needsEmergencyDefender(1, 0, false, 2), true,
+  'zero damage coverage requests an attack-capable defender');
+const attacker = assignedDefender('attacker', { attack: 1 });
+assert.strictEqual(hasActiveDamageParts(attacker, constants), true);
+assert.strictEqual(selectUndefendedThreat([coreThreat], [...healers, attacker],
+  constants), coreThreat, 'healer support cannot fill the second damage slot');
+assert.strictEqual(selectUndefendedThreat([coreThreat], [...healers, attacker,
+  assignedDefender('ranger', { ranged_attack: 1 })], constants), null,
+  'active melee and ranged parts satisfy the two required damage slots');
+const selectedCoreGarrison = selectDefenderGarrison([...healers, attacker],
+  { W7N3: 2 }, constants).get('W7N3');
+assert(selectedCoreGarrison.includes(attacker),
+  'garrison retention cannot discard the only damage-capable defender');
+assert.strictEqual(selectedCoreGarrison.filter(defender =>
+  !hasActiveDamageParts(defender, constants)).length, 1,
+  'one healer remains supplemental without occupying a damage slot');
+assert.strictEqual(hasActiveDamageParts(assignedDefender('spawning-healer',
+  { heal: 1 }, true), constants), false,
+  'a spawning HEAL-only body still cannot reserve a damage slot');
+assert.strictEqual(hasActiveDamageParts(assignedDefender('spawning-attacker',
+  { attack: 1 }, true), constants), true,
+  'an attack-capable body already spawning prevents a duplicate third attacker');
+
+const mainSource = require('fs').readFileSync(require.resolve('./main'), 'utf8');
+assert.match(mainSource,
+  /defenderCoverage = target \? workers\.filter[\s\S]*hasActiveDamageParts/,
+  'spawn coverage uses active attack capability rather than defender labels');
+assert.match(mainSource, /healerSupport: false/,
+  'an uncovered damage slot always requests an attacker, never HEAL-only support');
+assert.doesNotMatch(mainSource, /healerSupport: defenderCoverage % 2/,
+  'alternation cannot repeatedly spawn healers while damage coverage is absent');
 
 const cancelled = [];
 const adjacentDefender = {

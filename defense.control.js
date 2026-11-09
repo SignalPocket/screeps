@@ -39,6 +39,22 @@ const activePartCount = (creep, part) => part && creep &&
   typeof creep.getActiveBodyparts === 'function'
   ? creep.getActiveBodyparts(part) : 0;
 
+const hasActiveDamageParts = (creep, constants) => {
+  if (!creep) return false;
+  if (typeof creep.getActiveBodyparts === 'function') {
+    return activePartCount(creep, constants.ATTACK) > 0 ||
+      activePartCount(creep, constants.RANGED_ATTACK) > 0;
+  }
+  if (Array.isArray(creep.body)) return creep.body.some(part => {
+    const type = typeof part === 'string' ? part : part.type;
+    const active = typeof part === 'string' || part.hits === undefined || part.hits > 0;
+    return active && (type === constants.ATTACK || type === constants.RANGED_ATTACK);
+  });
+  // Old snapshots did not record body parts. Preserve their preexisting
+  // attacker assumption unless the assignment explicitly identifies support.
+  return creep.memory?.healerSupport !== true;
+};
+
 const combatPower = (creep, constants) =>
   activePartCount(creep, constants.ATTACK) *
     (constants.ATTACK_POWER || 30) +
@@ -103,6 +119,7 @@ const evaluateDefenderEngagement = (defender, target, hostiles, defenders,
 const selectUndefendedThreat = (threats, defenders, constants) => {
   const coverage = new Map();
   for (const defender of defenders || []) {
+    if (!hasActiveDamageParts(defender, constants)) continue;
     const room = defender.memory.defenseTargetRoom || defender.room.name;
     coverage.set(room, (coverage.get(room) || 0) + 1);
   }
@@ -114,7 +131,7 @@ const selectUndefendedThreat = (threats, defenders, constants) => {
     String(a.creep.id).localeCompare(String(b.creep.id)))[0] || null;
 };
 
-const selectDefenderGarrison = (defenders, requiredByRoom = {}) => {
+const selectDefenderGarrison = (defenders, requiredByRoom = {}, constants = null) => {
   const selected = new Map();
   for (const creep of defenders || []) {
     const targetRoom = creep.memory.defenseTargetRoom || creep.room.name;
@@ -124,7 +141,15 @@ const selectDefenderGarrison = (defenders, requiredByRoom = {}) => {
   for (const [room, members] of selected) {
     members.sort((a, b) => Number(b.room.name === room) -
       Number(a.room.name === room) || (b.ticksToLive || 0) - (a.ticksToLive || 0));
-    selected.set(room, members.slice(0, Math.max(1, requiredByRoom[room] || 1)));
+    const required = Math.max(1, requiredByRoom[room] || 1);
+    if (!constants) {
+      selected.set(room, members.slice(0, required));
+      continue;
+    }
+    const damage = members.filter(creep => hasActiveDamageParts(creep, constants));
+    const support = members.filter(creep => !hasActiveDamageParts(creep, constants));
+    selected.set(room, [...damage.slice(0, required),
+      ...support.slice(0, damage.length > 0 ? 1 : 0)]);
   }
   return selected;
 };
@@ -303,6 +328,7 @@ const createDefenseController = ({
 module.exports = {
   getDefenseTargets,
   selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+  hasActiveDamageParts,
   holdMeleeEngagement, evaluateDefenderEngagement,
   selectDefenderGarrison, collectFriendlyDamageEvents,
   updateWarState, getDefenseRoomNames,

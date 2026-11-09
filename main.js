@@ -121,6 +121,7 @@ const { CANCEL_DEFINITION, createCancelCommand } = require('operator.cancel');
 const { REMOTES_DEFINITION, createRemotesCommand } =
   require('operator.remotes');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
+  hasActiveDamageParts,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap, selectDefenderGarrison,
@@ -1051,7 +1052,9 @@ module.exports.loop = function () {
     const defenderCoverage = target ? workers.filter(creep =>
       creep.memory.role === 'defender' &&
       (creep.memory.defenseTargetRoom || room.name) ===
-        target.roomName).length : 0;
+        target.roomName && hasActiveDamageParts(creep, {
+          ATTACK, RANGED_ATTACK
+        })).length : 0;
     const restoringBeforeRemoteDefense = target &&
       shouldRestoreBrigadeBeforeRemoteDefense({
         homeRoom: room.name,
@@ -1079,7 +1082,7 @@ module.exports.loop = function () {
         minimumEnergy: Math.min(room.energyCapacityAvailable, 300),
         staffingCurrent: defenderCoverage,
         staffingTarget: target.requiredDefenders, minimumGap: true,
-        healerSupport: defenderCoverage % 2 === 1,
+        healerSupport: false,
         rapidDefense: target.requiredDefenders > 1,
         defenseTargetRoom: target.roomName
       };
@@ -7716,7 +7719,8 @@ module.exports.loop = function () {
     if (required > 0) garrisonRequirements[directive.targetRoom] = Math.max(
       garrisonRequirements[directive.targetRoom] || 0, required);
   }
-  const garrison = selectDefenderGarrison(defenders, garrisonRequirements);
+  const garrison = selectDefenderGarrison(defenders, garrisonRequirements,
+    { ATTACK, RANGED_ATTACK });
   for (const creep of defenders) {
     if (creep.memory.role !== 'defender') continue;
     waitAge.markEvaluated(creep, true);
