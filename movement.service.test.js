@@ -178,9 +178,21 @@ const corridorWalker = {name: 'worker', room: {name: 'W7N4'}, fatigue: 0,
     role: 'builder', navCostVersion: 'brigade-bypass-v10',
     _move: {path: 'retained-corridor'}
   }, store: {getUsedCapacity: () => 50}};
-corridorWalker.room.memory = {};
-corridorWalker.room.find = type => type === 'my-creeps'
-  ? [corridorWalker, corridorBlocker] : [];
+corridorWalker.room.memory = {
+  travelPathPlan: {paths: [{points: [{x: 11, y: 10}, {x: 11, y: 10}]}]},
+  controllerBrigadePlan: {rightOfWay: [{x: 12, y: 10}]},
+  roadNetworkPlan: {directions: {
+    '11:10': {dx: 1, dy: 0, peer: '12:10'}
+  }}
+};
+corridorWalker.room.find = type => {
+  if (type === 'my-creeps') return [corridorWalker, corridorBlocker];
+  if (type === 'structures') return [
+    {structureType: 'road', pos: {x: 11, y: 10}},
+    {structureType: 'road', pos: {x: 12, y: 10}}
+  ];
+  return [];
+};
 corridorGame.rooms.W7N4 = corridorWalker.room;
 let corridorOptions;
 corridorWalker.moveTo = (target, opts) => { corridorOptions = opts; return 0; };
@@ -202,6 +214,18 @@ assert.strictEqual(corridorDeserializeCalls, 1,
   'one move should decode its shared blocker, safety and retained corridor once');
 const corridorOccupancy = corridorService.getMovementRoomCache('W7N4')
   .creepsByPosition;
+const corridorRoomCache = corridorService.getMovementRoomCache('W7N4');
+assert.deepStrictEqual(corridorRoomCache.preferredRoadPositions,
+  [{key: '11:10', x: 11, y: 10}]);
+assert.deepStrictEqual(corridorRoomCache.brigadeRightOfWayPositions,
+  [{key: '12:10', x: 12, y: 10}]);
+assert.deepStrictEqual(corridorRoomCache.directionalLanes, [{
+  key: '11:10', x: 11, y: 10,
+  lane: {dx: 1, dy: 0, peer: '12:10'}
+}]);
+corridorWalker.room.memory.travelPathPlan.paths = [];
+corridorWalker.room.memory.controllerBrigadePlan.rightOfWay = [];
+corridorWalker.room.memory.roadNetworkPlan.directions = {};
 const firstReservation = corridorService.movementReservationEntries.W7N4
   .get('11:10');
 assert.deepStrictEqual(firstReservation,
@@ -212,8 +236,10 @@ const selfCosts = {values: {}, get(x, y) {
   return this.values[`${x}:${y}`] || 0;
 }, set(x, y, value) { this.values[`${x}:${y}`] = value; }};
 corridorOptions.costCallback('W7N4', selfCosts);
-assert.strictEqual(selfCosts.get(11, 10), 0,
-  'a creep must not price its own reserved corridor');
+assert.strictEqual(selfCosts.get(11, 10), 1,
+  'preferred and directional road costs retain their established precedence');
+assert.strictEqual(selfCosts.get(12, 10), BRIGADE_BYPASS_COST,
+  'cost callbacks reuse the parsed room snapshot without rereading keys');
 const relay = {name: 'relay', room: corridorWalker.room,
   pos: corridorWalker.pos, memory: {role: 'controller-relay',
     _move: {path: 'relay-route'}}};
