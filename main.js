@@ -54,7 +54,8 @@ const { calculateSourceCoverageGap, updateOperationalHealth } =
   require('health.operations');
 const { scaleEnergyBudget } = require('room.scaling');
 const { deriveCpuPolicy, shouldRenderPlanningVisuals,
-  shouldPrepareRoadPlan, selectFairExecutionCreeps,
+  shouldPrepareRoadPlan, selectDispatchPlanningCreeps,
+  selectFairExecutionCreeps,
   summarizeCreepExecution } =
   require('cpu.policy');
 const { PLANNING_STAGES, OBSERVATION_STAGES, createCpuStageRecorder,
@@ -3934,6 +3935,12 @@ module.exports.loop = function () {
     survivalExecutionCreeps,
     rotatingExecutionCreeps.slice(executionRotation),
     rotatingExecutionCreeps.slice(0, executionRotation));
+  const pickupCpuCeiling = cpuPolicy.executionCpuRatio !== null &&
+    Game.cpu && Number.isFinite(Game.cpu.limit)
+    ? Game.cpu.limit * cpuPolicy.executionCpuRatio : null;
+  const pickupGuaranteedCount = Math.max(
+    survivalExecutionCreeps.length + fairExecutionCreeps.length,
+    cpuPolicy.minimumExecutionCreeps || 0);
   const controllerStations = planControllerStations({
     rooms: Object.values(Game.rooms), creeps, getRoomStructures,
     getContainerPurpose, RoomPosition,
@@ -3984,8 +3991,18 @@ module.exports.loop = function () {
     creep.memory.conservationY = chosen.y;
     return new RoomPosition(chosen.x, chosen.y, room.name);
   };
+  const dispatchPlanningCreeps = selectDispatchPlanningCreeps({
+    creeps: executionCreeps, guaranteedCount: pickupGuaranteedCount,
+    used: Game.cpu && typeof Game.cpu.getUsed === 'function'
+      ? Game.cpu.getUsed() : null,
+    ceiling: pickupCpuCeiling
+  });
+  const dispatchPlanningNames = new Set(dispatchPlanningCreeps.map(c =>
+    c.name));
   const pickupParticipants=executionCreeps.filter(c=>!c.spawning&&
     !isExpansionBuilder(c)&&
+    (typeof dispatchPlanningNames === 'undefined' ||
+      dispatchPlanningNames.has(c.name))&&
     c.room.controller?.my&&
     !(c.memory.role === 'rebalancer' && Boolean(
       c.memory.controllerLinkFeedTarget ||

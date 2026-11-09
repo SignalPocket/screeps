@@ -3,7 +3,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const { deriveCpuPolicy, shouldRenderPlanningVisuals,
-  shouldPrepareRoadPlan } =
+  shouldPrepareRoadPlan, selectDispatchPlanningCreeps } =
   require('./cpu.policy');
 
 assert.deepStrictEqual(deriveCpuPolicy(undefined), {
@@ -50,6 +50,22 @@ assert.strictEqual(shouldPrepareRoadPlan({
 assert.strictEqual(shouldPrepareRoadPlan({
   renderPlanningVisuals: false, roadPlacementDue: false
 }), false);
+const dispatchCandidates = [{ name: 'protected' }, { name: 'fair' },
+  { name: 'rotating-a' }, { name: 'rotating-b' }];
+assert.deepStrictEqual(selectDispatchPlanningCreeps({
+  creeps: dispatchCandidates, guaranteedCount: 2, used: 75, ceiling: 75
+}), dispatchCandidates.slice(0, 2));
+assert.deepStrictEqual(selectDispatchPlanningCreeps({
+  creeps: dispatchCandidates, guaranteedCount: 2, used: 74.99, ceiling: 75
+}), dispatchCandidates);
+assert.deepStrictEqual(selectDispatchPlanningCreeps({
+  creeps: dispatchCandidates, guaranteedCount: 2, used: 100, ceiling: null
+}), dispatchCandidates);
+assert.deepStrictEqual(selectDispatchPlanningCreeps({
+  creeps: dispatchCandidates, guaranteedCount: 99, used: 80, ceiling: 75
+}), dispatchCandidates);
+assert.deepStrictEqual(dispatchCandidates.map(creep => creep.name),
+  ['protected', 'fair', 'rotating-a', 'rotating-b']);
 assert.match(fs.readFileSync(require.resolve('./main'), 'utf8'),
   /'claimer', 'remote-reserver', 'defender', 'retire',\s+CONTROLLER_BRIGADE_ROLE/,
   'claimers and remote reservers remain in the CPU-protected execution set');
@@ -75,5 +91,8 @@ assert.match(main,
 assert.match(main,
   /runLinks\(room\);\s+const roadPlacementDue = allowSlowPlanning &&\s+scheduledRoomTick\(room, 20\);\s+if \(!shouldPrepareRoadPlan/,
   'links run before unused path preparation is skipped');
+assert.match(main,
+  /const dispatchPlanningCreeps = selectDispatchPlanningCreeps\([\s\S]{0,600}dispatchPlanningNames\.has\(c\.name\)/,
+  'pickup planning excludes only the guaranteed-deferred execution suffix');
 
 console.log('CPU policy scenarios passed');
