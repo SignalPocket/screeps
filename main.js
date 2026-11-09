@@ -364,7 +364,19 @@ module.exports.loop = function () {
       home && home.memory, tickCreeps);
     const threats = [...roomNames].flatMap(roomName => {
       const room = Game.rooms[roomName];
-      if (!room) return [];
+      if (!room) {
+        const remembered = Memory.rooms && Memory.rooms[roomName] &&
+          Memory.rooms[roomName].combatStatus;
+        if (!remembered || !remembered.fighting) return [];
+        return [{
+          creep: { id: remembered.threatIds && remembered.threatIds[0] ||
+            `last-known-${roomName}`, getActiveBodyparts: () => 0 },
+          roomName, homeRoomName,
+          requiredDefenders: remembered.requiredDefenders || 1,
+          exposedFriendly: (remembered.hostileCount || 0) > 1,
+          lastKnown: true
+        }];
+      }
       const targets = getDefenseTargets(room, FIND_HOSTILE_CREEPS,
         FIND_HOSTILE_STRUCTURES);
       const exposedFriendly = targets.length > 1 || tickCreeps.some(creep =>
@@ -949,6 +961,7 @@ module.exports.loop = function () {
         staffingCurrent: defenderCoverage,
         staffingTarget: target.requiredDefenders, minimumGap: true,
         healerSupport: defenderCoverage % 2 === 1,
+        rapidDefense: target.requiredDefenders > 1,
         defenseTargetRoom: target.roomName
       };
     }

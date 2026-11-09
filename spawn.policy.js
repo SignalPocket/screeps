@@ -116,8 +116,9 @@ const createSpawnPolicy = ({
     const operationEnergy = assignment.role === 'upgrader' && assignment.operationWork
       ? assignment.operationWork * 100 + 100 + Math.ceil(assignment.operationWork / 4) * 50
       : assignment.role === 'remote-reserver' ? 1300 : 0;
-    const assignmentBodyEnergyCeiling = operationEnergy || (productiveMiner
-      ? productiveMinerMaximumBodyEnergy : maximumBodyEnergy);
+    const assignmentBodyEnergyCeiling = operationEnergy ||
+      (assignment.rapidDefense ? 300 : productiveMiner
+        ? productiveMinerMaximumBodyEnergy : maximumBodyEnergy);
     // Legacy planners may still describe the pre-cap ideal body. A request
     // must never wait for more energy than the body factory is allowed to
     // spend on one creep.
@@ -137,12 +138,14 @@ const createSpawnPolicy = ({
       minimumEnergyMet && fallbackWaitExpired;
     const maximize = Boolean(assignment.qualityFor) || !emergency && staffingCurrent > 0 &&
       staffingTarget > 0 && staffingTarget <= 2;
-    const bodyEnergy = maximize
+    const plannedBodyEnergy = maximize
       ? Math.min(spawn.room.energyAvailable, spawn.room.energyCapacityAvailable)
       : getSpawnBodyEnergyBudget(staffingCurrent,
       staffingTarget,
       spawn.room.energyAvailable, spawn.room.energyCapacityAvailable,
       emergency);
+    const bodyEnergy = Math.min(plannedBodyEnergy,
+      assignmentBodyEnergyCeiling);
     const bodyOptions = { maximize,
       workLimit: assignment.workLimit || assignment.requiredWork,
       carryParts: assignment.carryParts,

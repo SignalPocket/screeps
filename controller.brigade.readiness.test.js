@@ -150,5 +150,16 @@ assert.match(mainSource,
 assert.match(mainSource,
   /exposedFriendly = targets\.length > 1/,
   'a multi-hostile squad sustains coverage after civilians leave');
+assert.match(mainSource,
+  /last-known-\$\{roomName\}/,
+  'an unseen persisted fight retains an explicitly stale threat marker');
+assert.match(mainSource,
+  /rapidDefense: target\.requiredDefenders > 1/,
+  'a hostile squad requests rapid response bodies');
+const spawnPolicySource = require('fs').readFileSync(
+  require.resolve('./spawn.policy'), 'utf8');
+assert.match(spawnPolicySource,
+  /assignment\.rapidDefense \? 300/,
+  'rapid defenders and healers are capped at 300 energy');
 
 console.log('controller brigade readiness scenarios passed');
