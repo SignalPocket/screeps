@@ -10,6 +10,15 @@ const { laneCost } = typeof Game==='undefined' ? require('./road.network') : req
 
 const BRIGADE_BYPASS_COST = 50;
 
+const parseCoordinateKey = key => {
+  const separator = key.indexOf(':');
+  return {
+    key,
+    x: Number(key.slice(0, separator)),
+    y: Number(key.slice(separator + 1))
+  };
+};
+
 // A brigade lane is a right-of-way, not a room divider. Price it high enough
 // that ordinary workers take a nearby side route, while leaving PathFinder an
 // escape when structures or terrain make crossing the saved lane unavoidable.
@@ -53,8 +62,15 @@ const createMovementService = options => {
     }
     const preferredRoadTiles = new Set(Object.entries(preferredUses)
       .filter(([, uses]) => uses >= 2).map(([key]) => key));
+    const preferredRoadPositions = [...preferredRoadTiles]
+      .map(parseCoordinateKey);
     const brigadePlan = isBrigadePlanActive(room) ? room.memory.controllerBrigadePlan : null;
     const brigadeRightOfWay = getBrigadeProtectedFootprint(brigadePlan);
+    const brigadeRightOfWayPositions = [...brigadeRightOfWay]
+      .map(parseCoordinateKey);
+    const directionalLanes = Object.entries(
+      room.memory.roadNetworkPlan?.directions || {})
+      .map(([key, lane]) => ({...parseCoordinateKey(key), lane}));
     const structures = room.find(FIND_STRUCTURES);
     const roads = structures.filter(structure =>
       structure.structureType === STRUCTURE_ROAD).map(road => ({
@@ -93,7 +109,10 @@ const createMovementService = options => {
       extensionSites,
       roadTiles: new Set(roads.map(road => `${road.x}:${road.y}`)),
       preferredRoadTiles,
+      preferredRoadPositions,
       brigadeRightOfWay,
+      brigadeRightOfWayPositions,
+      directionalLanes,
       creeps: room.find(FIND_MY_CREEPS).map(other => ({
         name: other.name,
         x: other.pos.x,
@@ -334,8 +353,8 @@ const createMovementService = options => {
       costCallback: (roomName, costs) => {
         if (!Game.rooms[roomName]) return costs;
         const roomCache = getMovementRoomCache(roomName);
-        for (const key of roomCache ? roomCache.preferredRoadTiles : []) {
-          const [x, y] = key.split(':').map(Number);
+        for (const { x, y } of roomCache
+          ? roomCache.preferredRoadPositions : []) {
           costs.set(x, y, 2);
         }
         for (const road of roomCache ? roomCache.roads : []) {
@@ -359,10 +378,10 @@ const createMovementService = options => {
             if(exit)heading={dx:exit==='3'?1:exit==='7'?-1:0,
               dy:exit==='5'?1:exit==='1'?-1:0};
           }
-          for(const [key,lane] of Object.entries(Game.rooms[roomName].memory.roadNetworkPlan.directions)){
+          for(const {key,x,y,lane} of roomCache.directionalLanes){
             if(!roomCache.roadTiles.has(key)||!roomCache.roadTiles.has(lane.peer))continue;
             const cost=laneCost(lane,heading,true);
-            if(cost!==null){const [x,y]=key.split(':').map(Number);if(costs.get(x,y)<255)costs.set(x,y,cost);}
+            if(cost!==null&&costs.get(x,y)<255)costs.set(x,y,cost);
           }
         }
         if (movementOptions.roadOnly) {
@@ -375,8 +394,8 @@ const createMovementService = options => {
           }
         }
         if (creep.memory.role !== 'controller-relay') {
-          for (const key of roomCache ? roomCache.brigadeRightOfWay : []) {
-            const [x, y] = key.split(':').map(Number);
+          for (const { x, y } of roomCache
+            ? roomCache.brigadeRightOfWayPositions : []) {
             applyBrigadeBypassCost(costs, x, y);
           }
         }
