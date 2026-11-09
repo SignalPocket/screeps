@@ -124,6 +124,8 @@ const createColonyCommand = ({ Game, Memory, findConstructionSites,
       tick,
       health: status && (status.label || status.health || status.key) ||
         policy && policy.health || null,
+      healthReasons: status && Array.isArray(status.reasons)
+        ? [...status.reasons] : [],
       mode: policy && policy.mode || null,
       observations: {
         roomStatus: observation(status && status.updated, tick),
@@ -171,6 +173,15 @@ const createColonyCommand = ({ Game, Memory, findConstructionSites,
           Math.max(0, minimumPopulation - homeCreeps.length),
         missingDesired: desiredPopulation == null ? null :
           Math.max(0, desiredPopulation - homeCreeps.length)
+      },
+      logistics: {
+        reserve: status && status.reserve || null,
+        harvest: status && status.harvest || null,
+        flow: status && status.logistics || null,
+        sourceStored: finite(demand && demand.sourceStored),
+        spawnFree: finite(demand && demand.spawnFree),
+        bufferFree: finite(demand && demand.bufferFree),
+        supplyFree: finite(demand && demand.supplyFree)
       },
       threats: {
         state: combat && combat.state || null,

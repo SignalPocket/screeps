@@ -107,6 +107,7 @@ const { selectHealingTower, runTowers } = require('tower.control');
 const { installOperatorConsole } = require('operator.console');
 const { COLONY_DEFINITION, createColonyCommand } =
   require('operator.colony');
+const { ROOM_DEFINITION, createRoomCommand } = require('operator.room');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -169,12 +170,19 @@ const hasSaturatedLocalWorkGap = ({ storageUsed, storageCapacity,
  */
 module.exports.loop = function () {
   if (!Memory.creeps) Memory.creeps = {};
-  installOperatorConsole({ Game, globalObject: global, commands: [{
+  const operatorCommands = [{
     definition: COLONY_DEFINITION,
     run: createColonyCommand({ Game, Memory,
       findConstructionSites: FIND_MY_CONSTRUCTION_SITES,
       resourceEnergy: RESOURCE_ENERGY })
-  }] });
+  }];
+  const colonyCommand = operatorCommands[0].run;
+  operatorCommands.push({
+    definition: ROOM_DEFINITION,
+    run: createRoomCommand({ Game, colonyCommand })
+  });
+  installOperatorConsole({ Game, globalObject: global,
+    commands: operatorCommands });
   const cpuStart = Game.cpu && typeof Game.cpu.getUsed === 'function'
     ? Game.cpu.getUsed() : null;
   const cpuStages = createCpuStageRecorder(cpuStart === null ? null
