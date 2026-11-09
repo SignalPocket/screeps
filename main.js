@@ -110,6 +110,7 @@ const { COLONY_DEFINITION, createColonyCommand } =
 const { ROOM_DEFINITION, createRoomCommand } = require('operator.room');
 const { ENERGY_DEFINITION, createEnergyCommand } = require('operator.energy');
 const { WORK_DEFINITION, createWorkCommand } = require('operator.work');
+const { SPAWN_DEFINITION, createSpawnCommand } = require('operator.spawn');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -221,8 +222,6 @@ module.exports.loop = function () {
       buildPower: BUILD_POWER
     })
   });
-  installOperatorConsole({ Game, globalObject: global,
-    commands: operatorCommands });
   const cpuStart = Game.cpu && typeof Game.cpu.getUsed === 'function'
     ? Game.cpu.getUsed() : null;
   const cpuStages = createCpuStageRecorder(cpuStart === null ? null
@@ -380,9 +379,19 @@ module.exports.loop = function () {
     STRUCTURE_ROAD, STRUCTURE_RAMPART
   });
   const { hasWorkParts, hasRoadMobility, hasBuilderBody,
-    getRemoteReplacementLead,
+    getRemoteReplacementLead, getLocalReplacementLead,
     hasRemoteReplacementLife, hasLocalReplacementLife } =
     createCreepLifecycle({ Game, WORK, MOVE, CREEP_SPAWN_TIME });
+  operatorCommands.push({
+    definition: SPAWN_DEFINITION,
+    run: createSpawnCommand({ Game, colonyCommand,
+      bodyPartCost: BODYPART_COST,
+      getBodyType: getBodyTypeForAssignment,
+      hasLocalReplacementLife, hasRemoteReplacementLife,
+      getLocalReplacementLead, getRemoteReplacementLead })
+  });
+  installOperatorConsole({ Game, globalObject: global,
+    commands: operatorCommands });
   const { buildRoomStaffingPlan } = createStaffingPlanner({
     Game, isBuilder, isLocalBuilder, hasWorkParts,
     hasLocalReplacementLife, hasRemoteReplacementLife, getRoomSources
