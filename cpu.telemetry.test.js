@@ -1,0 +1,71 @@
+'use strict';
+
+const assert = require('assert');
+const { STAGES, createCpuStageRecorder, updateCpuPerformanceWindow } =
+  require('./cpu.telemetry');
+
+const samples = [2, 8, 18, 25, 31];
+const recorder = createCpuStageRecorder(() => samples.shift());
+assert.strictEqual(recorder.mark('planning'), 6);
+assert.strictEqual(recorder.mark('creeps'), 10);
+assert.strictEqual(recorder.mark('defense'), 7);
+assert.strictEqual(recorder.mark('reporting'), 6);
+assert.deepStrictEqual(recorder.snapshot(), {
+  planning: 6, creeps: 10, defense: 7, reporting: 6
+});
+
+const missing = createCpuStageRecorder(undefined);
+assert.strictEqual(missing.mark('planning'), null);
+assert.deepStrictEqual(missing.snapshot(), {});
+const backwards = createCpuStageRecorder((() => {
+  const values = [10, 8];
+  return () => values.shift();
+})());
+assert.strictEqual(backwards.mark('planning'), 0);
+
+const original = { version: 1, current: {
+  bucket: 100, samples: 1, total: 20, maximum: 20,
+  stageTotals: { planning: 5, creeps: 10, defense: 3, reporting: 2 }
+} };
+const updated = updateCpuPerformanceWindow({
+  performance: original, tick: 101, total: 30,
+  stages: { planning: 8, creeps: 15, defense: 4, reporting: 3 }
+});
+assert.notStrictEqual(updated, original);
+assert.deepStrictEqual(original.current.stageTotals,
+  { planning: 5, creeps: 10, defense: 3, reporting: 2 });
+assert.deepStrictEqual(updated.current, {
+  bucket: 100, samples: 2, total: 50, maximum: 30,
+  stageTotals: { planning: 13, creeps: 25, defense: 7, reporting: 5 }
+});
+assert.deepStrictEqual(updated.lastStages,
+  { planning: 8, creeps: 15, defense: 4, reporting: 3 });
+
+const rolled = updateCpuPerformanceWindow({
+  performance: updated, tick: 120, total: 12,
+  stages: { planning: 3, creeps: 5, defense: 2, reporting: 2 }
+});
+assert.deepStrictEqual(rolled.previous, {
+  bucket: 100, samples: 2, average: 25, maximum: 30,
+  stages: { planning: 6.5, creeps: 12.5, defense: 3.5, reporting: 2.5 }
+});
+assert.deepStrictEqual(rolled.current.stageTotals,
+  { planning: 3, creeps: 5, defense: 2, reporting: 2 });
+assert.deepStrictEqual(Object.keys(rolled.previous.stages), STAGES);
+
+assert.strictEqual(updateCpuPerformanceWindow({
+  performance: original, tick: 121, total: NaN, stages: {}
+}), original);
+assert.strictEqual(updateCpuPerformanceWindow({
+  performance: original, tick: 121, total: 2, stages: {}, interval: 0
+}), original);
+const sanitized = updateCpuPerformanceWindow({
+  performance: undefined, tick: 1, total: 4,
+  stages: { planning: NaN, creeps: -1, defense: 2 }
+});
+assert.deepStrictEqual(sanitized.lastStages, { defense: 2 });
+for (const value of Object.values(sanitized.current.stageTotals)) {
+  assert(Number.isFinite(value));
+}
+
+console.log('bounded CPU stage attribution passed');

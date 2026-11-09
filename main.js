@@ -57,6 +57,8 @@ const { deriveCpuPolicy, shouldRenderPlanningVisuals,
   shouldPrepareRoadPlan, selectFairExecutionCreeps,
   summarizeCreepExecution } =
   require('cpu.policy');
+const { createCpuStageRecorder, updateCpuPerformanceWindow } =
+  require('cpu.telemetry');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
   require('creep.execution-order');
@@ -158,6 +160,8 @@ module.exports.loop = function () {
   if (!Memory.creeps) Memory.creeps = {};
   const cpuStart = Game.cpu && typeof Game.cpu.getUsed === 'function'
     ? Game.cpu.getUsed() : null;
+  const cpuStages = createCpuStageRecorder(cpuStart === null ? null
+    : () => Game.cpu.getUsed());
   const cpuPolicy = deriveCpuPolicy(Game.cpu && Game.cpu.bucket);
   const allowSlowPlanning = cpuPolicy.allowSlowPlanning;
   const previousCpuExecution = Memory.cpuPolicy && Memory.cpuPolicy.execution;
@@ -4031,6 +4035,7 @@ module.exports.loop = function () {
       remote.memory.repairSupplyPlan={...planRepairSupply({structures:getRoomStructures(remote),production:getRoomSources(remote).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)}),updated:Game.time};
     }
   }
+  cpuStages.mark('planning');
   const rawPickupEnergy=getUnreservedEnergy;
   const rawReservePickup=reserveEnergyFrom;
   const baseCanWithdraw=canWithdrawFrom;
@@ -7435,6 +7440,7 @@ module.exports.loop = function () {
     usedAfterCreeps: Game.cpu && typeof Game.cpu.getUsed === 'function'
       ? Game.cpu.getUsed() : null
   };
+  cpuStages.mark('creeps');
 
   // Defense is an explicit scenario-owned job. Run it after ordinary work so
   // combat movement and attack intents cannot be overwritten by fallback
@@ -7580,6 +7586,7 @@ module.exports.loop = function () {
 
   // Always sample final decisions, including CPU skips and safety overrides.
   Memory.waitAge = waitAge.finish(creeps);
+  cpuStages.mark('defense');
 
   // Dashboard data refreshes every ten ticks for console reporting. Avoid the
   // full build/repair assignment scan on other ticks where it is discarded.
@@ -7808,35 +7815,15 @@ module.exports.loop = function () {
     }
   }
 
+  cpuStages.mark('reporting');
   // Keep two compact 20-tick CPU windows in Memory. This is diagnostic only;
-  // it does not influence staffing or jobs, and lets us compare average and
-  // worst ticks after changing scheduler cadence.
+  // it does not influence staffing or jobs, and attributes each bounded total
+  // to broad loop stages without retaining per-tick history.
   if (cpuStart !== null) {
     const used = Math.max(0, Game.cpu.getUsed() - cpuStart);
-    const bucket = Math.floor(Game.time / 20) * 20;
-    let performance = Memory.performance;
-    if (!performance || performance.version !== 1) {
-      performance = { version: 1 };
-    }
-    if (!performance.current || performance.current.bucket !== bucket) {
-      if (performance.current && performance.current.samples > 0) {
-        performance.previous = {
-          bucket: performance.current.bucket,
-          samples: performance.current.samples,
-          average: performance.current.total / performance.current.samples,
-          maximum: performance.current.maximum
-        };
-      }
-      performance.current = {
-        bucket, samples: 0, total: 0, maximum: 0
-      };
-    }
-    performance.current.samples++;
-    performance.current.total += used;
-    performance.current.maximum = Math.max(
-      performance.current.maximum, used);
-    performance.last = used;
-    performance.updated = Game.time;
-    Memory.performance = performance;
+    Memory.performance = updateCpuPerformanceWindow({
+      performance: Memory.performance, tick: Game.time, total: used,
+      stages: cpuStages.snapshot()
+    });
   }
 };
