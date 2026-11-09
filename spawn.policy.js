@@ -164,9 +164,31 @@ const createSpawnPolicy = ({
       ? maximumBody.filter(part => part === WORK).length : 0;
     const effectiveRequiredWork = assignment.requiredWork
       ? Math.min(assignment.requiredWork, maximumWork) : 0;
-    if (candidateBody && (['remote-miner', 'harvester', 'miner', 'upgrader', 'builder'].includes(assignment.role)||assignment.qualityFor) &&
-        effectiveRequiredWork && candidateBody.filter(part => part === WORK).length <
-          effectiveRequiredWork) candidateBody = null;
+    const candidateWork = candidateBody
+      ? candidateBody.filter(part => part === WORK).length : 0;
+    const localSourceRole = ['harvester', 'miner'].includes(assignment.role);
+    const localSourceRecovery = localSourceRole && staffingTarget > 0 &&
+      staffingCurrent / staffingTarget < 0.75;
+    const functionalLocalSourceBody = candidateBody && candidateWork > 0 &&
+      candidateBody.includes(CARRY) && candidateBody.includes(MOVE);
+    const capabilityGated = ['remote-miner', 'harvester', 'miner',
+      'upgrader', 'builder'].includes(assignment.role) || assignment.qualityFor;
+    if (candidateBody && capabilityGated && effectiveRequiredWork &&
+        candidateWork < effectiveRequiredWork &&
+        !(localSourceRecovery && functionalLocalSourceBody)) {
+      // Recovery budgets deliberately favor roster breadth. Once local source
+      // coverage reaches the recovery threshold, restore the mature per-creep
+      // capability by retrying against the currently funded bounded ceiling.
+      // This prevents the scaled recovery budget itself from permanently
+      // blocking the last ideal source worker.
+      const fundedBody = localSourceRole
+        ? buildBody(bodyType, Math.min(spawn.room.energyAvailable,
+          assignmentBodyEnergyCeiling), { ...bodyOptions, maximize: true })
+        : null;
+      candidateBody = fundedBody &&
+        fundedBody.filter(part => part === WORK).length >= effectiveRequiredWork
+        ? fundedBody : null;
+    }
     const mobileWorkRole = assignment.role === 'builder';
     const workParts = candidateBody
       ? candidateBody.filter(part => part === WORK).length : 0;
