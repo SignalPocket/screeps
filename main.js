@@ -144,6 +144,11 @@ const { workerCost, routineBodyEnergyCap, buildBody, getBodyCode } = createBodyF
   BODYPART_COST
 });
 
+const hasSaturatedLocalWorkGap = ({ storageUsed, storageCapacity,
+  viableUpgraders, desiredUpgraders, viableBuilders, desiredBuilders }) =>
+  storageCapacity > 0 && storageUsed / storageCapacity >= 0.98 &&
+  (viableUpgraders < desiredUpgraders || viableBuilders < desiredBuilders);
+
 /**
  * Run one complete colony control cycle.
  *
@@ -1194,10 +1199,32 @@ module.exports.loop = function () {
       staffingPlan.jobs.builder.coverageCount<staffingPlan.jobs.builder.min;
     const missingCoreUpgrader=staffingPlan.jobs?.upgrader &&
       staffingPlan.jobs.upgrader.coverageCount<staffingPlan.jobs.upgrader.min;
+    const viableBuilders = workers.filter(creep => isLocalBuilder(creep) &&
+      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep) &&
+      hasLocalReplacementLife(creep));
+    const requiredBuilders = situationTargets.builder +
+      situationTargets.repairBuilder;
+    const storageCapacity = room.storage
+      ? room.storage.store.getCapacity() : 0;
+    const storageUsed = room.storage
+      ? room.storage.store.getUsedCapacity() : 0;
+    // At the storage cap, funded local WORK is an urgent pressure release.
+    // Suppress only optional remote hauling; every minimum, replacement,
+    // reservation, controller emergency and admitted claim above keeps its
+    // existing precedence. The normal-storage order remains unchanged.
+    const saturatedLocalWorkGap = hasSaturatedLocalWorkGap({
+      storageUsed, storageCapacity,
+      viableUpgraders: viableUpgraders.length,
+      desiredUpgraders: situationTargets.upgrader,
+      viableBuilders: viableBuilders.length,
+      desiredBuilders: requiredBuilders
+    });
     // This bounded push outranks desired remote growth, never core/minimum
     // coverage or due income replacement. Its full roster is budgeted above.
     if (spawnSituation.policy.operations?.upgradePush && controllerRelayRequest) return controllerRelayRequest;
-    const establishedHaulRequest = allowRemoteHaulingRecovery && !coreIncomeGap && !missingCoreBuilder && !missingCoreUpgrader
+    const establishedHaulRequest = allowRemoteHaulingRecovery &&
+      !saturatedLocalWorkGap && !coreIncomeGap &&
+      !missingCoreBuilder && !missingCoreUpgrader
       ? planRemoteGrowthSpawn({ room, workers, staffingPlan,
         allowRemoteGrowth: false, allowRemoteHaulingRecovery: true }) : null;
     if (establishedHaulRequest) return establishedHaulRequest;
@@ -1218,7 +1245,8 @@ module.exports.loop = function () {
     // When established outposts are already blocked by full containers, add
     // their measured carrier surge before restoring more remote production.
     // Local minimum staffing above remains protected.
-    const remoteHaulRecoveryRequest = allowRemoteHaulingRecovery
+    const remoteHaulRecoveryRequest = allowRemoteHaulingRecovery &&
+      !saturatedLocalWorkGap
       ? planRemoteGrowthSpawn({
         room, workers, staffingPlan, allowRemoteGrowth: false,
         allowRemoteHaulingRecovery: true
@@ -1324,11 +1352,6 @@ module.exports.loop = function () {
       }
       return null;
     }
-    const viableBuilders = workers.filter(creep => isLocalBuilder(creep) &&
-      creep.memory.builderMission !== 'tunnel' && hasBuilderBody(creep) &&
-      hasLocalReplacementLife(creep));
-    const requiredBuilders = situationTargets.builder +
-      situationTargets.repairBuilder;
     if (viableBuilders.length < requiredBuilders) {
       const availableBuilder = workers.find(creep => !creep.spawning &&
         (creep.memory.role === 'hauler' || creep.memory.role === 'worker') &&
