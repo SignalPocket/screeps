@@ -9,7 +9,7 @@ const HELP_DEFINITION = Object.freeze({
   writes: 'none',
   expires: null,
   related: Object.freeze(['cancel', 'colony', 'creep', 'defend', 'directives',
-    'energy', 'room', 'spawn', 'work'])
+    'energy', 'remotes', 'room', 'spawn', 'work'])
 });
 
 const normalizeDefinition = definition => {
