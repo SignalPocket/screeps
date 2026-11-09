@@ -1,17 +1,13 @@
 'use strict';
 
+const { calculatePopulationTotals } =
+  typeof Game === 'undefined'
+    ? require('./population.totals')
+    : require('population.totals');
+
+// Preserve the existing exported mutation boundary for independent callers.
 const recalculateTotals = policy => {
-  const local = key => Object.values(policy.roles || {}).reduce((sum, role) =>
-    sum + Math.max(0, role && role[key] || 0), 0);
-  const remote = policy.remote || {};
-  policy.totals = {
-    min: local('min') + (remote.minersMin || 0) +
-      (remote.haulersMin || 0) + (remote.buildersMin || 0) + (remote.reserversMin || 0),
-    desired: local('desired') + (remote.miners || 0) +
-      (remote.haulers || 0) + (remote.builders || 0) + (remote.reservers || 0),
-    max: local('max') + (remote.miners || 0) +
-      (remote.haulers || 0) + (remote.builders || 0) + (remote.reservers || 0)
-  };
+  policy.totals = calculatePopulationTotals(policy);
 };
 
 /**

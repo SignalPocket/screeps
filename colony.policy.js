@@ -4,6 +4,10 @@ const { scaleEnergyBudget, scaleReserve, scaleBacklog } =
   typeof Game === 'undefined'
     ? require('./room.scaling')
     : require('room.scaling');
+const { calculatePopulationTotals } =
+  typeof Game === 'undefined'
+    ? require('./population.totals')
+    : require('population.totals');
 
 // Colony population policy is deliberately independent from the Screeps API.
 // main.js converts the live room into this small snapshot; keeping the maths
@@ -357,14 +361,7 @@ const derivePopulationPolicy = state => {
   else if (logisticsBacklog) mode = 'logistics-backup';
   else if (starved) mode = 'energy-starved';
 
-  const totals = ['min', 'desired', 'max'].reduce((result, key) => {
-    const remoteTotal = key === 'min'
-      ? remote.minersMin + remote.haulersMin + remote.buildersMin
-      : remote.miners + remote.haulers + remote.builders;
-    result[key] = Object.values(roles).reduce((sum, entry) =>
-      sum + entry[key], 0) + remoteTotal;
-    return result;
-  }, {});
+  const totals = calculatePopulationTotals({ roles, remote });
 
   return { mode, health, permissions, budgets, roles, remote, totals };
 };
