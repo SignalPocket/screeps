@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const vm = require('vm');
 const { assignmentJobKey, authorizeSpawnAssignment } =
   require('./spawn.authority');
 
@@ -199,6 +200,39 @@ assert.deepStrictEqual(authorizeSpawnAssignment({ assignment: null,
   staffingPlan: plan({}) }).phase, 'idle');
 
 const mainSource = require('fs').readFileSync(require.resolve('./main'), 'utf8');
+const saturatedHelperStart = mainSource.indexOf(
+  'const hasSaturatedLocalWorkGap =');
+const saturatedHelperEnd = mainSource.indexOf(';', saturatedHelperStart) + 1;
+assert(saturatedHelperStart >= 0 && saturatedHelperEnd > saturatedHelperStart,
+  'the saturated-storage priority uses one testable gap predicate');
+const saturatedContext = {};
+vm.runInNewContext(mainSource.slice(saturatedHelperStart, saturatedHelperEnd) +
+  '\nthis.hasSaturatedLocalWorkGap = hasSaturatedLocalWorkGap;', saturatedContext);
+const localGapInput = {
+  storageUsed: 990, storageCapacity: 1000,
+  viableUpgraders: 1, desiredUpgraders: 2,
+  viableBuilders: 2, desiredBuilders: 2
+};
+assert.strictEqual(saturatedContext.hasSaturatedLocalWorkGap(localGapInput), true,
+  'a saturated room with a funded upgrader gap suppresses optional remote hauling');
+assert.strictEqual(saturatedContext.hasSaturatedLocalWorkGap({ ...localGapInput,
+  viableUpgraders: 2, viableBuilders: 1 }), true,
+  'a saturated room with funded construction or repair staffing suppresses optional remote hauling');
+assert.strictEqual(saturatedContext.hasSaturatedLocalWorkGap({ ...localGapInput,
+  storageUsed: 979 }), false,
+  'normal storage preserves the established remote-hauling order');
+assert.strictEqual(saturatedContext.hasSaturatedLocalWorkGap({ ...localGapInput,
+  viableUpgraders: 2, viableBuilders: 2 }), false,
+  'full storage without a funded local staffing gap does not create idle workers');
+assert.strictEqual(saturatedContext.hasSaturatedLocalWorkGap({ ...localGapInput,
+  storageUsed: 0, storageCapacity: 0 }), false,
+  'a room without storage cannot enter saturated-storage priority');
+assert(/const establishedHaulRequest = allowRemoteHaulingRecovery &&\s+!saturatedLocalWorkGap/
+  .test(mainSource),
+  'saturated local work precedes the early established remote-hauling request');
+assert(/const remoteHaulRecoveryRequest = allowRemoteHaulingRecovery &&\s+!saturatedLocalWorkGap/
+  .test(mainSource),
+  'saturated local work also precedes balanced optional remote recovery');
 assert(!/if \(!Object\.values\(Game\.creeps\)\.some\(creep =>\s*creep\.room\.name === room\.name\)\)/
   .test(mainSource),
   'an empty owned room must use the shared baseline planner instead of a hard-coded repair body');
