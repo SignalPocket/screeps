@@ -94,5 +94,14 @@ assert.match(main,
 assert.match(main,
   /const dispatchPlanningCreeps = selectDispatchPlanningCreeps\([\s\S]{0,600}dispatchPlanningNames\.has\(c\.name\)/,
   'pickup planning excludes only the guaranteed-deferred execution suffix');
+const observationEnd = main.indexOf("  cpuStages.mark('remotePlanning');");
+const observationSource = main.slice(0, observationEnd);
+assert.strictEqual((observationSource.match(/Object\.values\(Game\.creeps\)/g) || [])
+  .length, 1, 'observation builds the per-tick creep roster once');
+assert.strictEqual((observationSource.match(/Object\.values\(Game\.rooms\)/g) || [])
+  .length, 1, 'observation builds the per-tick visible-room roster once');
+assert.match(observationSource,
+  /const tickCreeps = Object\.values\(Game\.creeps\);\s+const tickRooms = Object\.values\(Game\.rooms\);/,
+  'stable per-tick rosters are created only after the emergency guard');
 
 console.log('CPU policy scenarios passed');

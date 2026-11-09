@@ -173,14 +173,16 @@ module.exports.loop = function () {
   // broad scans at the last 250 bucket points so a later tick can resume the
   // normal recovery policy instead of extending an empty-bucket outage.
   if (cpuPolicy.mode === 'recovery' && Game.cpu.bucket < 250) return;
-  const warEvents = collectFriendlyDamageEvents(Object.values(Game.creeps));
-  for (const room of Object.values(Game.rooms)) {
+  const tickCreeps = Object.values(Game.creeps);
+  const tickRooms = Object.values(Game.rooms);
+  const warEvents = collectFriendlyDamageEvents(tickCreeps);
+  for (const room of tickRooms) {
     const targets = getDefenseTargets(room, FIND_HOSTILE_CREEPS,
       FIND_HOSTILE_STRUCTURES);
     const combat = updateRoomCombat(room, Game.time, targets);
     if (combat.fighting) warEvents.push({ hostile: true, roomName: room.name });
   }
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of tickCreeps) {
     if (isActiveDefenseAssignment(creep, Game.rooms)) {
       creep.memory.role = 'defender';
       creep.memory.assignmentRole = 'defender';
@@ -188,7 +190,7 @@ module.exports.loop = function () {
   }
   updateWarState(Memory, Game.time, warEvents);
   retireCompletedPush(Game);
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of tickCreeps) {
     if (creep.memory.role === 'remote-scout') {
       creep.memory.role = 'remote-miner';
       creep.memory.birthRole = creep.memory.birthRole === 'remote-scout'
@@ -254,7 +256,7 @@ module.exports.loop = function () {
     COLOR_PURPLE, COLOR_WHITE
   });
   if (allowSlowPlanning) {
-    for (const room of Object.values(Game.rooms)) {
+    for (const room of tickRooms) {
       if (!room.controller || !room.controller.my) continue;
       if (!room.memory.landmarkFlags ||
           scheduledRoomTick(room, 100, 11)) landmarkFlags.reconcile(room);
@@ -328,10 +330,10 @@ module.exports.loop = function () {
   const { getObjectLabel, formatTaskTarget, logDeadCreeps } =
     createCreepReporting({ Game, getRoomSources, STRUCTURE_CONTAINER });
   logDeadCreeps(Memory.creeps);
-  reconcileBodyTypes(Object.values(Game.creeps), { WORK, CARRY, CLAIM, ATTACK });
+  reconcileBodyTypes(tickCreeps, { WORK, CARRY, CLAIM, ATTACK });
   // Brigade slot identity is permanent for this experiment. Generic role
   // balancing must not absorb a tiny relay body into the ordinary hauler pool.
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of tickCreeps) {
     if (creep.memory.birthRole === CONTROLLER_BRIGADE_ROLE &&
         Number.isInteger(creep.memory.controllerRelaySlot)) {
       creep.memory.role = CONTROLLER_BRIGADE_ROLE;
@@ -341,15 +343,15 @@ module.exports.loop = function () {
   // Reassert them before assignment cleanup; otherwise cleanup sees the old
   // builder role, deletes sourceReserve, and causes the same conversion and
   // console message again on every tick.
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of tickCreeps) {
     if (!creep.memory.sourceReserve || creep.memory.remoteRoom) continue;
     creep.memory.role = 'harvester';
     creep.memory.preferredSource = creep.memory.sourceReserve;
   }
-  reconcileCreepAssignments(Object.values(Game.creeps));
-  for(const creep of Object.values(Game.creeps))reconcileLaborBody(creep);
+  reconcileCreepAssignments(tickCreeps);
+  for(const creep of tickCreeps)reconcileLaborBody(creep);
   const towerStatuses = runTowers({
-    rooms: Object.values(Game.rooms), RESOURCE_ENERGY, FIND_MY_STRUCTURES,
+    rooms: tickRooms, RESOURCE_ENERGY, FIND_MY_STRUCTURES,
     FIND_HOSTILE_CREEPS, FIND_MY_CREEPS, FIND_STRUCTURES, STRUCTURE_TOWER,
     STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_WALL, STRUCTURE_RAMPART,
     ATTACK, RANGED_ATTACK, HEAL, WORK, CLAIM
@@ -358,7 +360,7 @@ module.exports.loop = function () {
   const getDefenseThreats = homeRoomName => {
     const home = Game.rooms[homeRoomName];
     const roomNames = getDefenseRoomNames(homeRoomName,
-      home && home.memory, Object.values(Game.creeps));
+      home && home.memory, tickCreeps);
     const threats = [...roomNames].flatMap(roomName => {
       const room = Game.rooms[roomName];
       return room ? getDefenseTargets(room, FIND_HOSTILE_CREEPS,
@@ -383,7 +385,7 @@ module.exports.loop = function () {
     })));
     return threats;
   };
-  const postBattleSalvageRooms = new Set(Object.values(Game.rooms)
+  const postBattleSalvageRooms = new Set(tickRooms
     .filter(room => {
       const status = towerStatuses[room.name];
       if (status && status.hostileCount > 0) return false;
@@ -410,7 +412,7 @@ module.exports.loop = function () {
     Game, normalizeBuilderMemory, hasBuilderBody, isOutpostBuilder
   });
   if (scheduledGlobalTick(10, 3)) {
-    reconcileBuilderRosters(Object.values(Game.rooms));
+    reconcileBuilderRosters(tickRooms);
   }
   if (!Memory.memoryMaintenance ||
       Game.time - (Memory.memoryMaintenance.lastRun || 0) >= 1000) {
@@ -454,12 +456,12 @@ module.exports.loop = function () {
         readiness.ready || readiness.replacementMode === 'maintenance'));
   };
   const getActiveControllerBrigadeCount = (room, workers) =>
-    (workers || Object.values(Game.creeps)).filter(creep =>
+    (workers || tickCreeps).filter(creep =>
       creep.memory.home === room.name &&
       creep.memory.role === CONTROLLER_BRIGADE_ROLE).length;
   const getPopulationTransitionAllowance = (room, workers,
     knownWorkerLimit) => {
-    const roomWorkers = (workers || Object.values(Game.creeps)).filter(creep =>
+    const roomWorkers = (workers || tickCreeps).filter(creep =>
       creep.memory.home === room.name);
     const situation = getRoomSituation(room);
     const remote = situation.policy.remote || {};
@@ -704,13 +706,13 @@ module.exports.loop = function () {
     const plannedWork = remoteRoom.memory.deliveryPolicy?.blocked ? 0 :
       sites.length + backlog.unqueued;
     const old=remoteRoom.memory.builderCapacityPlan;
-    const activeRepairCrew=Object.values(Game.creeps).filter(c=>c.memory.emergencyRepairRoom===remoteRoom.name).length;
+    const activeRepairCrew=tickCreeps.filter(c=>c.memory.emergencyRepairRoom===remoteRoom.name).length;
     const criticalDamage=activeRepairCrew>0 || structures.some(s=>s.structureType===STRUCTURE_CONTAINER&&s.hits<s.hitsMax*.25);
     if(old && Game.time-old.updated<20){if(criticalDamage)old.desired=Math.max(2,old.desired);return old.desired;}
-    const owners=Object.values(Game.rooms).filter(r=>r.controller?.my);
+    const owners=tickRooms.filter(r=>r.controller?.my);
     const home=owners.find(r=>[r.memory.leftSurvey,r.memory.southSurvey,r.memory.southwestSurvey]
       .some(plan=>plan?.targetRoom===remoteRoom.name));
-    const candidates=Object.values(Game.creeps).filter(c=>c.memory.role==='builder' &&
+    const candidates=tickCreeps.filter(c=>c.memory.role==='builder' &&
       c.memory.builderScope==='outpost'&&c.memory.remoteRoom===remoteRoom.name&&
       !c.spawning&&hasRemoteReplacementLife(c));
     const maintenance=planRepairSupply({structures,production:getRoomSources(remoteRoom).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)});
@@ -1085,7 +1087,7 @@ module.exports.loop = function () {
         .some(spawn => spawn.my), spawnTime: CREEP_SPAWN_TIME });
     if (bootstrapRequest) return bootstrapRequest;
     const outpostPresence = getOutpostPresenceGap(room.name, room.memory,
-      Object.values(Game.creeps));
+      tickCreeps);
     if (outpostPresence) {
       const survey = outpostPresence.survey;
       return {
@@ -1377,16 +1379,15 @@ module.exports.loop = function () {
   // records measured lanes; it never mutates creep roles or population caps.
   // Retain distinct route/delivery metadata while deriving every outpost's
   // source, carrier, and maintenance demand through the shared planner.
-  for (const creep of Object.values(Game.creeps)) {
+  for (const creep of tickCreeps) {
     const home = Game.rooms[creep.memory.remoteHome || creep.memory.home];
     observeHaulTrip({ creep, homeMemory: home && home.memory, tick: Game.time,
       resource: RESOURCE_ENERGY });
   }
-  const visibleRooms = Object.values(Game.rooms);
-  const ownedVisibleRooms = visibleRooms.filter(room =>
+  const ownedVisibleRooms = tickRooms.filter(room =>
     room.controller && room.controller.my);
   const ownershipTransitions = reconcileOwnedRoomTransitions({
-    Game, rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
+    Game, rooms: ownedVisibleRooms, creeps: tickCreeps,
     getWork: creep => creep.getActiveBodyparts(WORK),
     getCarry: creep => creep.getActiveBodyparts(CARRY),
     getEnergy: creep => creep.store[RESOURCE_ENERGY] || 0
@@ -1416,7 +1417,7 @@ module.exports.loop = function () {
     scheduledRoomTick(room, 10, 6));
   if (allowSlowPlanning && remoteRostersDue.length > 0) {
     reconcileRemoteHaulerRosters({
-      rooms: remoteRostersDue, creeps: Object.values(Game.creeps),
+      rooms: remoteRostersDue, creeps: tickCreeps,
       Game, RESOURCE_ENERGY,
       isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getRemoteHaulerBudget: room =>
@@ -1425,7 +1426,7 @@ module.exports.loop = function () {
   }
   const remoteMinerRosterResults = allowSlowPlanning
     ? reconcileRemoteMinerRosters({
-      rooms: ownedVisibleRooms, creeps: Object.values(Game.creeps),
+      rooms: ownedVisibleRooms, creeps: tickCreeps,
       getReplacementLead: getRemoteReplacementLead,
       isOwnedRoom: roomName => ownedTarget(Game, roomName),
       getWork: creep => creep.getActiveBodyparts(WORK)
@@ -1449,7 +1450,7 @@ module.exports.loop = function () {
   }
 
   // Plan all remote road corridors and expose at most five sites per route.
-  if (allowSlowPlanning) planRemoteCorridors(Object.values(Game.rooms));
+  if (allowSlowPlanning) planRemoteCorridors(tickRooms);
   if (allowSlowPlanning && scheduledGlobalTick(50, 17)) {
     createRoadNetwork({Game,FIND_STRUCTURES,FIND_MY_CONSTRUCTION_SITES,
       LOOK_STRUCTURES,LOOK_CONSTRUCTION_SITES,OBSTACLE_OBJECT_TYPES,OK}).run();
