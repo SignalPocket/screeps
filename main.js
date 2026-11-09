@@ -118,6 +118,8 @@ const { DEFEND_DEFINITION, createDefendCommand, planManualDefense,
 const { DIRECTIVES_DEFINITION, createDirectivesCommand,
   reconcileDirectiveHistory } = require('operator.directives');
 const { CANCEL_DEFINITION, createCancelCommand } = require('operator.cancel');
+const { REMOTES_DEFINITION, createRemotesCommand } =
+  require('operator.remotes');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -391,6 +393,22 @@ module.exports.loop = function () {
     getRemoteReplacementLead, getLocalReplacementLead,
     hasRemoteReplacementLife, hasLocalReplacementLife } =
     createCreepLifecycle({ Game, WORK, MOVE, CREEP_SPAWN_TIME });
+  operatorCommands.push({
+    definition: REMOTES_DEFINITION,
+    run: createRemotesCommand({ Game, Memory,
+      findSources: FIND_SOURCES,
+      findStructures: FIND_STRUCTURES,
+      findConstructionSites: FIND_MY_CONSTRUCTION_SITES,
+      findDroppedResources: FIND_DROPPED_RESOURCES,
+      findHostileCreeps: FIND_HOSTILE_CREEPS,
+      findHostileStructures: FIND_HOSTILE_STRUCTURES,
+      resourceEnergy: RESOURCE_ENERGY,
+      structureContainer: STRUCTURE_CONTAINER,
+      structureWall: STRUCTURE_WALL,
+      structureRampart: STRUCTURE_RAMPART,
+      repairPower: REPAIR_POWER,
+      hasRemoteReplacementLife, getRemoteReplacementLead })
+  });
   operatorCommands.push({
     definition: SPAWN_DEFINITION,
     run: createSpawnCommand({ Game, colonyCommand,
