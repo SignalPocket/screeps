@@ -1,5 +1,10 @@
 'use strict';
 
+const { calculatePopulationTotals } =
+  typeof Game === 'undefined'
+    ? require('./population.totals')
+    : require('population.totals');
+
 // Katherine's bounded operational request. This is not the future default
 // controller-supply design. Reservations remain after the upgrade push ends.
 const HOME_ROOM = 'W7N4';
@@ -121,6 +126,10 @@ const finalizeOperationPolicy = (policy, room, Game) => {
     policy.remote.reserversMin = 0;
     policy.remote.reservers = 0;
   }
+  // Scenario and spawn-capacity stages calculate totals before this final
+  // operation boundary. Restoring a protected role or suspending reservers
+  // must refresh that derived field from the final published policy state.
+  policy.totals = calculatePopulationTotals(policy);
   room.memory.controllerBrigadeOperation = { updated: Game.time,
     ...policy.operations, active: policy.operations.upgradePush };
 };
