@@ -4112,12 +4112,34 @@ module.exports.loop = function () {
         creep.store[RESOURCE_ENERGY] > 0));
   const deferredExecutionCreeps = sortedExecutionCreeps.filter(creep =>
     !survivalExecutionCreeps.includes(creep));
+  const isActiveCpuRepair = creep => {
+    const memory = creep.memory || {};
+    if (memory.role !== 'builder' || memory.builderScope === 'expansion' ||
+        memory.energyBudgetHeld || memory.staffingRetire || creep.spawning ||
+        !creep.store) return false;
+    const outpost = memory.builderScope === 'outpost';
+    const targetId = outpost ? memory.remoteRepairTarget
+      : memory.workJob && memory.workJob.lane === 'repair'
+        ? memory.workJob.targetId : null;
+    const target = targetId && Game.getObjectById(targetId);
+    const expectedRoom = outpost ? memory.remoteRoom : creep.room.name;
+    const canContinue = (creep.store[RESOURCE_ENERGY] || 0) > 0 || outpost ||
+      memory.workJob && memory.workJob.lane === 'repair' &&
+        memory.workJob.sourceId;
+    return Boolean(target && Number.isFinite(target.hits) &&
+      Number.isFinite(target.hitsMax) && target.hits < target.hitsMax &&
+      target.room && target.room.name === expectedRoom && canContinue);
+  };
   const fairExecutionCreeps = selectFairExecutionCreeps({
     creeps: deferredExecutionCreeps, previous: previousCpuExecution,
     tick: Game.time, mode: cpuPolicy.mode,
     limit: cpuPolicy.fairExecutionLimit,
     interval: cpuPolicy.fairExecutionInterval,
-    threshold: cpuPolicy.fairDeferralThreshold
+    threshold: cpuPolicy.fairDeferralThreshold,
+    repairLimit: cpuPolicy.repairFairExecutionLimit,
+    repairInterval: cpuPolicy.repairFairExecutionInterval,
+    repairThreshold: cpuPolicy.repairFairDeferralThreshold,
+    isActiveRepair: isActiveCpuRepair
   });
   const fairExecutionNames = new Set(fairExecutionCreeps.map(creep =>
     creep.name));
@@ -4125,8 +4147,8 @@ module.exports.loop = function () {
     !fairExecutionNames.has(creep.name));
   const executionRotation = rotatingExecutionCreeps.length
     ? Game.time % rotatingExecutionCreeps.length : 0;
-  const executionCreeps = fairExecutionCreeps.concat(
-    survivalExecutionCreeps,
+  const executionCreeps = survivalExecutionCreeps.concat(
+    fairExecutionCreeps,
     rotatingExecutionCreeps.slice(executionRotation),
     rotatingExecutionCreeps.slice(0, executionRotation));
   const pickupCpuCeiling = cpuPolicy.executionCpuRatio !== null &&

@@ -22,7 +22,14 @@ const deriveCpuPolicy = bucket => {
       : mode === 'constrained' ? 16 : null,
     fairExecutionLimit: mode === 'recovery' ? 0 : 1,
     fairExecutionInterval: 5,
-    fairDeferralThreshold: 10
+    fairDeferralThreshold: 10,
+    // Funded repair assignments get a separate bounded lane in normal mode.
+    // Two visits per tick clear the observed four-room fixer set before a
+    // fifth consecutive deferral, without admitting the whole optional tail.
+    repairFairExecutionLimit: mode === 'recovery' ? 0
+      : mode === 'constrained' ? 1 : 2,
+    repairFairExecutionInterval: mode === 'normal' ? 1 : 5,
+    repairFairDeferralThreshold: mode === 'normal' ? 1 : 10
   };
 };
 
@@ -53,20 +60,36 @@ const selectDispatchPlanningCreeps = ({ creeps, guaranteedCount, used,
 };
 
 const selectFairExecutionCreeps = ({ creeps, previous, tick, mode,
-  limit = 1, interval = 5, threshold = 10 }) => {
-  if (mode === 'recovery' || limit <= 0 || interval <= 0 ||
-      tick % interval !== 0 || previous?.updated !== tick - 1) return [];
+  limit = 1, interval = 5, threshold = 10,
+  repairLimit = 0, repairInterval = 1, repairThreshold = 1,
+  isActiveRepair = () => false }) => {
+  if (mode === 'recovery' || previous?.updated !== tick - 1) return [];
   const deferredAge = new Map((previous.deferredCreeps || [])
+    .filter(entry => entry.reason !== 'parked')
     .map(entry => [entry.name, entry.consecutiveTicks]));
-  return creeps.filter(creep => {
+  const available = creeps.filter(creep => {
     const memory = creep.memory || {};
-    return memory.role === 'builder' && memory.builderScope !== 'outpost' &&
-      memory.builderScope !== 'expansion' && !memory.remoteRoom &&
-      (deferredAge.get(creep.name) || 0) >= threshold;
-  }).sort((a, b) => (deferredAge.get(b.name) || 0) -
+    return memory.role === 'builder' &&
+      memory.builderScope !== 'expansion' &&
+      !memory.energyBudgetHeld;
+  });
+  const byAge = (a, b) => (deferredAge.get(b.name) || 0) -
       (deferredAge.get(a.name) || 0) ||
-    a.room.name.localeCompare(b.room.name) || a.name.localeCompare(b.name))
-    .slice(0, limit);
+    a.room.name.localeCompare(b.room.name) || a.name.localeCompare(b.name);
+  if (repairLimit > 0 && repairInterval > 0 &&
+      tick % repairInterval === 0) {
+    const repairs = available.filter(creep => isActiveRepair(creep) &&
+      (deferredAge.get(creep.name) || 0) >= repairThreshold)
+      .sort(byAge).slice(0, repairLimit);
+    if (repairs.length) return repairs;
+  }
+  if (limit <= 0 || interval <= 0 || tick % interval !== 0) return [];
+  return available.filter(creep => {
+    const memory = creep.memory || {};
+    return memory.builderScope !== 'outpost' && !memory.remoteRoom &&
+      memory.waitState !== 'parked' &&
+      (deferredAge.get(creep.name) || 0) >= threshold;
+  }).sort(byAge).slice(0, limit);
 };
 
 // The executor visits a prefix of its final, rotated queue. These are visits,
@@ -90,8 +113,18 @@ const summarizeCreepExecution = ({ creeps, executedCount, tick, previous }) => {
     } else {
       roles[role].deferred++;
       const last = prior.get(creep.name);
+      const memory = creep.memory || {};
+      const durableRepair = memory.role === 'builder' &&
+        (memory.workJob && memory.workJob.lane === 'repair' &&
+          memory.workJob.targetId || memory.builderScope === 'outpost' &&
+          memory.remoteRepairTarget);
+      const reason = memory.energyBudgetHeld ||
+        memory.waitState === 'parked' && !durableRepair
+        ? 'parked' : 'cpu-deferred';
       deferredCreeps.push({ name: creep.name, role, room: creep.room.name,
-        consecutiveTicks: last ? last.consecutiveTicks + 1 : 1 });
+        reason, consecutiveTicks: last &&
+          (!last.reason || last.reason === reason)
+          ? last.consecutiveTicks + 1 : 1 });
     }
   });
   return { updated: tick, available: creeps.length, executed,

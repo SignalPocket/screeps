@@ -10,19 +10,25 @@ assert.deepStrictEqual(deriveCpuPolicy(undefined), {
   bucket: null, mode: 'normal', allowSlowPlanning: true,
   executionCpuRatio: 0.8, minimumExecutionCreeps: null,
   fairExecutionLimit: 1, fairExecutionInterval: 5,
-  fairDeferralThreshold: 10
+  fairDeferralThreshold: 10,
+  repairFairExecutionLimit: 2, repairFairExecutionInterval: 1,
+  repairFairDeferralThreshold: 1
 });
 assert.strictEqual(deriveCpuPolicy(500).mode, 'recovery');
 assert.strictEqual(deriveCpuPolicy(500).allowSlowPlanning, false);
 assert.strictEqual(deriveCpuPolicy(500).executionCpuRatio, 0.65);
 assert.strictEqual(deriveCpuPolicy(500).minimumExecutionCreeps, 8);
 assert.strictEqual(deriveCpuPolicy(500).fairExecutionLimit, 0);
+assert.strictEqual(deriveCpuPolicy(500).repairFairExecutionLimit, 0);
 assert.strictEqual(deriveCpuPolicy(1000).mode, 'constrained');
 assert.strictEqual(deriveCpuPolicy(1000).executionCpuRatio, 0.75);
 assert.strictEqual(deriveCpuPolicy(1000).fairExecutionLimit, 1);
+assert.strictEqual(deriveCpuPolicy(1000).repairFairExecutionLimit, 1);
+assert.strictEqual(deriveCpuPolicy(1000).repairFairExecutionInterval, 5);
 assert.strictEqual(deriveCpuPolicy(3000).mode, 'normal');
 assert.strictEqual(deriveCpuPolicy(3000).executionCpuRatio, 0.8);
 assert.strictEqual(deriveCpuPolicy(3000).fairExecutionInterval, 5);
+assert.strictEqual(deriveCpuPolicy(3000).repairFairExecutionInterval, 1);
 assert.strictEqual(shouldRenderPlanningVisuals({
   tick: 120, allowSlowPlanning: true
 }), true);
