@@ -46,8 +46,12 @@ assert.strictEqual(expiring.memory.role,'builder');
 const {enforceUpgraderLimit}=require('./role.capacity');
 const one=creep('one',5),two=creep('two',5),three=creep('three',5),four=creep('four',5);
 for(const candidate of [one,two,three,four])candidate.pos={getRangeTo:()=>1};
-enforceUpgraderLimit({Game:{rooms:{H:{name:'H',controller:{my:true}}},creeps:{one,two,three,four}},isRoadMobile:()=>true,getLimit:()=>3});
+const limitRoom={name:'H',controller:{my:true}};const limitRoster=[one,two,three,four];
+const limitOrder=limitRoster.map(candidate=>candidate.name);
+enforceUpgraderLimit({Game:{rooms:{},creeps:{}},rooms:[limitRoom],creeps:limitRoster,isRoadMobile:()=>true,getLimit:()=>3});
 assert.strictEqual([one,two,three].filter(candidate=>candidate.memory.role==='upgrader').length,3,
  'situational limit retains three upgraders during a push');
 assert.strictEqual(four.memory.role,'builder');
+assert.deepStrictEqual(limitRoster.map(candidate=>candidate.name),limitOrder,
+ 'upgrader enforcement does not mutate supplied roster order');
 console.log('one strongest upgrader retained; mobile surplus works and immobile surplus recycles');

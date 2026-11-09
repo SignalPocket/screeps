@@ -1,13 +1,15 @@
 'use strict';
-const dispatchEmergencyRepairs=({Game,getStructures,isRoadMobile,resource='energy'})=>{
+const dispatchEmergencyRepairs=({Game,getStructures,isRoadMobile,resource='energy',creeps,rooms})=>{
  const result=[];
- for(const home of Object.values(Game.rooms).filter(r=>r.controller?.my)){
+ const roster=Array.isArray(creeps)?creeps:Object.values(Game.creeps);
+ const visibleRooms=Array.isArray(rooms)?rooms:Object.values(Game.rooms);
+ for(const home of visibleRooms.filter(r=>r.controller?.my)){
   const plans=[home.memory.leftSurvey,home.memory.southSurvey,home.memory.southwestSurvey].filter(p=>p?.active);
   for(const survey of plans){
    const room=Game.rooms[survey.targetRoom];if(!room)continue;
    const targets=getStructures(room).filter(s=>s.structureType==='container'&&s.hits<s.hitsMax*.25);
    if(!targets.length)continue;
-   const workers=Object.values(Game.creeps);
+   const workers=roster;
    const assigned=workers.filter(c=>c.memory.home===home.name&&c.memory.emergencyRepairRoom===room.name&&
     (c.spawning||c.ticksToLive>100));
    for(let i=assigned.length;i<2;i++){

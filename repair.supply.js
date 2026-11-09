@@ -38,12 +38,13 @@ const runOutpostRepair=({creep,room,structures,stores,work,free,energy,available
  claim(target);creep.memory.taskTarget=target.id;return repair(target);
 };
 module.exports={planRepairSupply,exportableEnergy,runOutpostRepair};
-const protectRepairAssignments=({Game,getStructures})=>{
- for(const c of Object.values(Game.creeps)){
+const protectRepairAssignments=({Game,getStructures,creeps})=>{
+ const roster=Array.isArray(creeps)?creeps:Object.values(Game.creeps);
+ for(const c of roster){
   const room=Game.rooms[c.memory.emergencyRepairRoom];if(!room||!getStructures(room).some(s=>['container','road'].includes(s.structureType)&&s.hits<s.hitsMax*.8))continue;
   if(c.memory.builderScope==='outpost'&&c.memory.remoteRoom===room.name)continue;
   const home=Game.rooms[c.memory.home];if(!home)continue;
-  const used=new Set(Object.values(Game.creeps).filter(o=>o!==c&&o.memory.remoteRoom===room.name&&o.memory.role==='builder').map(o=>o.memory.remoteBuilderSlot));
+  const used=new Set(roster.filter(o=>o!==c&&o.memory.remoteRoom===room.name&&o.memory.role==='builder').map(o=>o.memory.remoteBuilderSlot));
   let slot=0;while(used.has(slot))slot++;
   Object.assign(c.memory,{role:'builder',bodyType:'worker',builderScope:'outpost',builderMission:'maintenance',assignmentBuilderMission:'maintenance',remoteHome:home.name,remoteRoom:room.name,remoteBuilderSlot:slot,remoteTeam:home.memory.southSurvey?.targetRoom===room.name?'south':home.memory.southwestSurvey?.targetRoom===room.name?'southwest':'left'});
  }
