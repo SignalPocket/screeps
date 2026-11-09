@@ -202,6 +202,41 @@ assert.strictEqual(corridorDeserializeCalls, 1,
   'one move should decode its shared blocker, safety and retained corridor once');
 const corridorOccupancy = corridorService.getMovementRoomCache('W7N4')
   .creepsByPosition;
+const firstReservation = corridorService.movementReservationEntries.W7N4
+  .get('11:10');
+assert.deepStrictEqual(firstReservation,
+  {x: 11, y: 10, owner: corridorWalker.name});
+assert.strictEqual(corridorService.movementReservations.W7N4['11:10'],
+  corridorWalker.name, 'the exposed reservation object remains compatible');
+const selfCosts = {values: {}, get(x, y) {
+  return this.values[`${x}:${y}`] || 0;
+}, set(x, y, value) { this.values[`${x}:${y}`] = value; }};
+corridorOptions.costCallback('W7N4', selfCosts);
+assert.strictEqual(selfCosts.get(11, 10), 0,
+  'a creep must not price its own reserved corridor');
+const relay = {name: 'relay', room: corridorWalker.room,
+  pos: corridorWalker.pos, memory: {role: 'controller-relay',
+    _move: {path: 'relay-route'}}};
+corridorGame.creeps.relay = relay;
+corridorService.reserveUpcomingRoute(relay);
+assert.strictEqual(corridorService.movementReservations.W7N4['11:10'],
+  relay.name, 'the latest reservation owner still wins');
+assert.deepStrictEqual(corridorService.movementReservationEntries.W7N4
+  .get('11:10'), {x: 11, y: 10, owner: relay.name});
+const relayCosts = {values: {}, get(x, y) {
+  return this.values[`${x}:${y}`] || 0;
+}, set(x, y, value) { this.values[`${x}:${y}`] = value; }};
+corridorOptions.costCallback('W7N4', relayCosts);
+assert.strictEqual(relayCosts.get(11, 10), 255,
+  'non-relays must treat a relay reservation as blocked');
+const isolated = {name: 'isolated', room: {name: 'W6N6'},
+  pos: {x: 10, y: 10}, memory: {_move: {path: 'isolated-route'}}};
+corridorService.reserveUpcomingRoute(isolated);
+assert.notStrictEqual(corridorService.movementReservationEntries.W6N6,
+  corridorService.movementReservationEntries.W7N4,
+  'reservation indexes remain room-isolated');
+corridorService.reserveUpcomingRoute(corridorWalker);
+const reservationSetupDeserializeCalls = corridorDeserializeCalls;
 assert.strictEqual(corridorOptions.reusePath, 50,
   'one moving-creep observation retains the chosen route');
 assert.deepStrictEqual(corridorWalker.memory.navCorridor, {
@@ -213,7 +248,8 @@ assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
 
 corridorGame.time = 301;
 corridorService.moveCreep(corridorWalker, corridorGoal);
-assert.strictEqual(corridorDeserializeCalls, 2,
+assert.strictEqual(corridorDeserializeCalls,
+  reservationSetupDeserializeCalls + 1,
   'the next tick must refresh the decoded route');
 assert.strictEqual(corridorService.getMovementRoomCache('W7N4')
   .creepsByPosition, corridorOccupancy,
@@ -233,16 +269,19 @@ assert.strictEqual(corridorOptions.reusePath, 50,
   'a goal change clears prior blocker persistence evidence');
 assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
 assert.strictEqual(corridorWalker.memory.navCorridor.goal, 'repair-site');
-assert.strictEqual(corridorDeserializeCalls, 3,
+assert.strictEqual(corridorDeserializeCalls,
+  reservationSetupDeserializeCalls + 2,
   'a changed path must invalidate the cached decode');
 
 corridorWalker.memory._move = {path: 'same-tick-replacement'};
 corridorService.reserveUpcomingRoute(corridorWalker);
-assert.strictEqual(corridorDeserializeCalls, 4,
+assert.strictEqual(corridorDeserializeCalls,
+  reservationSetupDeserializeCalls + 3,
   'a same-tick path replacement must be decoded independently');
 corridorWalker.pos.x = 11;
 corridorService.reserveUpcomingRoute(corridorWalker);
-assert.strictEqual(corridorDeserializeCalls, 5,
+assert.strictEqual(corridorDeserializeCalls,
+  reservationSetupDeserializeCalls + 4,
   'same-tick displacement must realign and refresh the decoded route');
 corridorWalker.pos.x = 10;
 
