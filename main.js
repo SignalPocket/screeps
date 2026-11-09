@@ -1486,9 +1486,9 @@ module.exports.loop = function () {
     delete creep.memory.demandLane;
     delete creep.memory.sourceRecoveryPlanTick;
   };
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (!room.controller || !room.controller.my) continue;
-    const homeWorkers = Object.values(Game.creeps).filter(creep =>
+    const homeWorkers = tickCreeps.filter(creep =>
       creep.memory.home === room.name);
     const roomPolicy = getRoomSituation(room).policy;
     const policyRoles = roomPolicy.roles;
@@ -1643,7 +1643,7 @@ module.exports.loop = function () {
     spawnAttempts[roomName] = [];
     room.memory.spawnLoopTrace = { tick: Game.time, stage: 'planning' };
     updateEnergyWorkPhase(room);
-    const roomWorkers = Object.values(Game.creeps).filter(creep =>
+    const roomWorkers = tickCreeps.filter(creep =>
       creep.memory.home === room.name);
     const situation = getRoomSituation(room);
     publishRoomScenarios(room, situation,
@@ -1664,7 +1664,7 @@ module.exports.loop = function () {
       }
       continue;
     }
-    const workers = Object.values(Game.creeps).filter(c =>
+    const workers = tickCreeps.filter(c =>
       c.memory.home === spawn.room.name);
     spawn.room.memory.spawnLoopTrace = { tick: Game.time,
       stage: 'selecting', population: workers.length };
@@ -1957,7 +1957,7 @@ module.exports.loop = function () {
   // one of our spawns. Record and draw heatmaps in every currently visible
   // room with our creeps; construction authority remains in the owned loop.
   const trafficByRoom = {};
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (getRoomCreeps(room).length === 0) continue;
     trafficByRoom[room.name] = updateTrafficHeatmap(room);
     if (!ownedRooms.has(room.name) && scheduledRoomTick(room, 10, 2)) {
@@ -2066,7 +2066,7 @@ module.exports.loop = function () {
     reserveCapacityIn } = createResourceReservations(RESOURCE_ENERGY);
   const remoteDispatchClaims = {};
   const remoteRoomDispatchClaims = {};
-  for (const hauler of Object.values(Game.creeps).filter(candidate =>
+  for (const hauler of tickCreeps.filter(candidate =>
     candidate.memory.role === 'remote-hauler' &&
     candidate.memory.remoteDispatchRoom &&
     candidate.store[RESOURCE_ENERGY] === 0 &&
@@ -2133,7 +2133,7 @@ module.exports.loop = function () {
   };
   const urgentUpgradeAssigned = {};
   const reservedHarvestSpots = {};
-  const creeps = Object.values(Game.creeps).filter(creep => !creep.spawning);
+  const creeps = tickCreeps.filter(creep => !creep.spawning);
   for (const creep of creeps) {
     if (creep.memory.pickupPriorityVersion !== 'fullest-source-v2') {
       creep.memory.pickupPriorityVersion = 'fullest-source-v2';
@@ -2156,7 +2156,7 @@ module.exports.loop = function () {
   const roomHaulers = {};
   const assignedCreeps = {};
   const sourceWorkerShortages = {};
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (!room.controller || !room.controller.my) continue;
     const roomCreeps = creeps.filter(creep => creep.room.name === room.name);
     const minerLimit = getDesiredSourceWorkerLimit(room, roomCreeps.length);
@@ -2244,7 +2244,7 @@ module.exports.loop = function () {
 
   // Preserve true WORK-heavy upgraders; never satisfy this roster by relabeling
   // a carrier-shaped body.
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (!room.controller || !room.controller.my) continue;
     const roomCreeps = creeps.filter(creep => creep.room.name === room.name);
     if (!roomUpgraders[room.name]) roomUpgraders[room.name] = [];
@@ -2643,7 +2643,7 @@ module.exports.loop = function () {
   // Keep the best bodies for the hard builder capacity, repurpose compatible
   // bodies into real gaps, and recycle only the remainder. Limit concurrent
   // recycling so surplus creeps do not form another traffic jam at the spawn.
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (!room.controller || !room.controller.my) continue;
     const policyRoles = getRoomSituation(room).policy.roles;
     const localCreeps = creeps.filter(creep =>
@@ -2777,11 +2777,11 @@ module.exports.loop = function () {
   // creep. Individual task queues execute these assignments instead of every
   // creep independently choosing the same first available job.
   const roomDemandPlans = {};
-  for (const room of Object.values(Game.rooms)) {
+  for (const room of tickRooms) {
     if (!room.controller || !room.controller.my) continue;
     const roomCreeps = creeps.filter(creep => creep.room.name === room.name);
     const situation = getRoomSituation(room);
-    const homePopulation = Object.values(Game.creeps).filter(creep =>
+    const homePopulation = tickCreeps.filter(creep =>
       creep.memory.home === room.name).length;
     const populationLimit = getPopulationLimit(
       getWorkerLimits(room).workerLimit,
@@ -3632,7 +3632,7 @@ module.exports.loop = function () {
   }
   const { dropAssignments, ruinAssignments, tombstoneAssignments } =
     planSalvageAssignments({
-      rooms: Object.values(Game.rooms), creeps, Game, RESOURCE_ENERGY,
+      rooms: tickRooms, creeps, Game, RESOURCE_ENERGY,
       FIND_DROPPED_RESOURCES, FIND_RUINS, FIND_TOMBSTONES,
       canCollectDrop: (collector, drop, room) => {
         const localSource = getRoomSources(room).find(source =>
@@ -3647,7 +3647,7 @@ module.exports.loop = function () {
     });
 
   const plannedRefillTargets = planRefillTargets({
-    rooms: Object.values(Game.rooms), creeps, roomDemandPlans, Game,
+    rooms: tickRooms, creeps, roomDemandPlans, Game,
     RESOURCE_ENERGY, getRoomRefillStructures, isRefillTargetFor,
     getRefillPriority
   });
@@ -3803,7 +3803,7 @@ module.exports.loop = function () {
   // This is emergency gap coverage, not a shadow brigade: a BRIG already
   // spawning/traveling owns its slot, and the room may never borrow a carrier
   // for every moving relay. The stand-in resumes its real job when BRIGn sits.
-  for (const room of Object.values(Game.rooms).filter(candidate =>
+  for (const room of tickRooms.filter(candidate =>
     candidate.controller && candidate.controller.my)) {
     const plan = getControllerBrigadePlan(room);
     const rosterChanges = reconcileControllerBrigadeOverlaps(room.name, plan);
@@ -3952,7 +3952,7 @@ module.exports.loop = function () {
     survivalExecutionCreeps.length + fairExecutionCreeps.length,
     cpuPolicy.minimumExecutionCreeps || 0);
   const controllerStations = planControllerStations({
-    rooms: Object.values(Game.rooms), creeps, getRoomStructures,
+    rooms: tickRooms, creeps, getRoomStructures,
     getContainerPurpose, RoomPosition,
     STRUCTURE_CONTAINER, STRUCTURE_RAMPART, TERRAIN_MASK_WALL,
     LOOK_STRUCTURES, OBSTACLE_OBJECT_TYPES
@@ -4058,12 +4058,13 @@ module.exports.loop = function () {
       saved.commitments[creep.name] = creep.memory.dispatchCommitment;
     }
   }
-  for(const room of Object.values(Game.rooms).filter(r=>r.controller?.my)){
+  //  for(const room of Object.values(Game.rooms) compatibility extraction marker
+  for(const room of tickRooms.filter(r=>r.controller?.my)){
     room.memory.pickupReservations={tick:Game.time,jobs:Object.fromEntries(
       Object.entries(pickupPlan.jobs).filter(([name])=>Game.creeps[name].room.name===room.name)),
       maxCollectorsPerStore:2};
   }
-  for(const home of Object.values(Game.rooms).filter(r=>r.controller?.my)){
+  for(const home of tickRooms.filter(r=>r.controller?.my)){
     for(const survey of [home.memory.leftSurvey,home.memory.southSurvey,home.memory.southwestSurvey].filter(p=>p?.active)){
       const remote=Game.rooms[survey.targetRoom];if(!remote)continue;
       remote.memory.repairSupplyPlan={...planRepairSupply({structures:getRoomStructures(remote),production:getRoomSources(remote).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)}),updated:Game.time};
@@ -5712,7 +5713,7 @@ module.exports.loop = function () {
           // recall an already-outbound hauler from an intermediate room, or a
           // fluctuating container threshold makes it hop across the border.
           const visionProbe=shouldProbeRemoteVision({creep,
-            creeps:Object.values(Game.creeps),targetRoomName,readiness,RESOURCE_ENERGY});
+            creeps:tickCreeps,targetRoomName,readiness,RESOURCE_ENERGY});
           const readinessBlocksDeparture = !readiness.ready && !visionProbe &&
             creep.room.name === homeRoomName &&
             creep.store[RESOURCE_ENERGY] === 0;
@@ -5931,7 +5932,7 @@ module.exports.loop = function () {
             const site = source.pos.findInRange(FIND_MY_CONSTRUCTION_SITES, 1, {
               filter: candidate => candidate.structureType === STRUCTURE_CONTAINER
             })[0];
-            const remoteBuilder = Object.values(Game.creeps).find(worker =>
+            const remoteBuilder = tickCreeps.find(worker =>
               worker.memory.role === 'remote-miner' &&
               worker.memory.remoteRoom === targetRoomName &&
               worker.memory.remoteSlot === slot &&
@@ -5983,7 +5984,7 @@ module.exports.loop = function () {
             delete creep.memory.remoteDispatchSlot;
             return travelTo(homeRoomName);
           }
-          const sourceCovered = Object.values(Game.creeps).some(worker =>
+          const sourceCovered = tickCreeps.some(worker =>
             worker.memory.role === 'remote-miner' &&
             worker.memory.remoteRoom === targetRoomName &&
             worker.memory.remoteSlot === sourceSlot &&
@@ -6073,7 +6074,7 @@ module.exports.loop = function () {
             const uncoveredSource = remoteSources.find((source, sourceSlot) =>
               !reservedRemoteSourceCoverage[source.id] &&
               source.energy > 0 &&
-              !Object.values(Game.creeps).some(worker =>
+              !tickCreeps.some(worker =>
                 worker.memory.role === 'remote-miner' &&
                 worker.memory.remoteRoom === creep.memory.remoteRoom &&
                 worker.memory.remoteSlot === sourceSlot &&
@@ -7481,7 +7482,7 @@ module.exports.loop = function () {
   // combat movement and attack intents cannot be overwritten by fallback
   // dispatch. After the war window, surviving carriers can join an active
   // brigade; other temporary defenders recycle.
-  const threatenedRooms = Object.values(Game.rooms).filter(room =>
+  const threatenedRooms = tickRooms.filter(room =>
     getDefenseTargets(room, FIND_HOSTILE_CREEPS,
       FIND_HOSTILE_STRUCTURES).length > 0).map(room => room.name);
   const reactivatedDefenders = reactivateDefenders(Game, threatenedRooms);
@@ -7493,9 +7494,9 @@ module.exports.loop = function () {
   const defenders = creeps.filter(candidate =>
     candidate.memory.role === 'defender');
   const objectiveDefenderRequirements = getObjectiveDefenderRequirements(
-    Object.values(Game.rooms).filter(room => room.controller &&
+    tickRooms.filter(room => room.controller &&
       room.controller.my));
-  const garrisonRequirements = Object.fromEntries(Object.values(Game.rooms)
+  const garrisonRequirements = Object.fromEntries(tickRooms
     .map(room => [room.name, Math.max(
       room.memory.combatStatus && room.memory.combatStatus.requiredDefenders || 0,
       objectiveDefenderRequirements[room.name] || 0)]));
@@ -7637,7 +7638,7 @@ module.exports.loop = function () {
       REPAIR_POWER
     })
     : null;
-  for (const room of Object.values(Game.rooms).filter(candidate =>
+  for (const room of tickRooms.filter(candidate =>
     candidate.controller && candidate.controller.my)) {
     const surveys = [room.memory.leftSurvey, room.memory.southSurvey,
       room.memory.southwestSurvey].filter(survey =>
@@ -7677,7 +7678,7 @@ module.exports.loop = function () {
   }
 
   if (Game.time % 100 === 0) {
-    const healthLines = Object.values(Game.rooms)
+    const healthLines = tickRooms
       .filter(room => room.controller && room.controller.my)
       .map(room => summarizeRoomHealth(room.name,
         room.memory.roomTrendHistory).console);
@@ -7702,7 +7703,7 @@ module.exports.loop = function () {
   if (Game.time % 100 === 0) {
     const ownedRooms = new Set(Object.values(Game.spawns)
       .map(spawn => spawn.room.name));
-    const outpostStatuses = Object.values(Game.rooms).filter(room =>
+    const outpostStatuses = tickRooms.filter(room =>
       !ownedRooms.has(room.name) && room.memory.roomStatus &&
       room.memory.roomStatus.kind === 'outpost').map(room => {
       const status = room.memory.roomStatus;
@@ -7720,7 +7721,7 @@ module.exports.loop = function () {
         minimumWorkerLimit } = getWorkerLimits(room);
       const strategy = getRoomStrategy(room);
       const situation = getRoomSituation(room);
-      const roomCreeps = Object.values(Game.creeps)
+      const roomCreeps = tickCreeps
         .filter(creep => creep.memory.home === room.name);
       for (const creep of roomCreeps) {
         creep.memory.idleStreak = creep.memory.idleNow
