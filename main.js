@@ -736,11 +736,16 @@ module.exports.loop = function () {
     return stable.desired;
   };
   cpuStages.mark('colonyPolicy');
-  protectRepairAssignments({Game,getStructures:getRoomStructures});
-  reconcileControllerRelief({Game,isRoadMobile:hasRoadMobility});
+  protectRepairAssignments({Game,getStructures:getRoomStructures,
+    creeps:tickCreeps});
+  reconcileControllerRelief({Game,isRoadMobile:hasRoadMobility,
+    creeps:tickCreeps});
   enforceUpgraderLimit({Game,isRoadMobile:hasRoadMobility,
-    getLimit:room=>getRoomSituation(room).policy.roles.upgrader.desired});
-  dispatchEmergencyRepairs({Game,getStructures:getRoomStructures,isRoadMobile:hasRoadMobility,resource:RESOURCE_ENERGY});
+    getLimit:room=>getRoomSituation(room).policy.roles.upgrader.desired,
+    creeps:tickCreeps,rooms:tickRooms});
+  dispatchEmergencyRepairs({Game,getStructures:getRoomStructures,
+    isRoadMobile:hasRoadMobility,resource:RESOURCE_ENERGY,
+    creeps:tickCreeps,rooms:tickRooms});
   const { refreshRemoteWorkNeeds, planRegionalOutposts } =
     createOutpostPlanning({
       Game, getRemoteBuilderTarget, getRemoteHaulerTarget,

@@ -44,8 +44,9 @@ const planControllerRelief = ({
 
 // Keep the incumbent working until its stronger replacement reaches an RC
 // station. Only then may the old body become a builder or retire.
-const reconcileControllerRelief = ({ Game, isRoadMobile }) => {
-  for (const replacement of Object.values(Game.creeps)) {
+const reconcileControllerRelief = ({ Game, isRoadMobile, creeps }) => {
+  const roster = Array.isArray(creeps) ? creeps : Object.values(Game.creeps);
+  for (const replacement of roster) {
     const incumbentName = replacement.memory.qualityFor;
     if (!incumbentName || replacement.spawning ||
         replacement.room.name !== replacement.memory.home) continue;
@@ -93,21 +94,22 @@ const repurposeSurplusUpgrader = (creep, isRoadMobile) => {
 // three, so three upgraders remain upgraders instead of being silently
 // converted by a global cleanup rule.
 const enforceUpgraderLimit = ({
-  Game, isRoadMobile, getLimit = () => 1
+  Game, isRoadMobile, getLimit = () => 1, creeps, rooms
 }) => {
-  const ownedRooms = Object.values(Game.rooms).filter(room =>
+  const roster = Array.isArray(creeps) ? creeps : Object.values(Game.creeps);
+  const visibleRooms = Array.isArray(rooms) ? rooms : Object.values(Game.rooms);
+  const ownedRooms = visibleRooms.filter(room =>
     room.controller?.my);
   for (const room of ownedRooms) {
     const selectedLimit = Math.max(1, Math.floor(getLimit(room) || 1));
-    const allCreeps = Object.values(Game.creeps);
-    const travelingReplacements = allCreeps.filter(creep =>
+    const travelingReplacements = roster.filter(creep =>
       creep.memory.home === room.name && creep.memory.qualityFor &&
       (creep.spawning || creep.room.name !== room.name ||
         creep.pos?.getRangeTo(room.controller) > 3));
     const protectedNames = new Set(travelingReplacements.flatMap(creep =>
       [creep.name, creep.memory.qualityFor]));
 
-    const roster = allCreeps.filter(creep =>
+    const roomRoster = roster.filter(creep =>
       creep.memory.home === room.name &&
       creep.memory.role === 'upgrader' && !creep.spawning &&
       !protectedNames.has(creep.name))
@@ -118,7 +120,7 @@ const enforceUpgraderLimit = ({
         (left.pos?.getRangeTo(room.controller) ?? Infinity) -
           (right.pos?.getRangeTo(room.controller) ?? Infinity));
 
-    roster.forEach((creep, index) => {
+    roomRoster.forEach((creep, index) => {
       delete creep.memory.qualityFor;
       if (index < selectedLimit) return;
       repurposeSurplusUpgrader(creep, isRoadMobile);
