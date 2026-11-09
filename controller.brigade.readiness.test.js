@@ -144,5 +144,8 @@ assert.match(mainSource,
 assert.match(mainSource,
   /controllerBrigadeMaintenanceBlockers:[\s\S]*maintenanceBlockers/,
   'final spawn decisions retain the blockers that prevented maintenance');
+assert.match(mainSource,
+  /combatStatus\.requiredDefenders = requiredDefenders/,
+  'scaled emergency coverage is published to the execution garrison');
 
 console.log('controller brigade readiness scenarios passed');

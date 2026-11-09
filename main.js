@@ -373,6 +373,7 @@ module.exports.loop = function () {
         ? getEmergencyDefenderRequirement(targets.length,
           room.memory.combatStatus.requiredDefenders)
         : room.memory.combatStatus.requiredDefenders;
+      room.memory.combatStatus.requiredDefenders = requiredDefenders;
       return targets.map(creep => ({
         creep, roomName, homeRoomName,
         requiredDefenders, exposedFriendly
