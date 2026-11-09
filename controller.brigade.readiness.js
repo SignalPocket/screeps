@@ -50,13 +50,19 @@ const selectControllerBrigadeReplacementMode = ({
     ? 'maintenance' : 'paused';
 
 const shouldRestoreBrigadeBeforeRemoteDefense = ({
-  homeRoom, threatRoom, activeCount, targetCount, maintenanceReady
+  homeRoom, threatRoom, activeCount, targetCount, maintenanceReady,
+  exposedFriendly = false
 }) => Boolean(threatRoom && threatRoom !== homeRoom && maintenanceReady &&
-  activeCount > 0 && activeCount < targetCount);
+  !exposedFriendly && activeCount > 0 && activeCount < targetCount);
 
 const shouldDeferRemoteDefenseForHomeRecovery = ({
-  homeRoom, threatRoom, maintenanceReady
-}) => Boolean(threatRoom && threatRoom !== homeRoom && !maintenanceReady);
+  homeRoom, threatRoom, maintenanceReady, exposedFriendly = false
+}) => Boolean(threatRoom && threatRoom !== homeRoom && !maintenanceReady &&
+  !exposedFriendly);
+
+const getEmergencyDefenderRequirement = (hostileCount,
+  existingRequirement = 1, maximum = 5) => Math.max(existingRequirement,
+  Math.min(maximum, Math.max(0, hostileCount)));
 
 const evaluateControllerBrigadeReadiness = (situation, staffingPlan) => {
   const signals = situation && situation.signals || {};
@@ -96,5 +102,6 @@ module.exports = {
   selectControllerBrigadeReplacementMode,
   shouldRestoreBrigadeBeforeRemoteDefense,
   shouldDeferRemoteDefenseForHomeRecovery,
+  getEmergencyDefenderRequirement,
   evaluateControllerBrigadeReadiness
 };

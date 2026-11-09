@@ -108,6 +108,9 @@ const createBodyFactory = constants => {
     }
     const availableEnergy = energy;
     energy = scaledBodyEnergy(role, energy, options.maximize);
+    if (role === 'defender' && options.healerSupport) {
+      energy = Math.min(availableEnergy, routineBodyEnergyCap);
+    }
     if (options.workLimit && ['miner', 'harvester'].includes(role)) {
       energy = Math.min(availableEnergy, routineBodyEnergyCap, Math.max(energy,
         options.workLimit * BODYPART_COST[WORK] + BODYPART_COST[CARRY] + 2 * BODYPART_COST[MOVE]));
@@ -132,6 +135,13 @@ const createBodyFactory = constants => {
         ? [CLAIM, MOVE] : null;
     }
     if (role === 'defender') {
+      if (options.healerSupport) {
+        const pairCost = BODYPART_COST[HEAL] + BODYPART_COST[MOVE];
+        const pairs = Math.min(8, Math.floor(energy / pairCost));
+        return pairs > 0
+          ? [...Array(pairs).fill(HEAL), ...Array(pairs).fill(MOVE)]
+          : null;
+      }
       const emergencyUnit = [TOUGH, ATTACK, MOVE];
       const emergencyCost = emergencyUnit.reduce((sum, part) =>
         sum + BODYPART_COST[part], 0);

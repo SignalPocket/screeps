@@ -9,6 +9,8 @@ const { shouldRestoreBrigadeBeforeRemoteDefense } =
   require('./controller.brigade.readiness');
 const { shouldDeferRemoteDefenseForHomeRecovery } =
   require('./controller.brigade.readiness');
+const { getEmergencyDefenderRequirement } =
+  require('./controller.brigade.readiness');
 
 const jobs = {
   source: { min: 2, coverageCount: 2 },
@@ -111,6 +113,19 @@ assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
 assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
   homeRoom: 'W7N4', threatRoom: 'W7N4', maintenanceReady: false
 }), false, 'a home-room threat remains absolute during recovery');
+assert.strictEqual(shouldDeferRemoteDefenseForHomeRecovery({
+  homeRoom: 'W7N4', threatRoom: 'W8N3', maintenanceReady: false,
+  exposedFriendly: true
+}), false, 'a visible civilian in danger overrides home recovery');
+assert.strictEqual(shouldRestoreBrigadeBeforeRemoteDefense({
+  homeRoom: 'W7N4', threatRoom: 'W8N3', maintenanceReady: true,
+  activeCount: 3, targetCount: 17, exposedFriendly: true
+}), false, 'an exposed civilian overrides partial-brigade restoration');
+assert.strictEqual(getEmergencyDefenderRequirement(1, 1), 1);
+assert.strictEqual(getEmergencyDefenderRequirement(5, 1), 5,
+  'five visible enemies sustain five bounded defense slots');
+assert.strictEqual(getEmergencyDefenderRequirement(20, 1), 5,
+  'emergency combat coverage cannot consume the whole colony');
 
 const mainSource = require('fs').readFileSync(require.resolve('./main'),
   'utf8');
@@ -129,5 +144,22 @@ assert.match(mainSource,
 assert.match(mainSource,
   /controllerBrigadeMaintenanceBlockers:[\s\S]*maintenanceBlockers/,
   'final spawn decisions retain the blockers that prevented maintenance');
+assert.match(mainSource,
+  /combatStatus\.requiredDefenders = requiredDefenders/,
+  'scaled emergency coverage is published to the execution garrison');
+assert.match(mainSource,
+  /exposedFriendly = targets\.length > 1/,
+  'a multi-hostile squad sustains coverage after civilians leave');
+assert.match(mainSource,
+  /last-known-\$\{roomName\}/,
+  'an unseen persisted fight retains an explicitly stale threat marker');
+assert.match(mainSource,
+  /rapidDefense: target\.requiredDefenders > 1/,
+  'a hostile squad requests rapid response bodies');
+const spawnPolicySource = require('fs').readFileSync(
+  require.resolve('./spawn.policy'), 'utf8');
+assert.match(spawnPolicySource,
+  /assignment\.rapidDefense \? 300/,
+  'rapid defenders and healers are capped at 300 energy');
 
 console.log('controller brigade readiness scenarios passed');
