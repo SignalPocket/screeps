@@ -112,6 +112,9 @@ const { ENERGY_DEFINITION, createEnergyCommand } = require('operator.energy');
 const { WORK_DEFINITION, createWorkCommand } = require('operator.work');
 const { SPAWN_DEFINITION, createSpawnCommand } = require('operator.spawn');
 const { CREEP_DEFINITION, createCreepCommand } = require('operator.creep');
+const { DEFEND_DEFINITION, createDefendCommand, planManualDefense,
+  recordManualDefenseAuthority, getManualDefenseRequirement } =
+  require('operator.defend');
 const { getDefenseTargets, selectCombatTarget, needsEmergencyDefender, selectUndefendedThreat,
   holdMeleeEngagement, evaluateDefenderEngagement,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
@@ -398,6 +401,13 @@ module.exports.loop = function () {
       inferAssignmentKind, getBodyType: getBodyTypeForAssignment,
       getTaskLabel: getTaskSpeech, canBodyTypeRunLane,
       getLocalReplacementLead, getRemoteReplacementLead })
+  });
+  operatorCommands.push({
+    definition: DEFEND_DEFINITION,
+    run: createDefendCommand({ Game, Memory, buildBody,
+      getBodyType: getBodyTypeForAssignment, bodyPartCost: BODYPART_COST,
+      findHostileCreeps: FIND_HOSTILE_CREEPS,
+      findHostileStructures: FIND_HOSTILE_STRUCTURES })
   });
   installOperatorConsole({ Game, globalObject: global,
     commands: operatorCommands });
@@ -1042,6 +1052,9 @@ module.exports.loop = function () {
         defenseTargetRoom: target.roomName
       };
     }
+    const manualDefense = planManualDefense({ Memory, room, workers,
+      staffingPlan, tick: Game.time });
+    if (manualDefense) return manualDefense;
     staffingPlan.scenarios = spawnSituation.scenarios || [];
     const establishedBrigade = Boolean(savedBrigadePlan &&
       Array.isArray(savedBrigadePlan.segments) &&
@@ -1834,6 +1847,8 @@ module.exports.loop = function () {
     const authority = authorizeSpawnAssignment({
       assignment: proposedAssignment, staffingPlan: authorityStaffingPlan
     });
+    recordManualDefenseAuthority({ Memory, assignment: proposedAssignment,
+      authority, spawn, tick: Game.time });
     spawn.room.memory.spawnLoopTrace = { tick: Game.time,
       stage: 'authorized', population: workers.length,
       jobKey: authority.jobKey, authorized: authority.authorized };
@@ -1883,6 +1898,8 @@ module.exports.loop = function () {
       remoteBuilderCoverage: remoteBuilderJob &&
         remoteBuilderJob.coverageCount || 0,
       remoteBuilderMinimum: remoteBuilderJob && remoteBuilderJob.min || 0,
+      manualDirectiveId: proposedAssignment &&
+        proposedAssignment.manualDirectiveId || null,
       reason: authority.reason
     };
     if (!authority.authorized && (!previousSpawnDecision ||
@@ -1956,6 +1973,11 @@ module.exports.loop = function () {
           assignment.emergencyPresence ||
           staffingJob.coverageCount < staffingJob.min;
       }
+      if (assignment.manualDefense) {
+        assignment.staffingCurrent = assignment.manualExistingCoverage;
+        assignment.staffingTarget = assignment.manualRequestedCount;
+        assignment.minimumGap = false;
+      }
     }
     const spawnRequest = prepareSpawnRequest({
       spawn, assignment, workers, workerLimit: populationLimit, hasWorkParts
@@ -2014,6 +2036,7 @@ module.exports.loop = function () {
           remoteBuilderSlot: assignment.remoteBuilderSlot,
           controllerRelaySlot: assignment.controllerRelaySlot,
           defenseTargetRoom: assignment.defenseTargetRoom,
+          manualDirectiveId: assignment.manualDirectiveId,
           healerSupport: assignment.healerSupport || undefined,
           recoveryLane: assignment.recoveryLane,
           expansionTarget: assignment.expansionTarget
@@ -7631,6 +7654,14 @@ module.exports.loop = function () {
       objectiveDefenderRequirements[room.name] || 0)]));
   for (const [roomName, required] of Object.entries(
     objectiveDefenderRequirements)) garrisonRequirements[roomName] = required;
+  for (const directive of Object.values(Memory.operatorDirectives &&
+      Memory.operatorDirectives.defense || {})) {
+    if (!directive || !directive.targetRoom) continue;
+    const required = getManualDefenseRequirement(Memory,
+      directive.targetRoom, Game.time);
+    if (required > 0) garrisonRequirements[directive.targetRoom] = Math.max(
+      garrisonRequirements[directive.targetRoom] || 0, required);
+  }
   const garrison = selectDefenderGarrison(defenders, garrisonRequirements);
   for (const creep of defenders) {
     if (creep.memory.role !== 'defender') continue;
@@ -7663,6 +7694,12 @@ module.exports.loop = function () {
     const hostiles = getDefenseTargets(targetRoom, FIND_HOSTILE_CREEPS,
       FIND_HOSTILE_STRUCTURES);
     if (hostiles.length === 0) {
+      if (getManualDefenseRequirement(Memory, targetRoomName, Game.time) > 0) {
+        creep.memory.task = 'defend-standby';
+        creep.memory.taskTarget = `${targetRoomName} manual directive`;
+        creep.memory.idleNow = false;
+        continue;
+      }
       if (Memory.war === true) {
         creep.memory.task = 'defend-standby';
         creep.memory.taskTarget = `waiting for war to end`;

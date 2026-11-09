@@ -120,6 +120,12 @@ const authorizeSpawnAssignment = ({ assignment, staffingPlan }) => {
       reason: `local minimum ${localGap.key} precedes ${jobKey}`,
       assignment: null };
   }
+  if (!baselineGap && !localGap && jobKey === 'defender' &&
+      assignment.manualDefense) {
+    return { authorized: true, phase: 'manual-defense', jobKey,
+      reason: 'bounded manual defense authorized after local survival minima',
+      assignment };
+  }
   if (!baselineGap && !localGap && assignment.bootstrapMaintenance &&
       assignment.role === 'builder' && assignment.builderScope === 'expansion' &&
       assignment.expansionTarget) {

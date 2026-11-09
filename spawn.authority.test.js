@@ -34,6 +34,26 @@ result = authorizeSpawnAssignment({
 assert.strictEqual(result.authorized, true);
 assert.strictEqual(result.phase, 'local-minimum');
 
+result = authorizeSpawnAssignment({
+  assignment: { role: 'defender', manualDefense: true },
+  staffingPlan: localGap
+});
+assert.strictEqual(result.authorized, false,
+  'manual defense cannot bypass an uncovered local survival minimum');
+assert.strictEqual(result.phase, 'local-minimum');
+
+result = authorizeSpawnAssignment({
+  assignment: { role: 'defender', manualDefense: true },
+  staffingPlan: plan({
+    hauler: job('hauler', 2, 2),
+    remoteMiner: job('remoteMiner', 0, 2)
+  })
+});
+assert.strictEqual(result.authorized, true,
+  'bounded manual defense precedes optional remote staffing only after local minima');
+assert.strictEqual(result.phase, 'manual-defense');
+assert.match(result.reason, /local survival minima/);
+
 const defenseGap = plan({
   defender: job('defender', 0, 1),
   remoteHauler: job('remoteHauler', 0, 3)
