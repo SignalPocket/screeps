@@ -36,6 +36,7 @@ const createMovementService = options => {
     OK, ERR_INVALID_TARGET, ERR_TIRED } = options;
   const movementReservations = {};
   const movementRoomCache = {};
+  const upcomingRouteCache = new Map();
   const getMovementRoomCache = roomName => {
     if (movementRoomCache[roomName]) return movementRoomCache[roomName];
     const room = Game.rooms[roomName];
@@ -107,23 +108,46 @@ const createMovementService = options => {
     movementRoomCache[roomName] = cached;
     return cached;
   };
-  const getUpcomingRoute = (creep, horizon = 5) => {
+  const getDecodedUpcomingRoute = creep => {
     const path = creep.memory._move && creep.memory._move.path;
-    if (typeof path !== 'string' || path.length === 0) return [];
+    const key = {
+      tick: Game.time,
+      path,
+      room: creep.room.name,
+      x: creep.pos.x,
+      y: creep.pos.y
+    };
+    const cached = upcomingRouteCache.get(creep);
+    if (cached && cached.tick === key.tick && cached.path === key.path &&
+        cached.room === key.room && cached.x === key.x && cached.y === key.y) {
+      return cached.steps;
+    }
+    let steps = [];
+    if (typeof path !== 'string' || path.length === 0) {
+      upcomingRouteCache.set(creep, { ...key, steps });
+      return steps;
+    }
     let decoded;
     try {
       decoded = Room.deserializePath(path);
     } catch (error) {
-      return [];
+      upcomingRouteCache.set(creep, { ...key, steps });
+      return steps;
     }
-    if (!Array.isArray(decoded) || decoded.length === 0) return [];
-    let start = decoded.findIndex(step =>
-      step.x === creep.pos.x && step.y === creep.pos.y);
-    if (start >= 0) start += 1;
-    else start = decoded.findIndex(step =>
-      Math.max(Math.abs(step.x - creep.pos.x),
-        Math.abs(step.y - creep.pos.y)) <= 1);
-    return start < 0 ? [] : decoded.slice(start, start + horizon);
+    if (Array.isArray(decoded) && decoded.length > 0) {
+      let start = decoded.findIndex(step =>
+        step.x === creep.pos.x && step.y === creep.pos.y);
+      if (start >= 0) start += 1;
+      else start = decoded.findIndex(step =>
+        Math.max(Math.abs(step.x - creep.pos.x),
+          Math.abs(step.y - creep.pos.y)) <= 1);
+      if (start >= 0) steps = decoded.slice(start);
+    }
+    upcomingRouteCache.set(creep, { ...key, steps });
+    return steps;
+  };
+  const getUpcomingRoute = (creep, horizon = 5) => {
+    return getDecodedUpcomingRoute(creep).slice(0, horizon);
   };
   const reserveUpcomingRoute = creep => {
     const upcoming = getUpcomingRoute(creep);

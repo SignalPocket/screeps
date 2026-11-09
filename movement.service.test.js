@@ -178,9 +178,13 @@ corridorWalker.room.find = type => type === 'my-creeps'
 corridorGame.rooms.W7N4 = corridorWalker.room;
 let corridorOptions;
 corridorWalker.moveTo = (target, opts) => { corridorOptions = opts; return 0; };
+let corridorDeserializeCalls = 0;
 const corridorService = createMovementService({Game: corridorGame,
-  Room: {deserializePath: () => [{x: 11, y: 10}, {x: 12, y: 10},
-    {x: 13, y: 10}, {x: 14, y: 10}, {x: 15, y: 10}, {x: 16, y: 10}]},
+  Room: {deserializePath: () => {
+    corridorDeserializeCalls++;
+    return [{x: 11, y: 10}, {x: 12, y: 10}, {x: 13, y: 10},
+      {x: 14, y: 10}, {x: 15, y: 10}, {x: 16, y: 10}];
+  }},
   FIND_STRUCTURES: 'structures', FIND_MY_CONSTRUCTION_SITES: 'sites',
   FIND_MY_CREEPS: 'my-creeps', STRUCTURE_ROAD: 'road',
   STRUCTURE_EXTENSION: 'extension', OK: 0, ERR_INVALID_TARGET: -7,
@@ -188,6 +192,8 @@ const corridorService = createMovementService({Game: corridorGame,
 const corridorGoal = {id: 'build-site',
   pos: {roomName: 'W7N4', x: 20, y: 10}};
 corridorService.moveCreep(corridorWalker, corridorGoal);
+assert.strictEqual(corridorDeserializeCalls, 1,
+  'one move should decode its shared blocker, safety and retained corridor once');
 assert.strictEqual(corridorOptions.reusePath, 50,
   'one moving-creep observation retains the chosen route');
 assert.deepStrictEqual(corridorWalker.memory.navCorridor, {
@@ -199,6 +205,8 @@ assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
 
 corridorGame.time = 301;
 corridorService.moveCreep(corridorWalker, corridorGoal);
+assert.strictEqual(corridorDeserializeCalls, 2,
+  'the next tick must refresh the decoded route');
 assert.strictEqual(corridorOptions.reusePath, 0,
   'a persistent look-ahead obstruction replans before collision');
 assert.strictEqual(corridorOptions.ignoreCreeps, false);
@@ -214,6 +222,18 @@ assert.strictEqual(corridorOptions.reusePath, 50,
   'a goal change clears prior blocker persistence evidence');
 assert.strictEqual(corridorWalker.memory.navBlocker.count, 1);
 assert.strictEqual(corridorWalker.memory.navCorridor.goal, 'repair-site');
+assert.strictEqual(corridorDeserializeCalls, 3,
+  'a changed path must invalidate the cached decode');
+
+corridorWalker.memory._move = {path: 'same-tick-replacement'};
+corridorService.reserveUpcomingRoute(corridorWalker);
+assert.strictEqual(corridorDeserializeCalls, 4,
+  'a same-tick path replacement must be decoded independently');
+corridorWalker.pos.x = 11;
+corridorService.reserveUpcomingRoute(corridorWalker);
+assert.strictEqual(corridorDeserializeCalls, 5,
+  'same-tick displacement must realign and refresh the decoded route');
+corridorWalker.pos.x = 10;
 
 const cached = corridorService.getMovementRoomCache('W7N4');
 cached.creeps.find(other => other.name === 'carrier').stationary = true;
