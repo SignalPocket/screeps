@@ -1,8 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const { STAGES, PLANNING_STAGES, OBSERVATION_STAGES, createCpuStageRecorder,
-  updateCpuPerformanceWindow } =
+const { STAGES, PLANNING_STAGES, OBSERVATION_STAGES, ROOM_POLICY_STAGES,
+  createCpuStageRecorder, updateCpuPerformanceWindow } =
   require('./cpu.telemetry');
 
 const samples = [2, 8, 18, 25, 31];
@@ -43,6 +43,18 @@ assert.deepStrictEqual(observationRecorder.snapshot(), {
   observation: 33, combat: 7, roomPolicy: 11, remotePlanning: 15
 });
 
+const roomPolicySamples = [3, 8, 17, 29];
+const roomPolicyRecorder = createCpuStageRecorder(() =>
+  roomPolicySamples.shift());
+assert.strictEqual(roomPolicyRecorder.mark('colonyPolicy'), 5);
+assert.strictEqual(roomPolicyRecorder.mark('remotePolicy'), 9);
+assert.strictEqual(roomPolicyRecorder.mark('spawnPolicy'), 12);
+assert.strictEqual(roomPolicyRecorder.aggregate('roomPolicy',
+  ROOM_POLICY_STAGES), 26);
+assert.deepStrictEqual(roomPolicyRecorder.snapshot(), {
+  roomPolicy: 26, colonyPolicy: 5, remotePolicy: 9, spawnPolicy: 12
+});
+
 const missing = createCpuStageRecorder(undefined);
 assert.strictEqual(missing.mark('planning'), null);
 assert.deepStrictEqual(missing.snapshot(), {});
@@ -67,7 +79,8 @@ assert.deepStrictEqual(updated.current, {
   bucket: 100, samples: 2, total: 50, maximum: 30,
   stageTotals: { planning: 13, creeps: 25, defense: 7, reporting: 5,
     observation: 0, workforce: 0, infrastructure: 0, dispatch: 0,
-    combat: 0, roomPolicy: 0, remotePlanning: 0 }
+    combat: 0, roomPolicy: 0, remotePlanning: 0,
+    colonyPolicy: 0, remotePolicy: 0, spawnPolicy: 0 }
 });
 assert.deepStrictEqual(updated.lastStages,
   { planning: 8, creeps: 15, defense: 4, reporting: 3 });
@@ -80,12 +93,14 @@ assert.deepStrictEqual(rolled.previous, {
   bucket: 100, samples: 2, average: 25, maximum: 30,
   stages: { planning: 6.5, creeps: 12.5, defense: 3.5, reporting: 2.5,
     observation: 0, workforce: 0, infrastructure: 0, dispatch: 0,
-    combat: 0, roomPolicy: 0, remotePlanning: 0 }
+    combat: 0, roomPolicy: 0, remotePlanning: 0,
+    colonyPolicy: 0, remotePolicy: 0, spawnPolicy: 0 }
 });
 assert.deepStrictEqual(rolled.current.stageTotals,
   { planning: 3, creeps: 5, defense: 2, reporting: 2,
     observation: 0, workforce: 0, infrastructure: 0, dispatch: 0,
-    combat: 0, roomPolicy: 0, remotePlanning: 0 });
+    combat: 0, roomPolicy: 0, remotePlanning: 0,
+    colonyPolicy: 0, remotePolicy: 0, spawnPolicy: 0 });
 assert.deepStrictEqual(Object.keys(rolled.previous.stages), STAGES);
 
 assert.strictEqual(updateCpuPerformanceWindow({

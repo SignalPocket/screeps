@@ -58,8 +58,8 @@ const { deriveCpuPolicy, shouldRenderPlanningVisuals,
   selectFairExecutionCreeps,
   summarizeCreepExecution } =
   require('cpu.policy');
-const { PLANNING_STAGES, OBSERVATION_STAGES, createCpuStageRecorder,
-  updateCpuPerformanceWindow } =
+const { PLANNING_STAGES, OBSERVATION_STAGES, ROOM_POLICY_STAGES,
+  createCpuStageRecorder, updateCpuPerformanceWindow } =
   require('cpu.telemetry');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
@@ -735,6 +735,7 @@ module.exports.loop = function () {
     remoteRoom.memory.builderCapacityPlan={...stable,updated:Game.time,requiredRate,energyBudget,futureRate,rates};
     return stable.desired;
   };
+  cpuStages.mark('colonyPolicy');
   protectRepairAssignments({Game,getStructures:getRoomStructures});
   reconcileControllerRelief({Game,isRoadMobile:hasRoadMobility});
   enforceUpgraderLimit({Game,isRoadMobile:hasRoadMobility,
@@ -880,6 +881,7 @@ module.exports.loop = function () {
     staffingPlan.scenarios = records;
     return records;
   };
+  cpuStages.mark('remotePolicy');
   const getSpawnAssignment = (room, workers) => {
     // The power line is an upgrade-season optimization, not core staffing.
     // Construction, repair, and essential economy jobs keep spawn priority
@@ -1374,7 +1376,8 @@ module.exports.loop = function () {
     return surplus;
   };
 
-  cpuStages.mark('roomPolicy');
+  cpuStages.mark('spawnPolicy');
+  cpuStages.aggregate('roomPolicy', ROOM_POLICY_STAGES);
   // All three established outposts share one demand planner. Survey memory
   // records measured lanes; it never mutates creep roles or population caps.
   // Retain distinct route/delivery metadata while deriving every outpost's

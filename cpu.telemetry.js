@@ -6,9 +6,12 @@ const PLANNING_STAGES = [
 const OBSERVATION_STAGES = [
   'combat', 'roomPolicy', 'remotePlanning'
 ];
+const ROOM_POLICY_STAGES = [
+  'colonyPolicy', 'remotePolicy', 'spawnPolicy'
+];
 const STAGES = [
   'planning', 'creeps', 'defense', 'reporting', ...PLANNING_STAGES,
-  ...OBSERVATION_STAGES
+  ...OBSERVATION_STAGES, ...ROOM_POLICY_STAGES
 ];
 
 const finiteSample = value => Number.isFinite(value) && value >= 0
@@ -100,4 +103,4 @@ const updateCpuPerformanceWindow = ({ performance, tick, total, stages,
 };
 
 module.exports = { STAGES, PLANNING_STAGES, OBSERVATION_STAGES,
-  createCpuStageRecorder, updateCpuPerformanceWindow };
+  ROOM_POLICY_STAGES, createCpuStageRecorder, updateCpuPerformanceWindow };
