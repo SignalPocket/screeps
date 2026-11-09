@@ -147,5 +147,8 @@ assert.match(mainSource,
 assert.match(mainSource,
   /combatStatus\.requiredDefenders = requiredDefenders/,
   'scaled emergency coverage is published to the execution garrison');
+assert.match(mainSource,
+  /exposedFriendly = targets\.length > 1/,
+  'a multi-hostile squad sustains coverage after civilians leave');
 
 console.log('controller brigade readiness scenarios passed');

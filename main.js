@@ -367,7 +367,7 @@ module.exports.loop = function () {
       if (!room) return [];
       const targets = getDefenseTargets(room, FIND_HOSTILE_CREEPS,
         FIND_HOSTILE_STRUCTURES);
-      const exposedFriendly = tickCreeps.some(creep =>
+      const exposedFriendly = targets.length > 1 || tickCreeps.some(creep =>
         creep.room.name === roomName && creep.memory.role !== 'defender');
       const requiredDefenders = exposedFriendly
         ? getEmergencyDefenderRequirement(targets.length,
