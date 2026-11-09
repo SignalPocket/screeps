@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const { STAGES, createCpuStageRecorder, updateCpuPerformanceWindow } =
+const { STAGES, PLANNING_STAGES, createCpuStageRecorder,
+  updateCpuPerformanceWindow } =
   require('./cpu.telemetry');
 
 const samples = [2, 8, 18, 25, 31];
@@ -13,6 +14,22 @@ assert.strictEqual(recorder.mark('reporting'), 6);
 assert.deepStrictEqual(recorder.snapshot(), {
   planning: 6, creeps: 10, defense: 7, reporting: 6
 });
+
+const planningSamples = [1, 5, 12, 20, 31];
+const planningRecorder = createCpuStageRecorder(() =>
+  planningSamples.shift());
+assert.strictEqual(planningRecorder.mark('observation'), 4);
+assert.strictEqual(planningRecorder.mark('workforce'), 7);
+assert.strictEqual(planningRecorder.mark('infrastructure'), 8);
+assert.strictEqual(planningRecorder.mark('dispatch'), 11);
+assert.strictEqual(planningRecorder.aggregate('planning', PLANNING_STAGES),
+  30);
+assert.deepStrictEqual(planningRecorder.snapshot(), {
+  planning: 30, observation: 4, workforce: 7,
+  infrastructure: 8, dispatch: 11
+});
+assert.strictEqual(planningRecorder.aggregate('planning',
+  ['observation', 'missing']), null);
 
 const missing = createCpuStageRecorder(undefined);
 assert.strictEqual(missing.mark('planning'), null);
@@ -36,7 +53,8 @@ assert.deepStrictEqual(original.current.stageTotals,
   { planning: 5, creeps: 10, defense: 3, reporting: 2 });
 assert.deepStrictEqual(updated.current, {
   bucket: 100, samples: 2, total: 50, maximum: 30,
-  stageTotals: { planning: 13, creeps: 25, defense: 7, reporting: 5 }
+  stageTotals: { planning: 13, creeps: 25, defense: 7, reporting: 5,
+    observation: 0, workforce: 0, infrastructure: 0, dispatch: 0 }
 });
 assert.deepStrictEqual(updated.lastStages,
   { planning: 8, creeps: 15, defense: 4, reporting: 3 });
@@ -47,10 +65,12 @@ const rolled = updateCpuPerformanceWindow({
 });
 assert.deepStrictEqual(rolled.previous, {
   bucket: 100, samples: 2, average: 25, maximum: 30,
-  stages: { planning: 6.5, creeps: 12.5, defense: 3.5, reporting: 2.5 }
+  stages: { planning: 6.5, creeps: 12.5, defense: 3.5, reporting: 2.5,
+    observation: 0, workforce: 0, infrastructure: 0, dispatch: 0 }
 });
 assert.deepStrictEqual(rolled.current.stageTotals,
-  { planning: 3, creeps: 5, defense: 2, reporting: 2 });
+  { planning: 3, creeps: 5, defense: 2, reporting: 2,
+    observation: 0, workforce: 0, infrastructure: 0, dispatch: 0 });
 assert.deepStrictEqual(Object.keys(rolled.previous.stages), STAGES);
 
 assert.strictEqual(updateCpuPerformanceWindow({

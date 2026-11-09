@@ -57,7 +57,8 @@ const { deriveCpuPolicy, shouldRenderPlanningVisuals,
   shouldPrepareRoadPlan, selectFairExecutionCreeps,
   summarizeCreepExecution } =
   require('cpu.policy');
-const { createCpuStageRecorder, updateCpuPerformanceWindow } =
+const { PLANNING_STAGES, createCpuStageRecorder,
+  updateCpuPerformanceWindow } =
   require('cpu.telemetry');
 const { createWaitAgeTracker } = require('wait.age');
 const { snapshotExecutionOrder, sortTaskRecords, sortExecutionRecords } =
@@ -1453,6 +1454,7 @@ module.exports.loop = function () {
 
   if (renderPlanningVisuals) drawRoadNetwork({Game,RoomPosition});
 
+  cpuStages.mark('observation');
   // Reopen failed mining lanes with bodies that already exist before asking
   // the spawn for another replacement. Only builder capacity above the local
   // maximum is eligible, so recovery cannot create a new home-room shortage.
@@ -1908,6 +1910,7 @@ module.exports.loop = function () {
     recordSpawnDenials(Game.rooms[roomName].memory, Game.time, attempts);
   }
 
+  cpuStages.mark('workforce');
   const reconcileInfrastructure = createOwnedRoomInfrastructure({
     Game, FIND_STRUCTURES, FIND_MY_CONSTRUCTION_SITES, FIND_MY_SPAWNS,
     CONTROLLER_STRUCTURES, getRoomSources, getContainerPurpose, OK,
@@ -2043,6 +2046,7 @@ module.exports.loop = function () {
     }
   }
 
+  cpuStages.mark('infrastructure');
   const { reservedEnergy, reservedCapacity, getUnreservedEnergy,
     getUnreservedCapacity, releaseAmount, reserveEnergyFrom,
     reserveCapacityIn } = createResourceReservations(RESOURCE_ENERGY);
@@ -4035,7 +4039,8 @@ module.exports.loop = function () {
       remote.memory.repairSupplyPlan={...planRepairSupply({structures:getRoomStructures(remote),production:getRoomSources(remote).reduce((n,s)=>n+s.energyCapacity/ENERGY_REGEN_TIME,0)}),updated:Game.time};
     }
   }
-  cpuStages.mark('planning');
+  cpuStages.mark('dispatch');
+  cpuStages.aggregate('planning', PLANNING_STAGES);
   const rawPickupEnergy=getUnreservedEnergy;
   const rawReservePickup=reserveEnergyFrom;
   const baseCanWithdraw=canWithdrawFrom;

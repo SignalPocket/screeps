@@ -1,6 +1,11 @@
 'use strict';
 
-const STAGES = ['planning', 'creeps', 'defense', 'reporting'];
+const PLANNING_STAGES = [
+  'observation', 'workforce', 'infrastructure', 'dispatch'
+];
+const STAGES = [
+  'planning', 'creeps', 'defense', 'reporting', ...PLANNING_STAGES
+];
 
 const finiteSample = value => Number.isFinite(value) && value >= 0
   ? value : null;
@@ -27,10 +32,17 @@ const createCpuStageRecorder = getUsed => {
     previous = current;
     return delta;
   };
+  const aggregate = (stage, sources) => {
+    if (!STAGES.includes(stage) || !Array.isArray(sources)) return null;
+    const values = sources.map(source => finiteSample(totals[source]));
+    if (values.some(value => value === null)) return null;
+    totals[stage] = values.reduce((sum, value) => sum + value, 0);
+    return totals[stage];
+  };
   const snapshot = () => Object.fromEntries(STAGES
     .filter(stage => finiteSample(totals[stage]) !== null)
     .map(stage => [stage, totals[stage]]));
-  return { mark, snapshot };
+  return { mark, aggregate, snapshot };
 };
 
 const stageAverages = current => Object.fromEntries(STAGES.map(stage => [
@@ -62,7 +74,9 @@ const updateCpuPerformanceWindow = ({ performance, tick, total, stages,
       stageTotals: Object.fromEntries(STAGES.map(stage => [stage, 0])) };
   } else {
     next.current = { ...current,
-      stageTotals: { ...current.stageTotals } };
+      stageTotals: Object.fromEntries(STAGES.map(stage => [
+        stage, finiteSample(current.stageTotals?.[stage]) || 0
+      ])) };
   }
   next.current.samples++;
   next.current.total += total;
@@ -81,5 +95,5 @@ const updateCpuPerformanceWindow = ({ performance, tick, total, stages,
   return next;
 };
 
-module.exports = { STAGES, createCpuStageRecorder,
+module.exports = { STAGES, PLANNING_STAGES, createCpuStageRecorder,
   updateCpuPerformanceWindow };
