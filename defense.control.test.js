@@ -4,7 +4,7 @@ const assert = require('assert');
 const { selectCombatTarget, needsEmergencyDefender,
   collectFriendlyDamageEvents, updateWarState, getDefenseRoomNames,
   getOutpostPresenceGap,
-  holdMeleeEngagement,
+  holdMeleeEngagement, evaluateDefenderEngagement,
   selectDefenderGarrison, selectUndefendedThreat,
   createDefenseController } =
   require('./defense.control');
@@ -118,6 +118,35 @@ assert.strictEqual(holdMeleeEngagement({
 }, {}, -9), false,
   'an out-of-range defender keeps its later approach movement');
 assert.deepStrictEqual(cancelled, ['move']);
+
+const combatPosition = (x, y = 10) => ({ x, y, roomName: 'W1N1',
+  getRangeTo: other => Math.max(Math.abs(x - other.pos.x),
+    Math.abs(y - other.pos.y)) });
+const combatCreep = (id, x, parts, hits = 100) => ({ id, hits,
+  hitsMax: 100, pos: combatPosition(x), room: { name: 'W1N1' },
+  getActiveBodyparts: part => parts[part] || 0 });
+const meleeDefender = combatCreep('defender', 10, { attack: 1 });
+const rangedInvader = combatCreep('ranged', 14, { ranged_attack: 5 });
+const invaderHealer = combatCreep('healer', 15, { heal: 5 });
+assert.strictEqual(evaluateDefenderEngagement(meleeDefender, rangedInvader,
+  [rangedInvader, invaderHealer], [meleeDefender], constants).action, 'hold',
+  'a lone melee defender holds outside an overwhelming healer squad');
+meleeDefender.pos = combatPosition(12);
+assert.strictEqual(evaluateDefenderEngagement(meleeDefender, rangedInvader,
+  [rangedInvader, invaderHealer], [meleeDefender], constants).action,
+  'retreat', 'an exposed defender retreats before repeated ranged hits');
+const isolatedRanged = combatCreep('isolated', 14, { ranged_attack: 5 });
+assert.strictEqual(evaluateDefenderEngagement(meleeDefender, isolatedRanged,
+  [isolatedRanged], [meleeDefender], constants).action, 'engage',
+  'an isolated hostile remains a valid pursuit target');
+const support = combatCreep('support', 11, { ranged_attack: 15 });
+assert.strictEqual(evaluateDefenderEngagement(meleeDefender, rangedInvader,
+  [rangedInvader, invaderHealer], [meleeDefender, support], constants).action,
+  'engage', 'sufficient friendly damage permits a supported engagement');
+const woundedDefender = combatCreep('wounded', 12, { attack: 1 }, 40);
+assert.strictEqual(evaluateDefenderEngagement(woundedDefender, rangedInvader,
+  [rangedInvader, invaderHealer], [woundedDefender], constants).action,
+  'retreat', 'a damaged overmatched defender retreats');
 
 const searched = {};
 class CostMatrix {
