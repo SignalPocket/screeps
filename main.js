@@ -57,7 +57,7 @@ const { deriveCpuPolicy, shouldRenderPlanningVisuals,
   shouldPrepareRoadPlan, selectFairExecutionCreeps,
   summarizeCreepExecution } =
   require('cpu.policy');
-const { PLANNING_STAGES, createCpuStageRecorder,
+const { PLANNING_STAGES, OBSERVATION_STAGES, createCpuStageRecorder,
   updateCpuPerformanceWindow } =
   require('cpu.telemetry');
 const { createWaitAgeTracker } = require('wait.age');
@@ -353,6 +353,7 @@ module.exports.loop = function () {
     STRUCTURE_ROAD, STRUCTURE_CONTAINER, STRUCTURE_WALL, STRUCTURE_RAMPART,
     ATTACK, RANGED_ATTACK, HEAL, WORK, CLAIM
   });
+  cpuStages.mark('combat');
   const getDefenseThreats = homeRoomName => {
     const home = Game.rooms[homeRoomName];
     const roomNames = getDefenseRoomNames(homeRoomName,
@@ -1370,6 +1371,7 @@ module.exports.loop = function () {
     return surplus;
   };
 
+  cpuStages.mark('roomPolicy');
   // All three established outposts share one demand planner. Survey memory
   // records measured lanes; it never mutates creep roles or population caps.
   // Retain distinct route/delivery metadata while deriving every outpost's
@@ -1454,7 +1456,8 @@ module.exports.loop = function () {
 
   if (renderPlanningVisuals) drawRoadNetwork({Game,RoomPosition});
 
-  cpuStages.mark('observation');
+  cpuStages.mark('remotePlanning');
+  cpuStages.aggregate('observation', OBSERVATION_STAGES);
   // Reopen failed mining lanes with bodies that already exist before asking
   // the spawn for another replacement. Only builder capacity above the local
   // maximum is eligible, so recovery cannot create a new home-room shortage.
